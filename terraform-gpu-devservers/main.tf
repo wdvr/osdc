@@ -202,7 +202,7 @@ locals {
     }
     prod = {
       # Production environment subnet assignments
-      b200 = "secondary"
+      b200 = "primary"
       h200 = "tertiary"  # us-east-2c for H200 capacity reservation
       h100 = "primary"
       a100 = "primary"
