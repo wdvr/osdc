@@ -98,6 +98,7 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
     Returns list of disk info dicts with: name, size, last_used, created_at, snapshot_count, in_use, reservation_id
     """
     ec2_client = get_ec2_client(config)
+    dynamodb = get_dynamodb_resource(config)
 
     # Get all snapshots for this user
     response = ec2_client.describe_snapshots(
@@ -109,6 +110,25 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
     )
 
     snapshots = response.get('Snapshots', [])
+
+    # ALSO check for any in-use volumes (to detect legacy volumes without disk_name)
+    # This helps show "default" disk as in-use even if volume has no disk_name tag
+    legacy_in_use_volumes = []
+    try:
+        vol_response = ec2_client.describe_volumes(
+            Filters=[
+                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                {"Name": "tag:ManagedBy", "Values": ["gpu-dev-cli"]},
+                {"Name": "status", "Values": ["in-use"]},
+            ]
+        )
+        # Find volumes without disk_name tag (pre-migration)
+        for vol in vol_response.get("Volumes", []):
+            tags = {tag['Key']: tag['Value'] for tag in vol.get('Tags', [])}
+            if 'disk_name' not in tags:
+                legacy_in_use_volumes.append(vol)
+    except Exception as e:
+        print(f"Warning: Could not check for legacy volumes: {e}")
 
     # Group snapshots by disk_name
     disks_map = {}
@@ -150,6 +170,30 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
 
         # Check if disk is in use
         is_in_use, reservation_id = get_disk_in_use_status(disk_name, user_id, config)
+
+        # Special case: If this is "default" disk and we found legacy in-use volumes,
+        # mark as in-use (helps detect pre-migration volumes)
+        if not is_in_use and disk_name == "default" and legacy_in_use_volumes:
+            # Find the reservation using this legacy volume
+            legacy_vol_id = legacy_in_use_volumes[0]["VolumeId"]
+            try:
+                reservations_table = dynamodb.Table(config.reservations_table)
+                response = reservations_table.scan(
+                    FilterExpression="ebs_volume_id = :vol_id AND #status IN (:active, :preparing)",
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={
+                        ":vol_id": legacy_vol_id,
+                        ":active": "active",
+                        ":preparing": "preparing"
+                    }
+                )
+                if response.get("Items"):
+                    is_in_use = True
+                    reservation_id = response["Items"][0]["reservation_id"]
+            except Exception:
+                # If query fails, still mark as in-use to be safe
+                is_in_use = True
+                reservation_id = None
 
         disks.append({
             'name': disk_name,

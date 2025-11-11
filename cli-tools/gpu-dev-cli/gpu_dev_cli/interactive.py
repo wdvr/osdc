@@ -650,9 +650,11 @@ def select_disk_interactive(user_id: str, config: Any) -> Optional[str]:
         # Return selected disk name
         return answer
 
-    except (KeyboardInterrupt, EOFError):
+    except EOFError:
+        # Handle EOF (e.g., piped input) gracefully
         console.print("\n[yellow]Disk selection cancelled. Continuing without persistent disk.[/yellow]")
         return None
+    # Note: KeyboardInterrupt is NOT caught here - let it propagate to cancel the entire reservation
 
 
 def _validate_disk_name(disk_name: str) -> bool:
