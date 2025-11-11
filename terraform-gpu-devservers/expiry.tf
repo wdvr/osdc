@@ -23,6 +23,7 @@ resource "aws_lambda_function" "reservation_expiry" {
       DOMAIN_NAME                        = local.effective_domain_name
       HOSTED_ZONE_ID                     = local.effective_domain_name != "" ? local.hosted_zone_id : ""
       SSH_DOMAIN_MAPPINGS_TABLE          = local.effective_domain_name != "" ? aws_dynamodb_table.ssh_domain_mappings.name : ""
+      DISK_CONTENTS_BUCKET               = aws_s3_bucket.disk_contents.bucket
     }
   }
 
@@ -109,9 +110,24 @@ resource "aws_iam_role_policy" "reservation_expiry_policy" {
           "ec2:DescribeVolumes",
           "ec2:CreateSnapshot",
           "ec2:DescribeSnapshots",
-          "ec2:DeleteSnapshot"
+          "ec2:DeleteSnapshot",
+          "ec2:DeleteVolume",
+          "ec2:CreateTags"
         ]
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.disk_contents.arn,
+          "${aws_s3_bucket.disk_contents.arn}/*"
+        ]
       },
       {
         Effect = "Allow"

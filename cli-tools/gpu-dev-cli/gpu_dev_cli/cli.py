@@ -3154,5 +3154,124 @@ def ssh_include(action: str):
         rprint(f"[red]❌ Error updating SSH config setting: {str(e)}[/red]")
 
 
+@main.group()
+def disk():
+    """Manage persistent disks for GPU reservations
+
+    \b
+    Commands:
+        gpu-dev disk list                      # List all your disks
+        gpu-dev disk create <name>             # Create a new named disk
+        gpu-dev disk list-content <name>       # Show contents of a disk
+    """
+    pass
+
+
+@disk.command("list")
+def disk_list():
+    """List all persistent disks"""
+    from .disks import list_disks
+
+    config = load_config()
+    user_id = config.user_config.get("github_user") or config.user_config.get("user_id")
+
+    if not user_id:
+        rprint("[red]❌ No user configured. Run 'gpu-dev reserve' first to set up your account.[/red]")
+        return
+
+    try:
+        disks = list_disks(user_id, config)
+
+        if not disks:
+            rprint("[yellow]No disks found.[/yellow]")
+            rprint("[dim]Create a disk with: gpu-dev disk create <name>[/dim]")
+            return
+
+        # Create rich table
+        table = Table(title="Your Persistent Disks", show_header=True, header_style="bold cyan")
+        table.add_column("Disk Name", style="cyan")
+        table.add_column("Size", justify="right")
+        table.add_column("Created", style="dim")
+        table.add_column("Last Used", style="dim")
+        table.add_column("Snapshots", justify="right")
+        table.add_column("Status", justify="center")
+
+        for disk in disks:
+            name = disk['name']
+            size = f"{disk['size_gb']} GB"
+
+            created = _format_relative_time(disk['created_at'].isoformat() if disk['created_at'] else "N/A")
+            last_used = _format_relative_time(disk['last_used'].isoformat() if disk['last_used'] else "N/A")
+
+            snapshot_count = str(disk['snapshot_count'])
+
+            if disk['in_use']:
+                res_id = disk['reservation_id'] or "unknown"
+                status = f"[yellow]IN USE[/yellow]\n[dim]{res_id[:8]}[/dim]"
+            else:
+                status = "[green]Available[/green]"
+
+            table.add_row(name, size, created, last_used, snapshot_count, status)
+
+        console.print(table)
+
+    except Exception as e:
+        rprint(f"[red]❌ Error listing disks: {str(e)}[/red]")
+
+
+@disk.command("create")
+@click.argument("disk_name")
+def disk_create(disk_name: str):
+    """Create a new named persistent disk"""
+    from .disks import create_disk
+
+    config = load_config()
+    user_id = config.user_config.get("github_user") or config.user_config.get("user_id")
+
+    if not user_id:
+        rprint("[red]❌ No user configured. Run 'gpu-dev reserve' first to set up your account.[/red]")
+        return
+
+    try:
+        success = create_disk(disk_name, user_id, config)
+        if not success:
+            return
+
+    except Exception as e:
+        rprint(f"[red]❌ Error creating disk: {str(e)}[/red]")
+
+
+@disk.command("list-content")
+@click.argument("disk_name")
+def disk_list_content(disk_name: str):
+    """Show contents of a disk's latest snapshot"""
+    from .disks import list_disk_content
+
+    config = load_config()
+    user_id = config.user_config.get("github_user") or config.user_config.get("user_id")
+
+    if not user_id:
+        rprint("[red]❌ No user configured. Run 'gpu-dev reserve' first to set up your account.[/red]")
+        return
+
+    try:
+        contents = list_disk_content(disk_name, user_id, config)
+
+        if contents is None:
+            return
+
+        # Display contents in a panel
+        panel = Panel(
+            contents,
+            title=f"Contents of disk '{disk_name}' (latest snapshot)",
+            border_style="cyan",
+            expand=False
+        )
+        console.print(panel)
+
+    except Exception as e:
+        rprint(f"[red]❌ Error listing disk contents: {str(e)}[/red]")
+
+
 if __name__ == "__main__":
     main()

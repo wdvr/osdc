@@ -19,7 +19,8 @@ from shared.snapshot_utils import (
     create_pod_shutdown_snapshot,
     cleanup_old_snapshots,
     safe_create_snapshot,
-    cleanup_all_user_snapshots
+    cleanup_all_user_snapshots,
+    capture_disk_contents
 )
 from shared.dns_utils import (
     delete_dns_record,
@@ -928,11 +929,13 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
         try:
             user_id = None
             volume_id = None
+            disk_name = None
 
-            # Get user_id and volume_id from reservation data if provided
+            # Get user_id, volume_id, and disk_name from reservation data if provided
             if reservation_data:
                 user_id = reservation_data.get('user_id')
                 volume_id = reservation_data.get('ebs_volume_id')
+                disk_name = reservation_data.get('disk_name')
 
             # Quick check - if we have reservation data with EBS info, use it directly
             if user_id and volume_id:
@@ -958,12 +961,84 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
                 except Exception as pod_read_error:
                     logger.warning(f"Could not read pod {pod_name} for snapshot info: {pod_read_error}")
 
+            # If disk_name not in reservation data, try to get it from volume tags
+            if volume_id and not disk_name:
+                try:
+                    ec2_client = boto3.client('ec2')
+                    vol_response = ec2_client.describe_volumes(VolumeIds=[volume_id])
+                    if vol_response['Volumes']:
+                        tags = {tag['Key']: tag['Value'] for tag in vol_response['Volumes'][0].get('Tags', [])}
+                        disk_name = tags.get('disk_name')
+                        logger.info(f"Retrieved disk_name '{disk_name}' from volume tags")
+                except Exception as tag_error:
+                    logger.warning(f"Could not read volume tags for disk_name: {tag_error}")
+
             # Create shutdown snapshot if we have the necessary info
             if user_id and volume_id:
-                logger.info(f"Creating shutdown snapshot for user {user_id}, volume {volume_id}")
-                snapshot_id = create_pod_shutdown_snapshot(volume_id, user_id)
+                logger.info(f"Creating shutdown snapshot for user {user_id}, volume {volume_id}, disk {disk_name or 'unnamed'}")
+
+                # Step 1: Capture disk contents before creating snapshot
+                content_s3_path = None
+                if disk_name:
+                    try:
+                        logger.info(f"Capturing disk contents for disk '{disk_name}'")
+                        # Create a temporary snapshot ID for the S3 path (we'll update after actual snapshot creation)
+                        temp_snapshot_id = f"pending-{int(time.time())}"
+                        content_s3_path = capture_disk_contents(
+                            pod_name=pod_name,
+                            namespace=namespace,
+                            user_id=user_id,
+                            disk_name=disk_name,
+                            snapshot_id=temp_snapshot_id,
+                            mount_path="/workspace"
+                        )
+                        if content_s3_path:
+                            logger.info(f"Successfully captured disk contents to {content_s3_path}")
+                        else:
+                            logger.warning(f"Failed to capture disk contents for disk '{disk_name}'")
+                    except Exception as capture_error:
+                        logger.warning(f"Error capturing disk contents: {capture_error}")
+                        # Continue with snapshot even if content capture fails
+
+                # Step 2: Create snapshot with disk_name and content_s3_path
+                snapshot_id, was_created = safe_create_snapshot(
+                    volume_id=volume_id,
+                    user_id=user_id,
+                    snapshot_type="shutdown",
+                    disk_name=disk_name,
+                    content_s3_path=content_s3_path
+                )
+
                 if snapshot_id:
                     logger.info(f"Shutdown snapshot {snapshot_id} initiated for {pod_name}")
+
+                    # Step 3: Wait for snapshot to complete (with timeout)
+                    try:
+                        logger.info(f"Waiting for snapshot {snapshot_id} to complete...")
+                        ec2_client = boto3.client('ec2')
+                        waiter = ec2_client.get_waiter('snapshot_completed')
+                        waiter.wait(
+                            SnapshotIds=[snapshot_id],
+                            WaiterConfig={
+                                'Delay': 15,  # Check every 15 seconds
+                                'MaxAttempts': 120  # Wait up to 30 minutes (15s * 120 = 1800s)
+                            }
+                        )
+                        logger.info(f"Snapshot {snapshot_id} completed successfully")
+
+                        # Step 4: Delete the EBS volume after snapshot completes
+                        try:
+                            logger.info(f"Deleting EBS volume {volume_id} after successful snapshot")
+                            ec2_client.delete_volume(VolumeId=volume_id)
+                            logger.info(f"Successfully deleted volume {volume_id}")
+                        except Exception as delete_error:
+                            logger.error(f"Failed to delete volume {volume_id}: {delete_error}")
+                            # Don't fail the whole cleanup if volume deletion fails
+
+                    except Exception as waiter_error:
+                        logger.warning(f"Error waiting for snapshot completion or deleting volume: {waiter_error}")
+                        # Continue with pod deletion even if snapshot wait/delete fails
+
                 else:
                     logger.warning(f"Failed to create shutdown snapshot for {pod_name}")
             else:
@@ -1034,9 +1109,9 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
 
         logger.info(f"Pod cleanup completed successfully for {pod_name}")
 
-        # NOTE: EBS volumes (persistent disks) are NOT deleted here
-        # They automatically detach when the pod is deleted and remain
-        # available for the user's next reservation
+        # NOTE: EBS volumes (persistent disks) are deleted after snapshot creation
+        # Snapshots are used to recreate volumes for the user's next reservation
+        # This ensures clean state and prevents disk attachment conflicts
 
         # Trigger availability table update after pod cleanup
         try:

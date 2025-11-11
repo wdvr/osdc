@@ -2133,6 +2133,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         user_id = request.get("user_id")
         recreate_env = request.get("recreate_env", False)
         pod_name = f"gpu-dev-{reservation_id[:8]}"
+        disk_name = request.get("disk_name")  # Named disk identifier (optional)
 
         # Check if this is part of a multinode reservation
         is_multinode = request.get("is_multinode", False)
@@ -2309,12 +2310,48 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
         if use_persistent_disk:
             try:
-                # Step 1: Determine target AZ for this reservation
+                # NEW snapshot-first workflow (replaces old migration logic below)
+                # Always recreate volume from latest snapshot or create empty
                 update_reservation_status(
                     reservation_id,
                     "preparing",
-                    detailed_status="Determining optimal availability zone for GPU placement"
+                    detailed_status="Setting up persistent disk" + (f" '{disk_name}'" if disk_name else "")
                 )
+
+                # Determine target AZ for this reservation
+                target_az = get_target_az_for_reservation(gpu_type, gpu_count)
+                if not target_az:
+                    raise ValueError(f"Could not determine target AZ for {gpu_type} GPUs")
+
+                logger.info(f"Target AZ for reservation: {target_az}")
+                logger.info(f"Creating persistent disk for user {user_id}, disk_name={disk_name or 'default'}")
+
+                # Use new snapshot-first function
+                persistent_volume_id, is_new_disk, disk_warning = create_disk_from_snapshot_or_empty(
+                    user_id=user_id,
+                    availability_zone=target_az,
+                    disk_name=disk_name
+                )
+
+                logger.info(f"Persistent disk ready: {persistent_volume_id} (is_new={is_new_disk})")
+
+                # Store disk_name in DynamoDB for tracking
+                if disk_name:
+                    update_reservation_fields(reservation_id, disk_name=disk_name)
+
+                # Store warning if any
+                if disk_warning:
+                    update_reservation_fields(reservation_id, warning=disk_warning)
+                    logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
+
+                # OLD LOGIC BELOW - TODO: Remove after testing new workflow
+                if False:  # Disabled old migration logic
+                    # Step 1: Determine target AZ for this reservation
+                    update_reservation_status(
+                        reservation_id,
+                        "preparing",
+                        detailed_status="Determining optimal availability zone for GPU placement"
+                    )
 
                 target_az = get_target_az_for_reservation(gpu_type, gpu_count)
                 if not target_az:
@@ -4737,6 +4774,128 @@ def get_node_instance_id() -> str:
     except Exception as e:
         logger.error(f"Error getting node instance ID: {str(e)}")
         return None
+
+
+def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, disk_name: str = None) -> tuple[str, bool, str]:
+    """
+    NEW snapshot-first workflow: Always recreate disk from latest snapshot or create empty.
+    Returns (volume_id, is_new_disk, warning_message)
+
+    Args:
+        user_id: User identifier
+        availability_zone: Target AZ for volume
+        disk_name: Named disk identifier (optional, for backwards compatibility)
+    """
+    try:
+        from shared.snapshot_utils import get_latest_snapshot
+
+        logger.info(f"Creating disk for user {user_id} in AZ {availability_zone}" + (f", disk_name={disk_name}" if disk_name else ""))
+
+        # Step 1: Check for in-use volumes with matching disk_name (prevent concurrent use)
+        if disk_name:
+            filters = [
+                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                {"Name": "tag:disk_name", "Values": [disk_name]},
+                {"Name": "status", "Values": ["in-use", "available"]},
+            ]
+
+            response = ec2_client.describe_volumes(Filters=filters)
+            in_use_volumes = [v for v in response.get("Volumes", []) if v["State"] == "in-use"]
+
+            if in_use_volumes:
+                volume_id = in_use_volumes[0]["VolumeId"]
+                error_msg = f"Disk '{disk_name}' is currently in use (volume {volume_id}). Please wait for the current reservation to end."
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+
+        # Step 2: Find latest snapshot for this disk
+        snapshot_filters = [
+            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+            {"Name": "status", "Values": ["completed"]},
+        ]
+        if disk_name:
+            snapshot_filters.append({"Name": "tag:disk_name", "Values": [disk_name]})
+
+        snapshot_response = ec2_client.describe_snapshots(
+            OwnerIds=["self"],
+            Filters=snapshot_filters
+        )
+
+        snapshots = snapshot_response.get('Snapshots', [])
+        latest_snapshot = max(snapshots, key=lambda s: s['StartTime']) if snapshots else None
+
+        # Step 3: Create volume from snapshot or empty
+        if latest_snapshot:
+            snapshot_id = latest_snapshot['SnapshotId']
+            logger.info(f"Found latest snapshot {snapshot_id}, restoring to {availability_zone}")
+
+            create_response = ec2_client.create_volume(
+                AvailabilityZone=availability_zone,
+                SnapshotId=snapshot_id,
+                VolumeType="gp3",
+                Iops=3000,
+                Throughput=125,
+                TagSpecifications=[{
+                    "ResourceType": "volume",
+                    "Tags": [
+                        {"Key": "gpu-dev-user", "Value": user_id},
+                        {"Key": "Name", "Value": f"gpu-dev-disk-{user_id.split('@')[0]}" + (f"-{disk_name}" if disk_name else "")},
+                        {"Key": "Project", "Value": "gpu-dev-servers"},
+                        {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
+                        {"Key": "disk_name", "Value": disk_name if disk_name else "default"},
+                        {"Key": "created_at", "Value": str(int(time.time()))},
+                        {"Key": "last_used", "Value": str(int(time.time()))},
+                    ],
+                }]
+            )
+
+            volume_id = create_response["VolumeId"]
+            is_new_disk = False  # Restored from snapshot
+
+            logger.info(f"Waiting for volume {volume_id} to become available...")
+            waiter = ec2_client.get_waiter("volume_available")
+            waiter.wait(VolumeIds=[volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+
+            logger.info(f"Successfully restored volume {volume_id} from snapshot {snapshot_id}")
+            return volume_id, is_new_disk, None
+
+        else:
+            # No snapshot found - create empty 1TB volume (first use)
+            logger.info(f"No snapshot found for disk '{disk_name or 'default'}' - creating empty 1TB volume")
+
+            create_response = ec2_client.create_volume(
+                AvailabilityZone=availability_zone,
+                Size=1024,  # 1TB
+                VolumeType="gp3",
+                Iops=3000,
+                Throughput=125,
+                TagSpecifications=[{
+                    "ResourceType": "volume",
+                    "Tags": [
+                        {"Key": "gpu-dev-user", "Value": user_id},
+                        {"Key": "Name", "Value": f"gpu-dev-disk-{user_id.split('@')[0]}" + (f"-{disk_name}" if disk_name else "")},
+                        {"Key": "Project", "Value": "gpu-dev-servers"},
+                        {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
+                        {"Key": "disk_name", "Value": disk_name if disk_name else "default"},
+                        {"Key": "created_at", "Value": str(int(time.time()))},
+                        {"Key": "last_used", "Value": str(int(time.time()))},
+                    ],
+                }]
+            )
+
+            volume_id = create_response["VolumeId"]
+            is_new_disk = True  # Empty disk, needs environment setup
+
+            logger.info(f"Waiting for volume {volume_id} to become available...")
+            waiter = ec2_client.get_waiter("volume_available")
+            waiter.wait(VolumeIds=[volume_id], WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+
+            logger.info(f"Successfully created empty volume {volume_id}")
+            return volume_id, is_new_disk, None
+
+    except Exception as e:
+        logger.error(f"Error creating disk for user {user_id}, disk_name={disk_name}: {str(e)}")
+        raise
 
 
 def create_or_find_persistent_disk_in_az(user_id: str, availability_zone: str) -> tuple[str, bool, str]:

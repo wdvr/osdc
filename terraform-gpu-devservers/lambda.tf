@@ -179,6 +179,7 @@ resource "aws_lambda_function" "reservation_processor" {
       SSL_CERTIFICATE_ARN                = local.effective_domain_name != "" ? aws_acm_certificate.wildcard[0].arn : ""
       LAMBDA_VERSION                     = "0.3.2"
       MIN_CLI_VERSION                    = "0.3.2"
+      DISK_CONTENTS_BUCKET               = aws_s3_bucket.disk_contents.bucket
     }, local.alb_env_vars)
   }
 
