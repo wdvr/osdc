@@ -34,6 +34,7 @@ from .interactive import (
     ask_github_username_interactive,
     ask_extension_hours_interactive,
     check_interactive_support,
+    select_disk_interactive,
 )
 
 console = Console()
@@ -481,6 +482,11 @@ def main(ctx: click.Context) -> None:
     is_flag=True,
     help="Preserve the original container ENTRYPOINT/CMD instead of overriding with bash script",
 )
+@click.option(
+    "--disk",
+    type=str,
+    help="Named persistent disk to use (e.g., 'pytorch-main'). Use 'gpu-dev disk list' to see available disks.",
+)
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -497,6 +503,7 @@ def reserve(
     dockerfile: Optional[str],
     dockerimage: Optional[str],
     preserve_entrypoint: bool,
+    disk: Optional[str],
 ) -> None:
     """Reserve GPU development server(s)
 
@@ -655,6 +662,11 @@ def reserve(
             if name is None:
                 name = ask_name_interactive()
                 # name can be None, that's fine
+
+            # Interactive disk selection (if not multinode - only master node gets persistent disk)
+            if disk is None and gpu_count <= max_gpus:  # Single node only
+                disk = select_disk_interactive(user_info["user_id"], config)
+                # disk can be None, that's fine (no persistent disk)
 
         else:
             # Non-interactive mode - use defaults and validate
@@ -940,6 +952,7 @@ def reserve(
                     dockerimage=dockerimage,
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
+                    disk_name=disk,
                 )
             else:
                 # Single node reservation
@@ -956,6 +969,7 @@ def reserve(
                     dockerimage=dockerimage,
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
+                    disk_name=disk,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 
