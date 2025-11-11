@@ -28,6 +28,9 @@ def get_disk_in_use_status(disk_name: str, user_id: str, config: Config) -> Tupl
     """
     Check if a disk is currently in use by any reservation.
     Returns (is_in_use, reservation_id)
+
+    Note: For "default" disk name, also checks for legacy volumes without disk_name tag
+    (volumes created before named disk migration).
     """
     ec2_client = get_ec2_client(config)
     dynamodb = get_dynamodb_resource(config)
@@ -41,6 +44,23 @@ def get_disk_in_use_status(disk_name: str, user_id: str, config: Config) -> Tupl
 
     response = ec2_client.describe_volumes(Filters=filters)
     in_use_volumes = [v for v in response.get("Volumes", []) if v["State"] == "in-use"]
+
+    # Special case: For "default" disk, also check for legacy volumes without disk_name tag
+    if not in_use_volumes and disk_name == "default":
+        # Find volumes without disk_name tag (pre-migration volumes)
+        legacy_filters = [
+            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+            {"Name": "tag:ManagedBy", "Values": ["gpu-dev-cli"]},
+            {"Name": "status", "Values": ["in-use"]},
+        ]
+
+        legacy_response = ec2_client.describe_volumes(Filters=legacy_filters)
+
+        # Filter to only volumes that DON'T have disk_name tag
+        for vol in legacy_response.get("Volumes", []):
+            tags = {tag['Key']: tag['Value'] for tag in vol.get('Tags', [])}
+            if 'disk_name' not in tags and vol["State"] == "in-use":
+                in_use_volumes.append(vol)
 
     if not in_use_volumes:
         return False, None

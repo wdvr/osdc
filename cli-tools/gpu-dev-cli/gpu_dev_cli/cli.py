@@ -643,6 +643,12 @@ def reserve(
             else:
                 gpu_count = int(gpus)
 
+            # Interactive disk selection (if not multinode - only master node gets persistent disk)
+            # This comes BEFORE duration so user knows what they're reserving
+            if disk is None and gpu_count <= max_gpus:  # Single node only
+                disk = select_disk_interactive(user_info["user_id"], config)
+                # disk can be None, that's fine (no persistent disk)
+
             # Interactive duration selection
             if hours is None:
                 hours = select_duration_interactive()
@@ -662,11 +668,6 @@ def reserve(
             if name is None:
                 name = ask_name_interactive()
                 # name can be None, that's fine
-
-            # Interactive disk selection (if not multinode - only master node gets persistent disk)
-            if disk is None and gpu_count <= max_gpus:  # Single node only
-                disk = select_disk_interactive(user_info["user_id"], config)
-                # disk can be None, that's fine (no persistent disk)
 
         else:
             # Non-interactive mode - use defaults and validate
