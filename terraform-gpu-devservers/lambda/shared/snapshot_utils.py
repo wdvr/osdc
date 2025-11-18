@@ -8,13 +8,15 @@ import logging
 import os
 import subprocess
 import json
+from kubernetes import client
+from kubernetes.stream import stream
 
 logger = logging.getLogger(__name__)
 ec2_client = boto3.client("ec2")
 s3_client = boto3.client("s3")
 
 
-def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name=None, content_s3_path=None):
+def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name=None, content_s3_path=None, disk_size=None):
     """
     Safely create snapshot, avoiding duplicates if one is already in progress.
     Returns (snapshot_id, was_created)
@@ -25,6 +27,7 @@ def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name
         snapshot_type: Type of snapshot (shutdown, migration, etc.)
         disk_name: Named disk identifier (for tagged disks)
         content_s3_path: S3 path to disk contents listing
+        disk_size: Disk usage size (e.g., "1.2G") from du -sh
     """
     try:
         logger.info(f"Checking for existing snapshots for volume {volume_id}")
@@ -65,9 +68,13 @@ def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name
         if content_s3_path:
             tags.append({"Key": "snapshot_content_s3", "Value": content_s3_path})
 
+        # Add disk_size tag if provided
+        if disk_size:
+            tags.append({"Key": "disk_size", "Value": disk_size})
+
         snapshot_response = ec2_client.create_snapshot(
             VolumeId=volume_id,
-            Description=f"gpu-dev {snapshot_type} snapshot for {user_id}" + (f" (disk: {disk_name})" if disk_name else ""),
+            Description=f"gpu-dev {snapshot_type} snapshot for {user_id}" + (f" (disk: {disk_name})" if disk_name else "") + (f" ({disk_size})" if disk_size else ""),
             TagSpecifications=[{
                 "ResourceType": "snapshot",
                 "Tags": tags
@@ -75,7 +82,7 @@ def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name
         )
 
         snapshot_id = snapshot_response["SnapshotId"]
-        logger.info(f"Created new snapshot {snapshot_id} for volume {volume_id}" + (f" (disk: {disk_name})" if disk_name else ""))
+        logger.info(f"Created new snapshot {snapshot_id} for volume {volume_id}" + (f" (disk: {disk_name})" if disk_name else "") + (f" size: {disk_size}" if disk_size else ""))
         return snapshot_id, True
 
     except Exception as e:
@@ -264,10 +271,10 @@ def cleanup_all_user_snapshots(max_users_per_run=20):
         return 0
 
 
-def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, mount_path="/workspace"):
+def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, k8s_client=None, mount_path="/workspace"):
     """
-    Capture disk contents via kubectl exec and upload to S3.
-    Returns S3 path or None if failed.
+    Capture disk contents via Kubernetes API exec and upload to S3.
+    Returns tuple (s3_path, disk_size) or (None, None) if failed.
 
     Args:
         pod_name: Kubernetes pod name
@@ -275,40 +282,79 @@ def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, 
         user_id: User identifier
         disk_name: Named disk identifier
         snapshot_id: Snapshot ID for file naming
+        k8s_client: Configured Kubernetes API client (required for EKS)
         mount_path: Mount point in pod (default: /workspace)
+
+    Returns:
+        tuple: (s3_path, disk_size) where disk_size is like "1.2G" or None if failed
     """
     try:
         bucket_name = os.environ.get('DISK_CONTENTS_BUCKET')
         if not bucket_name:
             logger.error("DISK_CONTENTS_BUCKET environment variable not set")
-            return None
+            return None, None
 
         logger.info(f"Capturing disk contents for disk '{disk_name}' in pod {pod_name}")
 
-        # Run ls -R command via kubectl exec to capture disk contents
-        # Limit depth to 2 levels to avoid huge outputs
-        kubectl_cmd = [
-            "kubectl", "exec", "-n", namespace, pod_name, "--",
+        # Use Kubernetes API to exec into pod and capture disk contents
+        # Start with du -sh to get disk size, then list contents
+        # Exclude .oh-my-zsh and .git subdirectories to avoid huge outputs
+        exec_command = [
             "sh", "-c",
-            f"ls -lah {mount_path} && echo '---' && find {mount_path} -maxdepth 2 -type f -o -type d 2>/dev/null | head -1000"
+            f"du -sh {mount_path} 2>/dev/null && echo '---' && ls -lah {mount_path} && echo '---' && find {mount_path} -maxdepth 3 \\( -name '.oh-my-zsh' -o -name '.git' \\) -prune -o -print 2>/dev/null | head -1000"
         ]
 
-        logger.debug(f"Running kubectl command: {' '.join(kubectl_cmd)}")
+        logger.debug(f"Running exec command in pod {pod_name}: {' '.join(exec_command)}")
 
-        result = subprocess.run(
-            kubectl_cmd,
-            capture_output=True,
-            text=True,
-            timeout=60  # 1 minute timeout
-        )
+        # Create Kubernetes API client with proper configuration
+        v1 = client.CoreV1Api(k8s_client) if k8s_client else client.CoreV1Api()
 
-        if result.returncode != 0:
-            logger.warning(f"kubectl exec failed with return code {result.returncode}: {result.stderr}")
-            # Try without kubectl - might be running in different context
-            contents = f"Failed to capture contents: {result.stderr}\n\nThis snapshot was created but contents could not be listed."
-        else:
-            contents = result.stdout
-            logger.info(f"Successfully captured {len(contents)} bytes of disk contents")
+        # Execute command in pod
+        disk_size = None
+        try:
+            resp = stream(
+                v1.connect_get_namespaced_pod_exec,
+                pod_name,
+                namespace,
+                command=exec_command,
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+                _preload_content=False
+            )
+
+            # Read output
+            contents = ""
+            while resp.is_open():
+                resp.update(timeout=1)
+                if resp.peek_stdout():
+                    contents += resp.read_stdout()
+                if resp.peek_stderr():
+                    stderr = resp.read_stderr()
+                    if stderr:
+                        logger.debug(f"stderr from exec: {stderr}")
+
+            resp.close()
+
+            if contents:
+                logger.info(f"Successfully captured {len(contents)} bytes of disk contents")
+
+                # Parse disk size from first line (format: "1.2G\t/home/dev")
+                try:
+                    first_line = contents.split('\n')[0]
+                    if first_line and '\t' in first_line:
+                        disk_size = first_line.split('\t')[0].strip()
+                        logger.info(f"Disk size: {disk_size}")
+                except Exception as parse_error:
+                    logger.warning(f"Could not parse disk size: {parse_error}")
+            else:
+                logger.warning(f"No contents captured from pod {pod_name}")
+                contents = f"Pod {pod_name} returned empty contents.\n\nThis snapshot was created but disk may be empty."
+
+        except Exception as exec_error:
+            logger.warning(f"Kubernetes exec failed: {exec_error}")
+            contents = f"Failed to capture contents: {str(exec_error)}\n\nThis snapshot was created but contents could not be listed."
 
         # Upload to S3
         s3_key = f"{user_id}/{disk_name}/{snapshot_id}-contents.txt"
@@ -316,29 +362,32 @@ def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, 
 
         logger.info(f"Uploading disk contents to {s3_path}")
 
+        metadata = {
+            'user_id': user_id,
+            'disk_name': disk_name,
+            'snapshot_id': snapshot_id,
+            'pod_name': pod_name,
+            'capture_time': str(int(time.time()))
+        }
+
+        # Add disk size to metadata if available
+        if disk_size:
+            metadata['disk_size'] = disk_size
+
         s3_client.put_object(
             Bucket=bucket_name,
             Key=s3_key,
             Body=contents.encode('utf-8'),
             ContentType='text/plain',
-            Metadata={
-                'user_id': user_id,
-                'disk_name': disk_name,
-                'snapshot_id': snapshot_id,
-                'pod_name': pod_name,
-                'capture_time': str(int(time.time()))
-            }
+            Metadata=metadata
         )
 
         logger.info(f"Successfully uploaded disk contents to {s3_path}")
-        return s3_path
+        return s3_path, disk_size
 
-    except subprocess.TimeoutExpired:
-        logger.error(f"Timeout while capturing disk contents for pod {pod_name}")
-        return None
     except Exception as e:
         logger.error(f"Error capturing disk contents: {str(e)}")
-        return None
+        return None, None
 
 
 def get_snapshot_contents(snapshot_id=None, s3_path=None):

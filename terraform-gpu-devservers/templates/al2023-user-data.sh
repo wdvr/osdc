@@ -84,6 +84,14 @@ spec:
     config:
       clusterDNS:
         - 172.20.0.10
+      cpuManagerPolicy: static
+      cpuManagerReconcilePeriod: 10s
+      systemReserved:
+        cpu: "2"
+        memory: "4Gi"
+      kubeReserved:
+        cpu: "2"
+        memory: "4Gi"
     flags:
       - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false
 EOF

@@ -585,8 +585,16 @@ def select_disk_interactive(user_id: str, config: Any) -> Optional[str]:
                 # Format display name
                 display_parts = [f"{disk_name} ({size_gb}GB, {snapshot_count} snapshots)"]
 
-                # Add in-use indicator
-                if disk['in_use']:
+                # Check if disk is deleted or in use
+                if disk.get('is_deleted', False):
+                    display_parts.append("[DELETED]")
+                    delete_date = disk.get('delete_date', 'unknown')
+                    choices.append(questionary.Choice(
+                        title=" ".join(display_parts),
+                        value=None,
+                        disabled=f"Soft-deleted, expires {delete_date}"
+                    ))
+                elif disk['in_use']:
                     display_parts.append("[IN USE]")
                     # Disable this choice
                     choices.append(questionary.Choice(
@@ -623,7 +631,8 @@ def select_disk_interactive(user_id: str, config: Any) -> Optional[str]:
             return None
 
         if answer == "__no_disk__":
-            return None
+            # Return special marker to indicate explicit "no disk" choice
+            return "__no_disk__"
 
         if answer == "__create_new__":
             # Ask for disk name

@@ -21,7 +21,7 @@ from typing import Any
 import boto3
 
 from shared import K8sGPUTracker, setup_kubernetes_client
-from shared.snapshot_utils import create_pod_shutdown_snapshot, get_latest_snapshot
+from shared.snapshot_utils import create_pod_shutdown_snapshot, get_latest_snapshot, safe_create_snapshot, capture_disk_contents
 from buildkit_job import create_buildkit_job, wait_for_buildkit_job
 from shared.dns_utils import (
     generate_unique_name,
@@ -53,11 +53,73 @@ GPU_DEV_CONTAINER_IMAGE = os.environ.get(
 EFS_SECURITY_GROUP_ID = os.environ.get("EFS_SECURITY_GROUP_ID")
 EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(
     ",") if os.environ.get("EFS_SUBNET_IDS") else []
+CCACHE_SHARED_EFS_ID = os.environ.get("CCACHE_SHARED_EFS_ID")
 ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 
 # Version validation - injected via Terraform
 LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.2")
 MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.2")
+
+
+def retry_with_backoff(func, *args, max_retries=5, initial_delay=1, max_delay=32, **kwargs):
+    """
+    Retry AWS API calls with exponential backoff for rate limit errors.
+
+    Args:
+        func: Function to call
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+        max_delay: Maximum delay in seconds
+        *args, **kwargs: Arguments to pass to func
+
+    Returns:
+        Function result
+
+    Raises:
+        Last exception if all retries fail
+    """
+    import botocore.exceptions
+
+    delay = initial_delay
+    last_exception = None
+
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError) as e:
+            last_exception = e
+
+            # Check if this is a throttling/rate limit error
+            error_code = getattr(e, 'response', {}).get('Error', {}).get('Code', '')
+            is_throttle = error_code in ['Throttling', 'RequestLimitExceeded', 'TooManyRequestsException', 'ProvisionedThroughputExceededException']
+
+            if not is_throttle:
+                # Not a rate limit error, re-raise immediately
+                raise
+
+            if attempt < max_retries - 1:
+                # Log clear warning about rate limit
+                logger.warning(
+                    f"⚠️  AWS API rate limit hit ({error_code}) for {func.__name__} - "
+                    f"Retry {attempt + 1}/{max_retries} after {delay}s delay"
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, max_delay)  # Exponential backoff with cap
+            else:
+                # Final retry failed
+                logger.error(
+                    f"❌ AWS API rate limit exceeded after {max_retries} retries for {func.__name__}. "
+                    f"This may cause disk connection failures or duplicate resource creation."
+                )
+                raise
+        except Exception as e:
+            # Non-AWS error, re-raise immediately
+            raise
+
+    # Should never reach here, but just in case
+    if last_exception:
+        raise last_exception
+
 
 # AWS clients
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
@@ -205,7 +267,8 @@ def check_for_multiple_volumes(user_id):
     Returns None if user has 0 or 1 volume.
     """
     try:
-        response = ec2_client.describe_volumes(
+        response = retry_with_backoff(
+            ec2_client.describe_volumes,
             Filters=[
                 {"Name": "tag:gpu-dev-user", "Values": [user_id]},
                 {"Name": "status", "Values": ["available", "in-use"]},
@@ -663,7 +726,7 @@ def create_or_find_user_efs(user_id: str) -> str:
 
             # Get tags for this filesystem
             try:
-                tags_response = efs_client.describe_tags(FileSystemId=fs_id)
+                tags_response = retry_with_backoff(efs_client.describe_tags, FileSystemId=fs_id)
                 tags = {tag["Key"]: tag["Value"]
                         for tag in tags_response.get("Tags", [])}
 
@@ -2285,7 +2348,13 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             use_persistent_disk = False  # Only master node gets persistent disk
             logger.info(
                 f"Multinode node {node_index + 1}/{total_nodes}: using EFS shared storage instead of persistent disk")
+        elif disk_name:
+            # NEW: If disk_name is specified, ALWAYS use persistent disk (named disk system allows multiple disks)
+            use_persistent_disk = True
+            logger.info(
+                f"Named disk '{disk_name}' requested for reservation {reservation_id} - will use persistent disk")
         else:
+            # OLD logic: check if user has other active reservations with persistent disks
             use_persistent_disk = should_use_persistent_disk(
                 user_id, reservation_id)
         persistent_volume_id = None
@@ -2330,7 +2399,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 persistent_volume_id, is_new_disk, disk_warning = create_disk_from_snapshot_or_empty(
                     user_id=user_id,
                     availability_zone=target_az,
-                    disk_name=disk_name
+                    disk_name=disk_name,
+                    reservation_id=reservation_id
                 )
 
                 logger.info(f"Persistent disk ready: {persistent_volume_id} (is_new={is_new_disk})")
@@ -2343,202 +2413,22 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 if disk_warning:
                     update_reservation_fields(reservation_id, warning=disk_warning)
                     logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
-
-                # OLD LOGIC BELOW - TODO: Remove after testing new workflow
-                if False:  # Disabled old migration logic
-                    # Step 1: Determine target AZ for this reservation
-                    update_reservation_status(
-                        reservation_id,
-                        "preparing",
-                        detailed_status="Determining optimal availability zone for GPU placement"
-                    )
-
-                target_az = get_target_az_for_reservation(gpu_type, gpu_count)
-                if not target_az:
-                    raise ValueError(
-                        f"Could not determine target AZ for {gpu_type} GPUs")
-
-                logger.info(f"Target AZ for reservation: {target_az}")
-
-                # Step 2: Check if EBS migration is needed
-                migration_needed, current_volume_id, current_az = needs_ebs_migration(
-                    user_id, target_az, reservation_id)
-
-                # Check for multiple volumes and log warning if found
-                multiple_volumes_warning = check_for_multiple_volumes(user_id)
-                if multiple_volumes_warning:
-                    update_reservation_fields(
-                        reservation_id, warning=multiple_volumes_warning)
-                    logger.warning(
-                        f"Stored multiple volume warning for reservation {reservation_id}: {multiple_volumes_warning}")
-
-                if migration_needed:
-                    # User has existing EBS in different AZ - need to migrate
-                    update_reservation_status(
-                        reservation_id,
-                        "preparing",
-                        f"Migrating persistent disk from {current_az} to {target_az} (2-5 minutes)",
-                    )
-                    logger.info(
-                        f"Starting EBS migration for user {user_id}: {current_az} -> {target_az}")
-
-                    # Check if we have a recent snapshot from THIS SPECIFIC VOLUME to avoid version confusion
-                    # IMPORTANT: Only use snapshots from the volume being migrated (current_volume_id)
-                    # This prevents using snapshots from other volumes which may have stale/different data
-                    latest_snapshot = get_latest_snapshot(
-                        user_id, volume_id=current_volume_id, include_pending=True)
-
-                    if latest_snapshot and latest_snapshot['State'] == 'completed':
-                        # Use existing completed snapshot for migration
-                        logger.info(
-                            f"Using existing completed snapshot {latest_snapshot['SnapshotId']} for migration")
-                        persistent_volume_id = restore_ebs_from_existing_snapshot(
-                            latest_snapshot['SnapshotId'], target_az, user_id
-                        )
-                        snapshot_id = latest_snapshot['SnapshotId']
-
-                        # Clean up old volume after successful restoration
-                        # NEW: Remove ActiveVolume tag before deletion to maintain single source of truth
-                        try:
-                            logger.info(
-                                f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
-                            ec2_client.delete_tags(
-                                Resources=[current_volume_id],
-                                Tags=[{"Key": "ActiveVolume"}]
-                            )
-                        except Exception as tag_error:
-                            logger.warning(
-                                f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
-
-                        try:
-                            logger.info(
-                                f"Deleting old volume {current_volume_id} from {current_az} after snapshot restoration")
-                            ec2_client.delete_volume(
-                                VolumeId=current_volume_id)
-                            logger.info(
-                                f"Successfully deleted old volume {current_volume_id}")
-                        except Exception as cleanup_error:
-                            logger.warning(
-                                f"Failed to delete old volume {current_volume_id}: {cleanup_error}")
-                            # Don't fail the migration if cleanup fails - volume can be cleaned up manually
-                    elif latest_snapshot and latest_snapshot['State'] == 'pending':
-                        # Wait for existing pending snapshot to complete, then use it
-                        snapshot_id = latest_snapshot['SnapshotId']
-                        logger.info(
-                            f"Found pending snapshot {snapshot_id}, waiting for completion before migration")
-                        update_reservation_status(
-                            reservation_id,
-                            "preparing",
-                            f"Migrating disk to other AZ using snapshot {snapshot_id} - snapshot pending (can take 5-10min, please retry on timeout)"
-                        )
-
-                        # Wait for snapshot to complete (up to 10 minutes)
-                        waiter = ec2_client.get_waiter('snapshot_completed')
-                        waiter.wait(SnapshotIds=[snapshot_id], WaiterConfig={
-                                    'Delay': 15, 'MaxAttempts': 40})
-
-                        logger.info(
-                            f"Snapshot {snapshot_id} completed, proceeding with migration")
-                        persistent_volume_id = restore_ebs_from_existing_snapshot(
-                            snapshot_id, target_az, user_id
-                        )
-
-                        # Clean up old volume after successful restoration
-                        # NEW: Remove ActiveVolume tag before deletion to maintain single source of truth
-                        try:
-                            logger.info(
-                                f"Removing ActiveVolume tag from old volume {current_volume_id} before deletion")
-                            ec2_client.delete_tags(
-                                Resources=[current_volume_id],
-                                Tags=[{"Key": "ActiveVolume"}]
-                            )
-                        except Exception as tag_error:
-                            logger.warning(
-                                f"Failed to remove ActiveVolume tag from {current_volume_id}: {tag_error}")
-
-                        try:
-                            logger.info(
-                                f"Deleting old volume {current_volume_id} from {current_az} after snapshot restoration")
-                            ec2_client.delete_volume(
-                                VolumeId=current_volume_id)
-                            logger.info(
-                                f"Successfully deleted old volume {current_volume_id}")
-                        except Exception as cleanup_error:
-                            logger.warning(
-                                f"Failed to delete old volume {current_volume_id}: {cleanup_error}")
-                            # Don't fail the migration if cleanup fails - volume can be cleaned up manually
-                    else:
-                        # No recent snapshot - do full migration with new snapshot
-                        persistent_volume_id, snapshot_id = migrate_ebs_across_az(
-                            user_id, current_volume_id, current_az, target_az
-                        )
-
-                    is_new_disk = False  # Migrated disk keeps existing data
-                    logger.info(
-                        f"EBS migration completed: {persistent_volume_id} (from snapshot {snapshot_id})")
-
-                else:
-                    # Either no existing EBS, or existing EBS is already in target AZ
-                    if current_volume_id:
-                        # Volume already exists in target AZ - use it directly (no migration needed)
-                        logger.info(
-                            f"Volume {current_volume_id} already exists in target AZ {target_az} - using existing volume")
-                        update_reservation_status(
-                            reservation_id,
-                            "preparing",
-                            "Using existing persistent disk",
-                        )
-                        persistent_volume_id = current_volume_id
-                        is_new_disk = False  # Using existing volume
-                        logger.info(
-                            f"Using existing volume {persistent_volume_id} in {target_az}")
-                    else:
-                        # No existing volume - create new one
-                        logger.info(
-                            f"No existing volume found for user {user_id}, creating new one")
-                        update_reservation_status(
-                            reservation_id,
-                            "preparing",
-                            "Setting up persistent disk for user data",
-                        )
-                        persistent_volume_id, is_new_disk, disk_warning = create_or_find_persistent_disk_in_az(
-                            user_id, target_az)
-                        logger.info(
-                            f"Using persistent disk {persistent_volume_id} in {target_az} for user {user_id} (new_disk={is_new_disk})")
-
-                        # Store warning in database if multiple disks were detected
-                        if disk_warning:
-                            update_reservation_fields(
-                                reservation_id, warning=disk_warning)
-                            logger.warning(
-                                f"Stored warning for reservation {reservation_id}: {disk_warning}")
-
-                # Check for any existing snapshots from previous sessions for new volumes only
-                if not current_volume_id:
-                    latest_snapshot = get_latest_snapshot(
-                        user_id, volume_id=None, include_pending=False)
-
-                    if latest_snapshot:
-                        # User has previous data in snapshots - restore from latest
-                        logger.info(
-                            f"Found existing snapshot {latest_snapshot['SnapshotId']} for user {user_id} - restoring instead of creating empty volume")
-                        update_reservation_status(
-                            reservation_id,
-                            "preparing",
-                            f"Restoring persistent disk from previous session snapshot {latest_snapshot['SnapshotId']}",
-                        )
-
-                        # Restore from the latest snapshot
-                        persistent_volume_id = restore_ebs_from_existing_snapshot(
-                            latest_snapshot['SnapshotId'], target_az, user_id
-                        )
-                        is_new_disk = False  # Restored from snapshot with existing data
-                        logger.info(
-                            f"Restored volume {persistent_volume_id} from snapshot {latest_snapshot['SnapshotId']} for user {user_id}")
-
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
-                # Continue without persistent disk rather than failing
+
+                # Check if this is a "disk in use" error - these should fail the reservation
+                error_msg = str(disk_error)
+                if "is currently in use" in error_msg or "already in use" in error_msg:
+                    # Don't fall back - fail the reservation with clear error
+                    update_reservation_status(
+                        reservation_id,
+                        "failed",
+                        failure_reason=error_msg
+                    )
+                    raise RuntimeError(f"Cannot create reservation: {error_msg}")
+
+                # For other errors, continue without persistent disk (backwards compatibility)
+                logger.warning(f"Falling back to non-persistent storage due to disk error: {disk_error}")
                 use_persistent_disk = False
                 persistent_volume_id = None  # Clear any volume that was set before the error
                 is_new_disk = True  # EmptyDir volume will need shell environment setup
@@ -3499,10 +3389,10 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
             specs = instance_specs.get(
                 instance_type, {"cpus": 48, "memory_gb": 192})
 
-            # More conservative requests (50% of proportional allocation)
-            proportional_cpu = max(1, int(specs["cpus"] * gpu_ratio * 0.5))
-            proportional_memory = max(
-                1, int(specs["memory_gb"] * gpu_ratio * 0.5))
+            # Set requests = limits for Guaranteed QoS (enables CPU pinning)
+            # This ensures pods get dedicated CPU cores, not shared/time-sliced
+            proportional_cpu = int(specs["cpus"] * gpu_ratio * 0.9)
+            proportional_memory = int(specs["memory_gb"] * gpu_ratio * 0.9)
 
             requests.update({
                 "cpu": str(proportional_cpu),
@@ -4443,6 +4333,8 @@ EOF
                         ),
                         client.V1VolumeMount(
                             name="dshm", mount_path="/dev/shm"),
+                        client.V1VolumeMount(
+                            name="ccache-shared", mount_path="/ccache_shared"),
                     ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else []),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
@@ -4471,6 +4363,14 @@ EOF
                     name="dshm",
                     empty_dir=client.V1EmptyDirVolumeSource(
                         medium="Memory", size_limit="8Gi"),  # Increased for NCCL multi-node
+                ),
+                client.V1Volume(
+                    name="ccache-shared",
+                    nfs=client.V1NFSVolumeSource(
+                        server=get_efs_mount_dns(CCACHE_SHARED_EFS_ID),
+                        path="/",
+                        read_only=False
+                    )
                 ),
             ] + ([
                 client.V1Volume(
@@ -4776,7 +4676,7 @@ def get_node_instance_id() -> str:
         return None
 
 
-def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, disk_name: str = None) -> tuple[str, bool, str]:
+def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, disk_name: str = None, reservation_id: str = None) -> tuple[str, bool, str]:
     """
     NEW snapshot-first workflow: Always recreate disk from latest snapshot or create empty.
     Returns (volume_id, is_new_disk, warning_message)
@@ -4785,6 +4685,7 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
         user_id: User identifier
         availability_zone: Target AZ for volume
         disk_name: Named disk identifier (optional, for backwards compatibility)
+        reservation_id: Optional reservation ID for status updates
     """
     try:
         from shared.snapshot_utils import get_latest_snapshot
@@ -4809,6 +4710,49 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                 raise RuntimeError(error_msg)
 
         # Step 2: Find latest snapshot for this disk
+        # First check for pending snapshots (from recent reservation expiry)
+        pending_filters = [
+            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+            {"Name": "status", "Values": ["pending"]},
+        ]
+        if disk_name:
+            pending_filters.append({"Name": "tag:disk_name", "Values": [disk_name]})
+
+        pending_response = ec2_client.describe_snapshots(
+            OwnerIds=["self"],
+            Filters=pending_filters
+        )
+
+        pending_snapshots = pending_response.get('Snapshots', [])
+        if pending_snapshots:
+            latest_pending = max(pending_snapshots, key=lambda s: s['StartTime'])
+            snapshot_id = latest_pending['SnapshotId']
+            logger.warning(f"Found pending snapshot {snapshot_id} for disk '{disk_name or 'default'}' - waiting for completion")
+
+            # Update reservation status to show we're waiting
+            if reservation_id:
+                update_reservation_status(
+                    reservation_id,
+                    "preparing",
+                    f"Waiting for disk snapshot to complete (from previous session)"
+                )
+
+            # Wait for pending snapshot to complete (up to 30 minutes)
+            try:
+                waiter = ec2_client.get_waiter('snapshot_completed')
+                waiter.wait(
+                    SnapshotIds=[snapshot_id],
+                    WaiterConfig={
+                        'Delay': 15,
+                        'MaxAttempts': 120  # 30 minutes
+                    }
+                )
+                logger.info(f"Pending snapshot {snapshot_id} completed, proceeding with disk creation")
+            except Exception as wait_error:
+                logger.error(f"Timeout waiting for snapshot {snapshot_id}: {wait_error}")
+                raise RuntimeError(f"Disk '{disk_name or 'default'}' snapshot is still being created from previous session. Please wait a few minutes and try again.")
+
+        # Now find latest completed snapshot
         snapshot_filters = [
             {"Name": "tag:gpu-dev-user", "Values": [user_id]},
             {"Name": "status", "Values": ["completed"]},
@@ -4827,11 +4771,18 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
         # Step 3: Create volume from snapshot or empty
         if latest_snapshot:
             snapshot_id = latest_snapshot['SnapshotId']
-            logger.info(f"Found latest snapshot {snapshot_id}, restoring to {availability_zone}")
+
+            # Check if this is an initial/empty snapshot (needs shell setup)
+            snapshot_tags = {tag['Key']: tag['Value'] for tag in latest_snapshot.get('Tags', [])}
+            snapshot_type = snapshot_tags.get('SnapshotType', '')
+            is_initial_snapshot = (snapshot_type == 'initial')
+
+            logger.info(f"Found latest snapshot {snapshot_id} (type: {snapshot_type or 'user-data'}), restoring to {availability_zone}")
 
             create_response = ec2_client.create_volume(
                 AvailabilityZone=availability_zone,
                 SnapshotId=snapshot_id,
+                Size=1024,  # Always create 1TB volumes (expands snapshot if needed)
                 VolumeType="gp3",
                 Iops=3000,
                 Throughput=125,
@@ -4850,7 +4801,11 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
             )
 
             volume_id = create_response["VolumeId"]
-            is_new_disk = False  # Restored from snapshot
+            # Initial snapshots are empty, need shell setup like new disks
+            is_new_disk = is_initial_snapshot
+
+            if is_initial_snapshot:
+                logger.info(f"Initial snapshot detected - will set up shell environment (CREATE_SH_ENV=true)")
 
             logger.info(f"Waiting for volume {volume_id} to become available...")
             waiter = ec2_client.get_waiter("volume_available")
@@ -5748,7 +5703,7 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
             if not event_message:
                 for event in sorted_events[:5]:
                     # Skip uninteresting events
-                    if event.reason in ["Started", "Created", "Scheduled"]:
+                    if event.reason in ["Started", "Created", "Scheduled", "Pulled"]:
                         continue
 
                     event_message = event.message
@@ -6553,42 +6508,64 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                 pod_name = reservation.get("pod_name")
                 namespace = reservation.get("namespace", "gpu-dev")
                 user_id = reservation.get("user_id")
+                disk_name = reservation.get("disk_name")  # Get disk_name from reservation
 
                 if pod_name and user_id:
                     try:
                         # First, create snapshot if pod has persistent storage
-                        k8s_client = get_k8s_client()
-                        v1 = client.CoreV1Api(k8s_client)
+                        volume_id = reservation.get("ebs_volume_id")
 
-                        try:
-                            pod = v1.read_namespaced_pod(
-                                name=pod_name, namespace=namespace)
-                            volume_id = None
+                        # Create cancellation snapshot if we have volume info (snapshot-first system)
+                        if volume_id:
+                            logger.info(
+                                f"Creating cancellation snapshot for user {user_id}, volume {volume_id}, disk {disk_name or 'unnamed'}")
 
-                            # Check pod annotations for persistent volume info
-                            if pod.metadata.annotations:
-                                volume_id = pod.metadata.annotations.get(
-                                    "gpu-dev-volume-id")
+                            # Step 1: Capture disk contents before creating snapshot
+                            content_s3_path = None
+                            disk_size = None
+                            if disk_name:
+                                try:
+                                    logger.info(f"Capturing disk contents for disk '{disk_name}'")
+                                    # Create a temporary snapshot ID for the S3 path (we'll update after actual snapshot creation)
+                                    temp_snapshot_id = f"pending-{int(time.time())}"
+                                    content_s3_path, disk_size = capture_disk_contents(
+                                        pod_name=pod_name,
+                                        namespace=namespace,
+                                        user_id=user_id,
+                                        disk_name=disk_name,
+                                        snapshot_id=temp_snapshot_id,
+                                        k8s_client=get_k8s_client(),
+                                        mount_path="/home/dev"
+                                    )
+                                    if content_s3_path:
+                                        logger.info(f"Successfully captured disk contents to {content_s3_path}" + (f" (size: {disk_size})" if disk_size else ""))
+                                    else:
+                                        logger.warning(f"Failed to capture disk contents for disk '{disk_name}'")
+                                except Exception as capture_error:
+                                    logger.warning(f"Error capturing disk contents: {capture_error}")
+                                    # Continue with snapshot even if content capture fails
 
-                            # Create cancellation snapshot if we have volume info
-                            if volume_id:
+                            # Step 2: Create snapshot with disk_name and content_s3_path
+                            snapshot_id, was_created = safe_create_snapshot(
+                                volume_id=volume_id,
+                                user_id=user_id,
+                                snapshot_type="cancellation",
+                                disk_name=disk_name,
+                                content_s3_path=content_s3_path,
+                                disk_size=disk_size
+                            )
+
+                            if snapshot_id:
                                 logger.info(
-                                    f"Creating cancellation snapshot for user {user_id}, volume {volume_id}")
-                                snapshot_id = create_pod_shutdown_snapshot(
-                                    volume_id, user_id, "cancellation")
-                                if snapshot_id:
-                                    logger.info(
-                                        f"Cancellation snapshot {snapshot_id} initiated for {pod_name}")
-                                else:
-                                    logger.warning(
-                                        f"Failed to create cancellation snapshot for {pod_name}")
+                                    f"Cancellation snapshot {snapshot_id} initiated for {pod_name} (disk: {disk_name or 'default'})")
                             else:
-                                logger.info(
-                                    f"No persistent storage found for pod {pod_name} - skipping cancellation snapshot")
+                                logger.warning(
+                                    f"Failed to create cancellation snapshot for {pod_name}")
+                        else:
+                            logger.info(
+                                f"No persistent storage found for pod {pod_name} - skipping cancellation snapshot")
 
-                        except Exception as pod_read_error:
-                            logger.warning(
-                                f"Could not read pod {pod_name} for snapshot info: {pod_read_error}")
+                        # Cleanup pod resources (no need to read pod for snapshot info anymore)
 
                         # Now cleanup pod resources
                         cleanup_pod_resources(pod_name, namespace)

@@ -97,6 +97,49 @@ GRACE_PERIOD_SECONDS = int(os.environ.get("GRACE_PERIOD_SECONDS", 120))
 WARNING_LEVELS = [30, 15, 5]
 
 
+def cleanup_soft_deleted_snapshots() -> int:
+    """
+    Clean up snapshots marked for deletion whose delete-date has passed.
+    Returns count of deleted snapshots.
+    """
+    from datetime import datetime
+
+    deleted_count = 0
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    try:
+        # Find all snapshots with delete-date tag
+        response = ec2_client.describe_snapshots(
+            OwnerIds=["self"],
+            Filters=[
+                {"Name": "tag-key", "Values": ["delete-date"]},
+            ]
+        )
+
+        snapshots = response.get('Snapshots', [])
+        logger.info(f"Found {len(snapshots)} snapshots with delete-date tag")
+
+        for snapshot in snapshots:
+            snapshot_id = snapshot['SnapshotId']
+            tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+            delete_date = tags.get('delete-date', '')
+
+            # Compare dates (YYYY-MM-DD format)
+            if delete_date and delete_date <= today:
+                try:
+                    ec2_client.delete_snapshot(SnapshotId=snapshot_id)
+                    logger.info(f"Deleted soft-deleted snapshot {snapshot_id} (delete-date: {delete_date})")
+                    deleted_count += 1
+                except Exception as e:
+                    logger.error(f"Error deleting snapshot {snapshot_id}: {e}")
+
+        return deleted_count
+
+    except Exception as e:
+        logger.error(f"Error in cleanup_soft_deleted_snapshots: {e}")
+        return deleted_count
+
+
 def handler(event, context):
     """Main Lambda handler"""
     try:
@@ -580,6 +623,14 @@ def handler(event, context):
                 cancel_stale_reservation(reservation)
                 stale_cancelled_count += 1
 
+        # Clean up soft-deleted snapshots whose delete-date has passed
+        try:
+            deleted_snapshot_count = cleanup_soft_deleted_snapshots()
+            logger.info(f"Cleaned up {deleted_snapshot_count} soft-deleted snapshots")
+        except Exception as e:
+            logger.error(f"Error cleaning up soft-deleted snapshots: {e}")
+            deleted_snapshot_count = 0
+
         return {
             "statusCode": 200,
             "body": json.dumps(
@@ -588,6 +639,7 @@ def handler(event, context):
                     "warned": warned_count,
                     "expired": expired_count,
                     "stale_cancelled": stale_cancelled_count,
+                    "deleted_snapshots": deleted_snapshot_count,
                 }
             ),
         }
