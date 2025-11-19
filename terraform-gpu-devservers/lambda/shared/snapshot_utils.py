@@ -389,11 +389,10 @@ def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, 
         logger.info(f"Capturing disk contents for disk '{disk_name}' in pod {pod_name}")
 
         # Use Kubernetes API to exec into pod and capture disk contents
-        # Start with du -sh to get disk size, then list contents
-        # Exclude .oh-my-zsh and .git subdirectories to avoid huge outputs
+        # Use tree for clean hierarchical view, fall back to find if tree not available
         exec_command = [
             "sh", "-c",
-            f"du -sh {mount_path} 2>/dev/null && echo '---' && ls -lah {mount_path} && echo '---' && find {mount_path} -maxdepth 3 \\( -name '.oh-my-zsh' -o -name '.git' \\) -prune -o -print 2>/dev/null | sort | head -1000"
+            f"du -sh {mount_path} 2>/dev/null && echo '---' && (tree -a -L 3 --dirsfirst --noreport -I '.oh-my-zsh|.git' {mount_path} 2>/dev/null || find {mount_path} -maxdepth 3 \\( -name '.oh-my-zsh' -o -name '.git' \\) -prune -o -print 2>/dev/null | sort) | head -1000"
         ]
 
         logger.debug(f"Running exec command in pod {pod_name}: {' '.join(exec_command)}")
