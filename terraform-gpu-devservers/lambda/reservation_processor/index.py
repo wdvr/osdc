@@ -1100,6 +1100,8 @@ def handler(event, context):
                         success = process_add_user_action(record)
                     elif message_body.get("action") == "extend_reservation":
                         success = process_extend_reservation_action(record)
+                    elif message_body.get("action") == "delete_disk":
+                        success = process_delete_disk_action(record)
                     elif message_body.get("action") == "process_multinode_individual":
                         success = process_multinode_individual_node(
                             message_body)
@@ -7144,6 +7146,95 @@ def process_add_user_action(record: dict[str, Any]) -> bool:
 
     except Exception as e:
         logger.error(f"Error processing add user action: {str(e)}")
+        return False  # Retry on processing errors
+
+
+def process_delete_disk_action(record: dict[str, Any]) -> bool:
+    """Process disk deletion actions"""
+    try:
+        message = json.loads(record["body"])
+        action = message.get("action")
+        user_id = message.get("user_id")
+        disk_name = message.get("disk_name")
+        delete_date = message.get("delete_date")
+
+        if not all([action, user_id, disk_name, delete_date]):
+            logger.error(f"Missing required fields in delete disk action: {message}")
+            return True  # Don't retry malformed messages
+
+        logger.info(f"Processing delete disk action: marking '{disk_name}' for deletion (user: {user_id})")
+
+        # 1. Update DynamoDB to mark disk as deleted
+        try:
+            disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+            disks_table = dynamodb.Table(disks_table_name)
+
+            marked_deleted_at = message.get('requested_at', str(int(time.time())))
+            disks_table.update_item(
+                Key={'user_id': user_id, 'disk_name': disk_name},
+                UpdateExpression='SET is_deleted = :deleted, delete_date = :date, marked_deleted_at = :timestamp',
+                ExpressionAttributeValues={
+                    ':deleted': True,
+                    ':date': delete_date,
+                    ':timestamp': marked_deleted_at
+                }
+            )
+            logger.info(f"Updated DynamoDB: marked disk '{disk_name}' as deleted")
+
+        except Exception as db_error:
+            logger.error(f"Error updating DynamoDB for disk '{disk_name}': {db_error}")
+            return False  # Retry on DynamoDB errors
+
+        # 2. Tag all snapshots in EC2
+        try:
+            # Find all snapshots for this disk
+            response = ec2_client.describe_snapshots(
+                OwnerIds=["self"],
+                Filters=[
+                    {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                    {"Name": "tag:disk_name", "Values": [disk_name]},
+                ]
+            )
+
+            snapshots = response.get('Snapshots', [])
+            logger.info(f"Found {len(snapshots)} snapshots for disk '{disk_name}'")
+
+            # Tag each snapshot that doesn't already have delete-date tag
+            tagged_count = 0
+            for snapshot in snapshots:
+                snapshot_id = snapshot['SnapshotId']
+                tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+
+                # Skip if already tagged
+                if 'delete-date' in tags:
+                    logger.debug(f"Snapshot {snapshot_id} already has delete-date tag, skipping")
+                    continue
+
+                try:
+                    ec2_client.create_tags(
+                        Resources=[snapshot_id],
+                        Tags=[
+                            {"Key": "delete-date", "Value": delete_date},
+                            {"Key": "marked-deleted-at", "Value": marked_deleted_at},
+                        ]
+                    )
+                    logger.info(f"Tagged snapshot {snapshot_id} with delete-date: {delete_date}")
+                    tagged_count += 1
+                except Exception as tag_error:
+                    logger.error(f"Error tagging snapshot {snapshot_id}: {tag_error}")
+                    # Continue tagging other snapshots
+
+            logger.info(f"Successfully marked disk '{disk_name}' for deletion (tagged {tagged_count} snapshots)")
+            return True
+
+        except Exception as ec2_error:
+            logger.error(f"Error tagging snapshots for disk '{disk_name}': {ec2_error}")
+            # DynamoDB is already updated, so return True to avoid retrying
+            # The expiry Lambda will handle any missed snapshots
+            return True
+
+    except Exception as e:
+        logger.error(f"Error processing delete disk action: {str(e)}")
         return False  # Retry on processing errors
 
 

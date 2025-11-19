@@ -4,8 +4,10 @@ Handles named persistent disks with snapshot-first workflow
 """
 
 import boto3
+import re
+from decimal import Decimal
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from .config import Config
 
 
@@ -126,146 +128,59 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
     ec2_client = get_ec2_client(config)
     dynamodb = get_dynamodb_resource(config)
 
-    # Get all snapshots for this user (both completed and pending)
-    completed_response = ec2_client.describe_snapshots(
-        OwnerIds=["self"],
-        Filters=[
-            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-            {"Name": "status", "Values": ["completed"]},
-        ]
+    # Query DynamoDB disks table for this user's disks (with pagination)
+    disks_table_name = config.disks_table if hasattr(config, 'disks_table') else f"{config.queue_name.rsplit('-', 1)[0]}-disks"
+    disks_table = dynamodb.Table(disks_table_name)
+
+    dynamodb_disks = []
+    response = disks_table.query(
+        KeyConditionExpression="user_id = :user_id",
+        ExpressionAttributeValues={":user_id": user_id}
     )
+    dynamodb_disks.extend(response.get('Items', []))
 
-    pending_response = ec2_client.describe_snapshots(
-        OwnerIds=["self"],
-        Filters=[
-            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-            {"Name": "status", "Values": ["pending"]},
-        ]
-    )
-
-    completed_snapshots = completed_response.get('Snapshots', [])
-    pending_snapshots = pending_response.get('Snapshots', [])
-    all_snapshots = completed_snapshots + pending_snapshots
-
-    # ALSO check for any in-use volumes (to detect legacy volumes without disk_name)
-    # This helps show "default" disk as in-use even if volume has no disk_name tag
-    legacy_in_use_volumes = []
-    try:
-        vol_response = ec2_client.describe_volumes(
-            Filters=[
-                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-                {"Name": "tag:ManagedBy", "Values": ["gpu-dev-cli"]},
-                {"Name": "status", "Values": ["in-use"]},
-            ]
+    # Handle pagination (get all disks if user has many)
+    while 'LastEvaluatedKey' in response:
+        response = disks_table.query(
+            KeyConditionExpression="user_id = :user_id",
+            ExpressionAttributeValues={":user_id": user_id},
+            ExclusiveStartKey=response['LastEvaluatedKey']
         )
-        # Find volumes without disk_name tag (pre-migration)
-        for vol in vol_response.get("Volumes", []):
-            tags = {tag['Key']: tag['Value'] for tag in vol.get('Tags', [])}
-            if 'disk_name' not in tags:
-                legacy_in_use_volumes.append(vol)
-    except Exception as e:
-        print(f"Warning: Could not check for legacy volumes: {e}")
+        dynamodb_disks.extend(response.get('Items', []))
 
-    # Track which disks have pending snapshots
-    disks_with_pending_snapshots = set()
-    for snapshot in pending_snapshots:
-        tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
-        if 'delete-date' not in tags:  # Exclude soft-deleted
-            disk_name = tags.get('disk_name', 'default')
-            disks_with_pending_snapshots.add(disk_name)
-
-    # Group snapshots by disk_name (including soft-deleted snapshots)
-    disks_map = {}
-    for snapshot in all_snapshots:
-        tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
-        disk_name = tags.get('disk_name', 'default')
-
-        if disk_name not in disks_map:
-            disks_map[disk_name] = {
-                'name': disk_name,
-                'snapshots': [],
-                'pending_snapshots': [],
-                'size_gb': None,
-                'created_at': None,
-                'last_used': None,
-                'is_deleted': False,
-                'delete_date': None,
-            }
-
-        # Track if this disk is soft-deleted (check if ANY snapshot has delete-date)
-        if 'delete-date' in tags:
-            disks_map[disk_name]['is_deleted'] = True
-            disks_map[disk_name]['delete_date'] = tags.get('delete-date')
-
-        # Separate completed and pending snapshots
-        if snapshot['State'] == 'pending':
-            disks_map[disk_name]['pending_snapshots'].append(snapshot)
-        else:
-            disks_map[disk_name]['snapshots'].append(snapshot)
-
-    # Process each disk
+    # Process DynamoDB data
     disks = []
-    for disk_name, disk_data in disks_map.items():
-        snapshots_list = disk_data['snapshots']
-        pending_snapshots_list = disk_data['pending_snapshots']
+    for disk_item in dynamodb_disks:
+        disk_name = disk_item['disk_name']
 
-        # Check if disk has any pending snapshots (backing up)
-        is_backing_up = len(pending_snapshots_list) > 0
+        # Convert DynamoDB types (Decimal to int/float)
+        size_gb = int(disk_item.get('size_gb', 0)) if disk_item.get('size_gb') else 0
+        snapshot_count = int(disk_item.get('snapshot_count', 0)) if disk_item.get('snapshot_count') else 0
+        pending_snapshot_count = int(disk_item.get('pending_snapshot_count', 0)) if disk_item.get('pending_snapshot_count') else 0
 
-        # Get latest snapshot for metadata (prefer completed, fallback to pending)
-        all_disk_snapshots = snapshots_list + pending_snapshots_list
-        if all_disk_snapshots:
-            latest_snapshot = max(all_disk_snapshots, key=lambda s: s['StartTime'])
-            size_gb = latest_snapshot.get('VolumeSize', 0)
+        # Parse datetime strings from DynamoDB
+        created_at_str = disk_item.get('created_at')
+        last_used_str = disk_item.get('last_used')
 
-            # Extract disk_size tag from latest snapshot (e.g., "1.2G")
-            latest_tags = {tag['Key']: tag['Value'] for tag in latest_snapshot.get('Tags', [])}
-            disk_size = latest_tags.get('disk_size', None)
+        created_at = datetime.fromisoformat(created_at_str) if created_at_str else None
+        last_used = datetime.fromisoformat(last_used_str) if last_used_str else None
 
-            # Get created_at from oldest snapshot (completed or pending)
-            oldest_snapshot = min(all_disk_snapshots, key=lambda s: s['StartTime'])
-            created_at = oldest_snapshot['StartTime']
+        # Ensure all datetimes are timezone-aware (normalize any timezone-naive datetimes from older records)
+        if created_at and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if last_used and last_used.tzinfo is None:
+            last_used = last_used.replace(tzinfo=timezone.utc)
 
-            # Get last_used from latest completed snapshot (or pending if no completed)
-            if snapshots_list:
-                last_used = max(snapshots_list, key=lambda s: s['StartTime'])['StartTime']
-            elif pending_snapshots_list:
-                # New disk, first snapshot still pending
-                last_used = max(pending_snapshots_list, key=lambda s: s['StartTime'])['StartTime']
-            else:
-                last_used = None
-        else:
-            size_gb = 0
-            disk_size = None
-            created_at = None
-            last_used = None
+        # Get disk_size if available
+        disk_size = disk_item.get('disk_size')
 
-        # Check if disk is in use
+        # Get backup and deletion status from DynamoDB
+        is_backing_up = disk_item.get('is_backing_up', False)
+        is_deleted = disk_item.get('is_deleted', False)
+        delete_date = disk_item.get('delete_date')
+
+        # Check current in_use status (check dynamically from reservations table)
         is_in_use, reservation_id = get_disk_in_use_status(disk_name, user_id, config)
-
-        # Special case: If this is "default" disk and we found legacy in-use volumes,
-        # mark as in-use (helps detect pre-migration volumes)
-        if not is_in_use and disk_name == "default" and legacy_in_use_volumes:
-            # Find the reservation using this legacy volume
-            legacy_vol_id = legacy_in_use_volumes[0]["VolumeId"]
-            try:
-                reservations_table = dynamodb.Table(config.reservations_table)
-                response = reservations_table.scan(
-                    FilterExpression="ebs_volume_id = :vol_id AND #status IN (:active, :preparing)",
-                    ExpressionAttributeNames={"#status": "status"},
-                    ExpressionAttributeValues={
-                        ":vol_id": legacy_vol_id,
-                        ":active": "active",
-                        ":preparing": "preparing"
-                    }
-                )
-                if response.get("Items"):
-                    is_in_use = True
-                    reservation_id = response["Items"][0]["reservation_id"]
-            except Exception:
-                # If query fails, still mark as in-use to be safe
-                is_in_use = True
-                reservation_id = None
 
         disks.append({
             'name': disk_name,
@@ -273,17 +188,17 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
             'disk_size': disk_size,
             'created_at': created_at,
             'last_used': last_used,
-            'snapshot_count': len(snapshots_list),
-            'pending_snapshot_count': len(pending_snapshots_list),
+            'snapshot_count': snapshot_count,
+            'pending_snapshot_count': pending_snapshot_count,
             'in_use': is_in_use,
             'is_backing_up': is_backing_up,
             'reservation_id': reservation_id,
-            'is_deleted': disk_data['is_deleted'],
-            'delete_date': disk_data['delete_date'],
+            'is_deleted': is_deleted,
+            'delete_date': delete_date,
         })
 
     # Sort by last_used (most recent first)
-    disks.sort(key=lambda d: d['last_used'] or datetime.min, reverse=True)
+    disks.sort(key=lambda d: d['last_used'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
     return disks
 
@@ -302,7 +217,6 @@ def create_disk(disk_name: str, user_id: str, config: Config) -> bool:
         return False
 
     # Validate disk name (alphanumeric + hyphens + underscores)
-    import re
     if not re.match(r'^[a-zA-Z0-9_-]+$', disk_name):
         print(f"Error: Disk name must contain only letters, numbers, hyphens, and underscores")
         return False
@@ -385,35 +299,32 @@ def list_disk_content(disk_name: str, user_id: str, config: Config) -> Optional[
     Fetch and return the contents of the latest snapshot for a disk.
     Returns contents string or None if not found.
     """
-    ec2_client = get_ec2_client(config)
     s3_client = get_s3_client(config)
+    dynamodb = get_dynamodb_resource(config)
 
-    # Find latest snapshot for this disk
-    response = ec2_client.describe_snapshots(
-        OwnerIds=["self"],
-        Filters=[
-            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-            {"Name": "tag:disk_name", "Values": [disk_name]},
-            {"Name": "status", "Values": ["completed"]},
-        ]
-    )
+    # Get disk info from DynamoDB to get latest snapshot S3 path
+    disks_table_name = config.disks_table if hasattr(config, 'disks_table') else f"{config.queue_name.rsplit('-', 1)[0]}-disks"
+    disks_table = dynamodb.Table(disks_table_name)
 
-    snapshots = response.get('Snapshots', [])
-    if not snapshots:
-        print(f"No snapshots found for disk '{disk_name}'")
-        return None
+    try:
+        response = disks_table.get_item(
+            Key={'user_id': user_id, 'disk_name': disk_name}
+        )
 
-    # Get latest snapshot
-    latest_snapshot = max(snapshots, key=lambda s: s['StartTime'])
-    snapshot_id = latest_snapshot['SnapshotId']
+        if 'Item' not in response:
+            print(f"Disk '{disk_name}' not found")
+            return None
 
-    # Get S3 path from snapshot tags
-    tags = {tag['Key']: tag['Value'] for tag in latest_snapshot.get('Tags', [])}
-    s3_path = tags.get('snapshot_content_s3')
+        disk_item = response['Item']
+        s3_path = disk_item.get('latest_snapshot_content_s3')
 
-    if not s3_path:
-        print(f"Snapshot {snapshot_id} does not have content metadata")
-        print(f"This may be an older snapshot created before content tracking was added.")
+        if not s3_path:
+            print(f"No snapshot contents available for disk '{disk_name}'")
+            print(f"This may be a newly created disk or a disk created before content tracking was added.")
+            return None
+
+    except Exception as e:
+        print(f"Error fetching disk info from DynamoDB: {e}")
         return None
 
     # Parse S3 path (s3://bucket/key)
@@ -443,11 +354,13 @@ def list_disk_content(disk_name: str, user_id: str, config: Config) -> Optional[
 
 def delete_disk(disk_name: str, user_id: str, config: Config) -> bool:
     """
-    Soft delete a disk by tagging snapshots for deletion in 30 days.
+    Soft delete a disk by sending delete request to SQS queue.
+    Lambda will handle marking in DynamoDB and tagging snapshots.
     Returns True on success, False on failure.
     """
     from datetime import datetime, timedelta
-    ec2_client = get_ec2_client(config)
+    import boto3
+    import json
 
     # Check if disk exists
     disks = list_disks(user_id, config)
@@ -470,45 +383,32 @@ def delete_disk(disk_name: str, user_id: str, config: Config) -> bool:
     delete_date = datetime.now() + timedelta(days=30)
     delete_date_str = delete_date.strftime('%Y-%m-%d')
 
-    # Find all snapshots for this disk
+    # Send delete request to SQS queue
     try:
-        response = ec2_client.describe_snapshots(
-            OwnerIds=["self"],
-            Filters=[
-                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-                {"Name": "tag:disk_name", "Values": [disk_name]},
-            ]
+        sqs_client = config.session.client('sqs', region_name=config.aws_region)
+        queue_url = config.get_queue_url()
+
+        # Create disk deletion message
+        message = {
+            'action': 'delete_disk',
+            'user_id': user_id,
+            'disk_name': disk_name,
+            'delete_date': delete_date_str,
+            'requested_at': datetime.now().isoformat()
+        }
+
+        sqs_client.send_message(
+            QueueUrl=queue_url,
+            MessageBody=json.dumps(message)
         )
 
-        snapshots = response.get('Snapshots', [])
-
-        if not snapshots:
-            print(f"Warning: No snapshots found for disk '{disk_name}'")
-            return True
-
-        # Tag each snapshot with delete-date
-        tagged_count = 0
-        for snapshot in snapshots:
-            snapshot_id = snapshot['SnapshotId']
-            try:
-                ec2_client.create_tags(
-                    Resources=[snapshot_id],
-                    Tags=[
-                        {"Key": "delete-date", "Value": delete_date_str},
-                        {"Key": "marked-deleted-at", "Value": str(int(datetime.now().timestamp()))},
-                    ]
-                )
-                print(f"  ✓ Marked snapshot {snapshot_id} for deletion on {delete_date_str}")
-                tagged_count += 1
-            except Exception as e:
-                print(f"  ✗ Error tagging snapshot {snapshot_id}: {e}")
-
-        print(f"✓ Successfully marked disk '{disk_name}' for deletion ({tagged_count} snapshots)")
+        print(f"✓ Successfully queued disk '{disk_name}' for deletion")
         print(f"   Snapshots will be permanently deleted on {delete_date_str}")
+        print(f"   (Processing will be handled by Lambda)")
         return True
 
     except Exception as e:
-        print(f"Error marking disk for deletion: {e}")
+        print(f"Error sending delete request: {e}")
         return False
 
 
@@ -520,7 +420,6 @@ def rename_disk(old_name: str, new_name: str, user_id: str, config: Config) -> b
     ec2_client = get_ec2_client(config)
 
     # Validate new disk name
-    import re
     if not re.match(r'^[a-zA-Z0-9_-]+$', new_name):
         print(f"Error: Disk name must contain only letters, numbers, hyphens, and underscores")
         return False

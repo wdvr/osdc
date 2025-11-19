@@ -66,7 +66,8 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
         Resource = [
           aws_dynamodb_table.gpu_reservations.arn,
           "${aws_dynamodb_table.gpu_reservations.arn}/index/*",
-          aws_dynamodb_table.gpu_availability.arn
+          aws_dynamodb_table.gpu_availability.arn,
+          aws_dynamodb_table.disks.arn
         ]
       },
       {

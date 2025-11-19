@@ -20,7 +20,8 @@ from shared.snapshot_utils import (
     cleanup_old_snapshots,
     safe_create_snapshot,
     cleanup_all_user_snapshots,
-    capture_disk_contents
+    capture_disk_contents,
+    update_disk_snapshot_completed
 )
 from shared.dns_utils import (
     delete_dns_record,
@@ -39,6 +40,7 @@ ec2_client = boto3.client("ec2")
 
 # Environment variables
 RESERVATIONS_TABLE = os.environ["RESERVATIONS_TABLE"]
+DISKS_TABLE = os.environ.get("DISKS_TABLE_NAME", "pytorch-gpu-dev-disks")
 EKS_CLUSTER_NAME = os.environ["EKS_CLUSTER_NAME"]
 REGION = os.environ["REGION"]
 
@@ -95,6 +97,166 @@ GRACE_PERIOD_SECONDS = int(os.environ.get("GRACE_PERIOD_SECONDS", 120))
 
 # Warning levels in minutes (can be easily extended)
 WARNING_LEVELS = [30, 15, 5]
+
+
+def sync_disk_deleted_snapshots() -> int:
+    """
+    Sync DynamoDB disk deletion status to EC2 snapshots.
+    Tags snapshots with delete-date when disks are marked is_deleted=True in DynamoDB.
+    Returns count of snapshots tagged.
+    """
+    tagged_count = 0
+
+    try:
+        disks_table = dynamodb.Table(DISKS_TABLE)
+
+        # Scan for disks marked as deleted in DynamoDB
+        response = disks_table.scan(
+            FilterExpression="is_deleted = :true",
+            ExpressionAttributeValues={":true": True}
+        )
+
+        deleted_disks = response.get('Items', [])
+
+        # Handle pagination
+        while 'LastEvaluatedKey' in response:
+            response = disks_table.scan(
+                FilterExpression="is_deleted = :true",
+                ExpressionAttributeValues={":true": True},
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            deleted_disks.extend(response.get('Items', []))
+
+        if not deleted_disks:
+            logger.debug("No deleted disks found in DynamoDB")
+            return 0
+
+        logger.info(f"Found {len(deleted_disks)} deleted disks in DynamoDB")
+
+        # For each deleted disk, tag its snapshots in EC2
+        for disk in deleted_disks:
+            user_id = disk.get('user_id')
+            disk_name = disk.get('disk_name')
+            delete_date = disk.get('delete_date')
+
+            if not user_id or not disk_name or not delete_date:
+                logger.warning(f"Disk missing required fields: {disk}")
+                continue
+
+            try:
+                # Find all snapshots for this disk
+                snapshot_response = ec2_client.describe_snapshots(
+                    OwnerIds=["self"],
+                    Filters=[
+                        {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+                        {"Name": "tag:disk_name", "Values": [disk_name]},
+                    ]
+                )
+
+                snapshots = snapshot_response.get('Snapshots', [])
+                logger.info(f"Found {len(snapshots)} snapshots for deleted disk '{disk_name}' (user: {user_id})")
+
+                # Tag each snapshot that doesn't already have delete-date tag
+                for snapshot in snapshots:
+                    snapshot_id = snapshot['SnapshotId']
+                    tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+
+                    # Skip if already tagged
+                    if 'delete-date' in tags:
+                        logger.debug(f"Snapshot {snapshot_id} already has delete-date tag, skipping")
+                        continue
+
+                    try:
+                        ec2_client.create_tags(
+                            Resources=[snapshot_id],
+                            Tags=[
+                                {"Key": "delete-date", "Value": delete_date},
+                                {"Key": "marked-deleted-at", "Value": disk.get('marked_deleted_at', str(int(time.time())))},
+                            ]
+                        )
+                        logger.info(f"Tagged snapshot {snapshot_id} with delete-date: {delete_date}")
+                        tagged_count += 1
+                    except Exception as tag_error:
+                        logger.error(f"Error tagging snapshot {snapshot_id}: {tag_error}")
+
+            except Exception as disk_error:
+                logger.error(f"Error processing deleted disk '{disk_name}': {disk_error}")
+
+        return tagged_count
+
+    except Exception as e:
+        logger.error(f"Error in sync_disk_deleted_snapshots: {e}")
+        return tagged_count
+
+
+def sync_completed_snapshots() -> int:
+    """
+    Sync completed EC2 snapshots to DynamoDB.
+    Updates disk records when snapshots complete.
+    Returns count of disks updated.
+    """
+    updated_count = 0
+
+    try:
+        # Find all completed snapshots with disk_name tag (created by our system)
+        response = ec2_client.describe_snapshots(
+            OwnerIds=["self"],
+            Filters=[
+                {"Name": "tag-key", "Values": ["disk_name"]},
+                {"Name": "tag-key", "Values": ["gpu-dev-user"]},
+                {"Name": "status", "Values": ["completed"]},
+            ],
+            MaxResults=100  # Limit to avoid timeouts
+        )
+
+        snapshots = response.get('Snapshots', [])
+        logger.info(f"Checking {len(snapshots)} completed snapshots for DynamoDB sync")
+
+        # Check DynamoDB for each snapshot to see if it's already been processed
+        disks_table = dynamodb.Table(DISKS_TABLE)
+
+        for snapshot in snapshots:
+            snapshot_id = snapshot['SnapshotId']
+            tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+            user_id = tags.get('gpu-dev-user')
+            disk_name = tags.get('disk_name')
+            size_gb = snapshot.get('VolumeSize')
+
+            if not user_id or not disk_name:
+                continue
+
+            try:
+                # Check if this snapshot has already been synced to DynamoDB
+                # We track this by checking if the snapshot_count matches the actual count
+                # For now, we'll use a simpler approach: check if disk exists and if pending_snapshot_count > 0
+
+                disk_response = disks_table.get_item(
+                    Key={'user_id': user_id, 'disk_name': disk_name}
+                )
+
+                if 'Item' not in disk_response:
+                    logger.debug(f"Disk '{disk_name}' not found in DynamoDB (user: {user_id}), skipping snapshot sync")
+                    continue
+
+                disk_item = disk_response['Item']
+                pending_count = int(disk_item.get('pending_snapshot_count', 0))
+
+                # Only update if there are pending snapshots to process
+                if pending_count > 0:
+                    logger.info(f"Updating DynamoDB for completed snapshot {snapshot_id} (disk: {disk_name}, user: {user_id})")
+                    update_disk_snapshot_completed(user_id, disk_name, size_gb)
+                    updated_count += 1
+                else:
+                    logger.debug(f"No pending snapshots for disk '{disk_name}', skipping")
+
+            except Exception as disk_error:
+                logger.warning(f"Error syncing snapshot {snapshot_id} to DynamoDB: {disk_error}")
+
+        return updated_count
+
+    except Exception as e:
+        logger.error(f"Error in sync_completed_snapshots: {e}")
+        return updated_count
 
 
 def cleanup_soft_deleted_snapshots() -> int:
@@ -623,6 +785,22 @@ def handler(event, context):
                 cancel_stale_reservation(reservation)
                 stale_cancelled_count += 1
 
+        # Sync disk deletion status from DynamoDB to EC2 snapshots
+        try:
+            tagged_snapshot_count = sync_disk_deleted_snapshots()
+            logger.info(f"Tagged {tagged_snapshot_count} snapshots for deletion from DynamoDB sync")
+        except Exception as e:
+            logger.error(f"Error syncing disk deletion to snapshots: {e}")
+            tagged_snapshot_count = 0
+
+        # Sync completed snapshots to DynamoDB
+        try:
+            synced_disk_count = sync_completed_snapshots()
+            logger.info(f"Synced {synced_disk_count} completed snapshots to DynamoDB")
+        except Exception as e:
+            logger.error(f"Error syncing completed snapshots: {e}")
+            synced_disk_count = 0
+
         # Clean up soft-deleted snapshots whose delete-date has passed
         try:
             deleted_snapshot_count = cleanup_soft_deleted_snapshots()
@@ -640,6 +818,8 @@ def handler(event, context):
                     "expired": expired_count,
                     "stale_cancelled": stale_cancelled_count,
                     "deleted_snapshots": deleted_snapshot_count,
+                    "tagged_snapshots": tagged_snapshot_count,
+                    "synced_disks": synced_disk_count,
                 }
             ),
         }
@@ -1031,34 +1211,37 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
 
                 # Step 1: Capture disk contents before creating snapshot
                 content_s3_path = None
+                disk_size = None
                 if disk_name:
                     try:
                         logger.info(f"Capturing disk contents for disk '{disk_name}'")
                         # Create a temporary snapshot ID for the S3 path (we'll update after actual snapshot creation)
                         temp_snapshot_id = f"pending-{int(time.time())}"
-                        content_s3_path = capture_disk_contents(
+                        content_s3_path, disk_size = capture_disk_contents(
                             pod_name=pod_name,
                             namespace=namespace,
                             user_id=user_id,
                             disk_name=disk_name,
                             snapshot_id=temp_snapshot_id,
+                            k8s_client=get_k8s_client(),
                             mount_path="/workspace"
                         )
                         if content_s3_path:
-                            logger.info(f"Successfully captured disk contents to {content_s3_path}")
+                            logger.info(f"Successfully captured disk contents to {content_s3_path}" + (f" (size: {disk_size})" if disk_size else ""))
                         else:
                             logger.warning(f"Failed to capture disk contents for disk '{disk_name}'")
                     except Exception as capture_error:
                         logger.warning(f"Error capturing disk contents: {capture_error}")
                         # Continue with snapshot even if content capture fails
 
-                # Step 2: Create snapshot with disk_name and content_s3_path
+                # Step 2: Create snapshot with disk_name, content_s3_path, and disk_size
                 snapshot_id, was_created = safe_create_snapshot(
                     volume_id=volume_id,
                     user_id=user_id,
                     snapshot_type="shutdown",
                     disk_name=disk_name,
-                    content_s3_path=content_s3_path
+                    content_s3_path=content_s3_path,
+                    disk_size=disk_size
                 )
 
                 if snapshot_id:
@@ -1077,6 +1260,24 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
                             }
                         )
                         logger.info(f"Snapshot {snapshot_id} completed successfully")
+
+                        # Step 3.5: Update DynamoDB to reflect snapshot completion
+                        if disk_name:
+                            try:
+                                # Get snapshot details to get volume size and content S3 path
+                                snapshot_response = ec2_client.describe_snapshots(SnapshotIds=[snapshot_id])
+                                if snapshot_response.get('Snapshots'):
+                                    snapshot = snapshot_response['Snapshots'][0]
+                                    size_gb = snapshot.get('VolumeSize')
+                                    tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
+                                    snapshot_content_s3 = tags.get('snapshot_content_s3')
+                                    snapshot_disk_size = tags.get('disk_size')
+                                    logger.info(f"Updating DynamoDB for completed snapshot {snapshot_id} (disk: {disk_name}, size: {size_gb}GB, disk_size: {snapshot_disk_size})")
+                                    update_disk_snapshot_completed(user_id, disk_name, size_gb, snapshot_content_s3, snapshot_disk_size)
+                                    logger.info(f"Successfully updated DynamoDB for disk '{disk_name}'")
+                            except Exception as update_error:
+                                logger.warning(f"Error updating DynamoDB for snapshot completion: {update_error}")
+                                # Don't fail cleanup if DynamoDB update fails
 
                         # Step 4: Delete the EBS volume after snapshot completes
                         try:

@@ -10,10 +10,12 @@ import subprocess
 import json
 from kubernetes import client
 from kubernetes.stream import stream
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 ec2_client = boto3.client("ec2")
 s3_client = boto3.client("s3")
+dynamodb = boto3.resource("dynamodb")
 
 
 def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name=None, content_s3_path=None, disk_size=None):
@@ -83,6 +85,27 @@ def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name
 
         snapshot_id = snapshot_response["SnapshotId"]
         logger.info(f"Created new snapshot {snapshot_id} for volume {volume_id}" + (f" (disk: {disk_name})" if disk_name else "") + (f" size: {disk_size}" if disk_size else ""))
+
+        # Update DynamoDB to mark disk as backing up
+        if disk_name:
+            try:
+                disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+                disks_table = dynamodb.Table(disks_table_name)
+
+                logger.debug(f"Updating DynamoDB: marking disk '{disk_name}' as backing up")
+                disks_table.update_item(
+                    Key={'user_id': user_id, 'disk_name': disk_name},
+                    UpdateExpression='SET is_backing_up = :backing_up, pending_snapshot_count = if_not_exists(pending_snapshot_count, :zero) + :one',
+                    ExpressionAttributeValues={
+                        ':backing_up': True,
+                        ':zero': 0,
+                        ':one': 1
+                    }
+                )
+                logger.debug(f"Updated DynamoDB for disk '{disk_name}' - marked as backing up")
+            except Exception as db_error:
+                logger.warning(f"Could not update DynamoDB for disk '{disk_name}': {db_error}")
+
         return snapshot_id, True
 
     except Exception as e:
@@ -114,6 +137,75 @@ def create_pod_shutdown_snapshot(volume_id, user_id, snapshot_type="shutdown"):
     except Exception as e:
         logger.error(f"Error creating {snapshot_type} snapshot: {str(e)}")
         return None
+
+
+def update_disk_snapshot_completed(user_id, disk_name, size_gb=None, content_s3_path=None, disk_size=None):
+    """
+    Update DynamoDB when a snapshot completes.
+    Decrements pending_snapshot_count, increments snapshot_count, clears is_backing_up if no more pending.
+
+    Args:
+        user_id: User identifier
+        disk_name: Disk name
+        size_gb: Volume size in GB (optional, updates size_gb if provided)
+        content_s3_path: S3 path to snapshot contents (optional, updates latest_snapshot_content_s3 if provided)
+        disk_size: Disk usage size like "1.2G" from du -sh (optional, updates disk_size if provided)
+    """
+    try:
+        disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+        disks_table = dynamodb.Table(disks_table_name)
+
+        logger.info(f"Updating DynamoDB: snapshot completed for disk '{disk_name}'")
+
+        # Build update expression
+        from datetime import datetime
+        update_expr_parts = [
+            'SET snapshot_count = if_not_exists(snapshot_count, :zero) + :one',
+            'pending_snapshot_count = if_not_exists(pending_snapshot_count, :one) - :one',
+            'last_used = :now'
+        ]
+        expr_values = {
+            ':zero': 0,
+            ':one': 1,
+            ':now': datetime.utcnow().isoformat()
+        }
+
+        if size_gb is not None:
+            update_expr_parts.append('size_gb = :size')
+            expr_values[':size'] = int(size_gb)
+
+        if content_s3_path is not None:
+            update_expr_parts.append('latest_snapshot_content_s3 = :s3_path')
+            expr_values[':s3_path'] = content_s3_path
+
+        if disk_size is not None:
+            update_expr_parts.append('disk_size = :disk_size')
+            expr_values[':disk_size'] = disk_size
+
+        # Check if pending_snapshot_count will be 0, then clear is_backing_up
+        # We'll do this in a separate update after decrementing
+        disks_table.update_item(
+            Key={'user_id': user_id, 'disk_name': disk_name},
+            UpdateExpression=', '.join(update_expr_parts),
+            ExpressionAttributeValues=expr_values
+        )
+
+        # Get current pending count to see if we should clear is_backing_up
+        response = disks_table.get_item(Key={'user_id': user_id, 'disk_name': disk_name})
+        if 'Item' in response:
+            pending_count = int(response['Item'].get('pending_snapshot_count', 0))
+            if pending_count == 0:
+                disks_table.update_item(
+                    Key={'user_id': user_id, 'disk_name': disk_name},
+                    UpdateExpression='SET is_backing_up = :false',
+                    ExpressionAttributeValues={':false': False}
+                )
+                logger.info(f"Cleared is_backing_up for disk '{disk_name}' - no more pending snapshots")
+
+        logger.info(f"Updated DynamoDB for disk '{disk_name}' - snapshot completed")
+
+    except Exception as e:
+        logger.warning(f"Could not update DynamoDB for snapshot completion: {e}")
 
 
 def cleanup_old_snapshots(user_id, keep_count=3, max_age_days=7, max_deletions_per_run=10):
@@ -301,7 +393,7 @@ def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, 
         # Exclude .oh-my-zsh and .git subdirectories to avoid huge outputs
         exec_command = [
             "sh", "-c",
-            f"du -sh {mount_path} 2>/dev/null && echo '---' && ls -lah {mount_path} && echo '---' && find {mount_path} -maxdepth 3 \\( -name '.oh-my-zsh' -o -name '.git' \\) -prune -o -print 2>/dev/null | head -1000"
+            f"du -sh {mount_path} 2>/dev/null && echo '---' && ls -lah {mount_path} && echo '---' && find {mount_path} -maxdepth 3 \\( -name '.oh-my-zsh' -o -name '.git' \\) -prune -o -print 2>/dev/null | sort | head -1000"
         ]
 
         logger.debug(f"Running exec command in pod {pod_name}: {' '.join(exec_command)}")
