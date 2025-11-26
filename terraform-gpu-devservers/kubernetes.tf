@@ -401,7 +401,8 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
         }
         spec = {
           nodeSelector = {
-            NodeType = "gpu"
+            NodeType                         = "gpu"
+            "kubernetes.io/arch"            = "amd64"
           }
           tolerations = [
             {

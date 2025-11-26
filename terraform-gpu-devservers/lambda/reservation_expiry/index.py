@@ -240,10 +240,11 @@ def sync_completed_snapshots() -> int:
 
                 disk_item = disk_response['Item']
                 pending_count = int(disk_item.get('pending_snapshot_count', 0))
+                is_backing_up = disk_item.get('is_backing_up', False)
 
-                # Only update if there are pending snapshots to process
-                if pending_count > 0:
-                    logger.info(f"Updating DynamoDB for completed snapshot {snapshot_id} (disk: {disk_name}, user: {user_id})")
+                # Update if there are pending snapshots OR if stuck in backing_up state (handles race conditions)
+                if pending_count != 0 or is_backing_up:
+                    logger.info(f"Updating DynamoDB for completed snapshot {snapshot_id} (disk: {disk_name}, user: {user_id}, pending_count: {pending_count}, is_backing_up: {is_backing_up})")
                     update_disk_snapshot_completed(user_id, disk_name, size_gb)
                     updated_count += 1
                 else:
@@ -1224,7 +1225,7 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
                             disk_name=disk_name,
                             snapshot_id=temp_snapshot_id,
                             k8s_client=get_k8s_client(),
-                            mount_path="/workspace"
+                            mount_path="/home/dev"
                         )
                         if content_s3_path:
                             logger.info(f"Successfully captured disk contents to {content_s3_path}" + (f" (size: {disk_size})" if disk_size else ""))

@@ -194,13 +194,14 @@ def update_disk_snapshot_completed(user_id, disk_name, size_gb=None, content_s3_
         response = disks_table.get_item(Key={'user_id': user_id, 'disk_name': disk_name})
         if 'Item' in response:
             pending_count = int(response['Item'].get('pending_snapshot_count', 0))
-            if pending_count == 0:
+            # Handle both 0 and negative counts (race condition fix)
+            if pending_count <= 0:
                 disks_table.update_item(
                     Key={'user_id': user_id, 'disk_name': disk_name},
-                    UpdateExpression='SET is_backing_up = :false',
-                    ExpressionAttributeValues={':false': False}
+                    UpdateExpression='SET is_backing_up = :false, pending_snapshot_count = :zero',
+                    ExpressionAttributeValues={':false': False, ':zero': 0}
                 )
-                logger.info(f"Cleared is_backing_up for disk '{disk_name}' - no more pending snapshots")
+                logger.info(f"Cleared is_backing_up for disk '{disk_name}' - no more pending snapshots (pending_count was {pending_count}, reset to 0)")
 
         logger.info(f"Updated DynamoDB for disk '{disk_name}' - snapshot completed")
 
@@ -392,7 +393,7 @@ def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, 
         # Use tree for clean hierarchical view, fall back to find if tree not available
         exec_command = [
             "sh", "-c",
-            f"du -sh {mount_path} 2>/dev/null && echo '---' && (tree -a -L 3 --dirsfirst --noreport -I '.oh-my-zsh|.git' {mount_path} 2>/dev/null || find {mount_path} -maxdepth 3 \\( -name '.oh-my-zsh' -o -name '.git' \\) -prune -o -print 2>/dev/null | sort) | head -1000"
+            f"du -sh {mount_path} 2>/dev/null && echo '---' && if command -v tree >/dev/null 2>&1; then tree -a -L 3 --dirsfirst --noreport -I '.oh-my-zsh|.git' {mount_path} 2>/dev/null | head -1000; else find {mount_path} -maxdepth 3 \\( -name '.oh-my-zsh' -o -name '.git' \\) -prune -o -print 2>/dev/null | sort | head -1000; fi"
         ]
 
         logger.debug(f"Running exec command in pod {pod_name}: {' '.join(exec_command)}")

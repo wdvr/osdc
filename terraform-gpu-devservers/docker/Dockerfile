@@ -34,7 +34,8 @@ RUN apt-get install -y --no-install-recommends \
         iproute2 \
         tmux \
         unzip \
-        ccache
+        ccache \
+        tree
 # Install Node.js 20 from NodeSource (required for Claude CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
