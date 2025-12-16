@@ -45,8 +45,6 @@ output "disks_table_name" {
   value       = aws_dynamodb_table.disks.name
 }
 
-# Note: disk_contents_bucket_name output already defined in s3-disk-contents.tf
-
 # Removed servers_table_name output - now using K8s API for GPU tracking
 
 output "reservation_processor_function_name" {
