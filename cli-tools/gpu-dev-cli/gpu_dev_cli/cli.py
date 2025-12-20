@@ -461,6 +461,11 @@ def main(ctx: click.Context) -> None:
     help="Skip persistent disk warning for multiple reservations",
 )
 @click.option(
+    "--no-persist",
+    is_flag=True,
+    help="Create reservation without persistent disk",
+)
+@click.option(
     "--recreate-env",
     is_flag=True,
     help="Recreate shell environment (bashrc/zshrc/oh-my-zsh) even on existing persistent disk",
@@ -511,6 +516,7 @@ def reserve(
     name: Optional[str],
     jupyter: bool,
     ignore_no_persist: bool,
+    no_persist: bool,
     recreate_env: bool,
     interactive: Optional[bool],
     distributed: bool,
@@ -1045,12 +1051,76 @@ def reserve(
                 Spinner("dots", text="📡 Submitting reservation request...")
             )
 
-            # Set no_persistent_disk flag based on user choice
-            # True if user explicitly chose "Continue without persistent disk" or --disk none
-            no_persistent_disk = (
-                explicit_no_disk_from_param or
-                ('explicit_no_disk' in locals() and explicit_no_disk)
-            )
+            persistent_reservations = []
+            if not ignore_no_persist:
+                existing_reservations = reservation_mgr.list_reservations(
+                    user_filter=user_info["user_id"],
+                    statuses_to_include=[
+                        "active", "preparing", "queued", "pending"],
+                )
+
+                # Find reservations that actually have persistent disks
+                persistent_reservations = [
+                    res
+                    for res in existing_reservations
+                    if res.get("ebs_volume_id") and res.get("ebs_volume_id").strip()
+                ]
+
+            # Stop spinner before user interaction
+            if persistent_reservations:
+                live.stop()
+                # Should only be one
+                persistent_res = persistent_reservations[0]
+                persistent_res_id = persistent_res.get(
+                    "reservation_id", "unknown")[:8]
+
+                rprint(
+                    f"\n[yellow]⚠️  Warning: Your persistent disk is currently mounted on reservation {persistent_res_id}[/yellow]"
+                )
+                rprint(
+                    "[yellow]This new reservation will NOT have a persistent disk and will start empty.[/yellow]"
+                )
+                rprint(
+                    "[yellow]Your data will NOT be automatically backed up when it expires.[/yellow]"
+                )
+                rprint("\n[cyan]Options:[/cyan]")
+                rprint(
+                    "1. Continue and make this new reservation without persistent data disk"
+                )
+                rprint(
+                    f"2. Cancel existing reservation with persistent disk: [cyan]gpu-dev cancel {persistent_res_id}[/cyan]"
+                )
+                rprint(
+                    f"3. Use [cyan]--ignore-no-persist[/cyan] flag to skip this warning"
+                )
+
+                # Ask for confirmation
+                try:
+                    choice = click.confirm(
+                        "\nDo you want to continue with a new reservation (no persistent disk)?"
+                    )
+                    if not choice:
+                        rprint("[yellow]Reservation cancelled by user[/yellow]")
+                        return
+                except (KeyboardInterrupt, click.Abort):
+                    rprint("\n[yellow]Reservation cancelled by user[/yellow]")
+                    return
+
+                # Restart spinner for submission
+                live.start()
+                live.update(
+                    Spinner("dots", text="📡 Submitting reservation request...")
+                )
+            else:
+                # No persistent reservations - continue with same spinner
+                live.update(
+                    Spinner("dots", text="📡 Submitting reservation request...")
+                )
+
+            # Determine if this is multinode and submit appropriate reservation
+            # If user confirmed to continue without persistent disk, set flag
+            # --no-persist explicitly disables persistent disk
+            no_persistent_disk = no_persist or bool(persistent_reservations)
 
             max_gpus = gpu_configs[gpu_type]["max_gpus"]
             if gpu_count > max_gpus:
