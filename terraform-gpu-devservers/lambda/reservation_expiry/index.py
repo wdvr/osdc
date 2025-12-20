@@ -375,6 +375,7 @@ def handler(event, context):
         warned_count = 0
         expired_count = 0
         stale_cancelled_count = 0
+        oom_detected_count = 0
 
         for reservation in preparing_reservations:
             reservation_id = reservation["reservation_id"]
@@ -457,6 +458,15 @@ def handler(event, context):
                 # Check if pod actually exists before trying to clean it up
                 if not check_pod_exists(pod_name):
                     logger.debug(f"Pod {pod_name} for failed reservation {reservation_id[:8]} already deleted")
+                    # Pod gone but disk might still be marked in_use - clean it up
+                    user_id = reservation.get("user_id")
+                    disk_name = reservation.get("disk_name")
+                    if user_id and disk_name:
+                        try:
+                            mark_disk_not_in_use(user_id, disk_name)
+                            logger.info(f"Cleared disk '{disk_name}' in_use flag for failed reservation {reservation_id[:8]} (pod already deleted)")
+                        except Exception as disk_error:
+                            logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
                     continue
 
                 logger.info(
@@ -609,6 +619,15 @@ def handler(event, context):
                 # Check if pod actually exists before trying to clean it up
                 if not check_pod_exists(pod_name):
                     logger.debug(f"Pod {pod_name} for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} already deleted")
+                    # Pod gone but disk might still be marked in_use - clean it up
+                    user_id = reservation.get("user_id")
+                    disk_name = reservation.get("disk_name")
+                    if user_id and disk_name:
+                        try:
+                            mark_disk_not_in_use(user_id, disk_name)
+                            logger.info(f"Cleared disk '{disk_name}' in_use flag for {reservation.get('status', 'unknown')} reservation {reservation_id[:8]} (pod already deleted)")
+                        except Exception as disk_error:
+                            logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
                     continue
 
                 logger.info(
@@ -756,6 +775,17 @@ def handler(event, context):
                             f"Failed to send {warning_to_send}-minute warning for reservation {reservation_id}: {e}"
                         )
 
+                # Check for OOM events on active pods
+                if pod_name and not skip_pod_check:
+                    try:
+                        oom_info = check_pod_oom_status(pod_name)
+                        if oom_info["oom_detected"]:
+                            if handle_oom_event(reservation, oom_info):
+                                oom_detected_count += 1
+                                logger.info(f"Recorded OOM event for reservation {reservation_id[:8]}")
+                    except Exception as e:
+                        logger.warning(f"Error checking OOM status for reservation {reservation_id[:8]}: {e}")
+
         # Process stale queued/pending reservations
         for reservation in stale_reservations:
             created_at = reservation.get("created_at", "")
@@ -818,6 +848,7 @@ def handler(event, context):
                     "warned": warned_count,
                     "expired": expired_count,
                     "stale_cancelled": stale_cancelled_count,
+                    "oom_detected": oom_detected_count,
                     "deleted_snapshots": deleted_snapshot_count,
                     "tagged_snapshots": tagged_snapshot_count,
                     "synced_disks": synced_disk_count,
@@ -847,6 +878,205 @@ def check_pod_exists(pod_name: str, namespace: str = "gpu-dev") -> bool:
     except Exception as e:
         logger.warning(f"Error checking pod {pod_name}: {e}")
         return False
+
+
+def check_pod_oom_status(pod_name: str, namespace: str = "gpu-dev") -> dict:
+    """
+    Check if a pod has any OOMKilled containers.
+    Returns dict with:
+      - oom_detected: bool
+      - oom_container: str (name of container that OOMed, if any)
+      - oom_time: str (ISO timestamp of when OOM occurred)
+      - restart_count: int (total restarts due to OOM)
+    """
+    result = {
+        "oom_detected": False,
+        "oom_container": None,
+        "oom_time": None,
+        "restart_count": 0
+    }
+
+    try:
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+
+        pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+
+        if not pod.status or not pod.status.container_statuses:
+            return result
+
+        for container_status in pod.status.container_statuses:
+            # Check last terminated state for OOMKilled
+            if container_status.last_state and container_status.last_state.terminated:
+                terminated = container_status.last_state.terminated
+                if terminated.reason == "OOMKilled":
+                    result["oom_detected"] = True
+                    result["oom_container"] = container_status.name
+                    if terminated.finished_at:
+                        result["oom_time"] = terminated.finished_at.isoformat()
+                    result["restart_count"] = container_status.restart_count
+                    logger.info(f"OOM detected for pod {pod_name}, container {container_status.name}, restarts: {container_status.restart_count}")
+                    return result
+
+            # Also check current state if container is in terminated state
+            if container_status.state and container_status.state.terminated:
+                terminated = container_status.state.terminated
+                if terminated.reason == "OOMKilled":
+                    result["oom_detected"] = True
+                    result["oom_container"] = container_status.name
+                    if terminated.finished_at:
+                        result["oom_time"] = terminated.finished_at.isoformat()
+                    result["restart_count"] = container_status.restart_count
+                    logger.info(f"OOM detected (current state) for pod {pod_name}, container {container_status.name}")
+                    return result
+
+        return result
+
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            logger.debug(f"Pod {pod_name} not found when checking OOM status")
+        else:
+            logger.warning(f"Error checking OOM status for pod {pod_name}: {e}")
+        return result
+    except Exception as e:
+        logger.warning(f"Error checking OOM status for pod {pod_name}: {e}")
+        return result
+
+
+def mark_disk_not_in_use(user_id: str, disk_name: str) -> None:
+    """
+    Mark a disk as not in use in the disks table.
+    Called after volume is deleted during cleanup.
+    """
+    try:
+        disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+        disks_table = dynamodb.Table(disks_table_name)
+
+        disks_table.update_item(
+            Key={'user_id': user_id, 'disk_name': disk_name},
+            UpdateExpression="SET in_use = :in_use, last_used = :last_used REMOVE attached_to_reservation",
+            ExpressionAttributeValues={
+                ":in_use": False,
+                ":last_used": datetime.utcnow().isoformat()
+            }
+        )
+        logger.info(f"Marked disk '{disk_name}' as not in use for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error marking disk as not in use: {e}")
+        raise
+
+
+def handle_oom_event(reservation: dict, oom_info: dict) -> bool:
+    """
+    Handle an OOM event for a reservation.
+    Updates DynamoDB with OOM tracking information.
+    Returns True if update was successful.
+    """
+    try:
+        reservation_id = reservation["reservation_id"]
+        current_time = datetime.utcnow().isoformat()
+
+        # Get current OOM count from reservation
+        current_oom_count = int(reservation.get("oom_count", 0))
+        new_oom_count = current_oom_count + 1
+
+        # Only update if this is a new OOM event (check if oom_time is different)
+        last_recorded_oom = reservation.get("last_oom_at")
+        new_oom_time = oom_info.get("oom_time") or current_time
+
+        # Skip if we already recorded this exact OOM event
+        if last_recorded_oom and last_recorded_oom == new_oom_time:
+            logger.debug(f"OOM event already recorded for reservation {reservation_id[:8]}")
+            return False
+
+        reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+
+        # Update reservation with OOM info
+        update_expression = "SET last_oom_at = :oom_time, oom_count = :oom_count, oom_container = :container"
+        expression_values = {
+            ":oom_time": new_oom_time,
+            ":oom_count": new_oom_count,
+            ":container": oom_info.get("oom_container", "unknown")
+        }
+
+        reservations_table.update_item(
+            Key={"reservation_id": reservation_id},
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_values
+        )
+
+        logger.info(f"Updated OOM tracking for reservation {reservation_id[:8]}: count={new_oom_count}, time={new_oom_time}")
+
+        # Create OOM warning file in the pod
+        pod_name = reservation.get("pod_name")
+        if pod_name:
+            try:
+                create_oom_warning_file(pod_name, oom_info, new_oom_count)
+            except Exception as e:
+                logger.warning(f"Failed to create OOM warning file in pod {pod_name}: {e}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error handling OOM event for reservation {reservation.get('reservation_id')}: {e}")
+        return False
+
+
+def create_oom_warning_file(pod_name: str, oom_info: dict, oom_count: int, namespace: str = "gpu-dev"):
+    """Create a visible OOM warning file in the pod's workspace"""
+    try:
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+
+        container_name = oom_info.get("oom_container", "unknown")
+        oom_time = oom_info.get("oom_time", "unknown")
+
+        warning_content = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔴 OUT OF MEMORY (OOM) DETECTED 🔴
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Your container ran out of memory and was killed by the system.
+
+Container: {container_name}
+OOM Time: {oom_time}
+Total OOM Count: {oom_count}
+
+WHAT HAPPENED:
+- Your process exceeded the allocated memory limit
+- The container was automatically restarted
+
+SUGGESTIONS:
+- Reduce batch size or model size
+- Use gradient checkpointing
+- Enable mixed precision (fp16/bf16)
+- Monitor memory with: nvidia-smi or htop
+- Consider requesting more GPUs for larger memory
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Generated at: {datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")}
+"""
+
+        # Write file to /home/dev
+        file_cmd = f'echo "{warning_content}" > /home/dev/OOM_DETECTED.txt'
+        exec_command = ["bash", "-c", file_cmd]
+
+        stream.stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=exec_command,
+            container="gpu-dev",
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+            _request_timeout=30,
+        )
+        logger.info(f"OOM warning file created in pod {pod_name}")
+
+    except Exception as e:
+        logger.warning(f"Error creating OOM warning file in pod {pod_name}: {e}")
 
 
 def warn_user_expiring(reservation: dict[str, Any], warning_minutes: int) -> None:
@@ -979,6 +1209,16 @@ def expire_stuck_preparing_reservation(reservation: dict[str, Any]) -> None:
                 logger.warning(
                     f"Error cleaning up partial resources for {pod_name}: {cleanup_error}"
                 )
+
+        # Clear disk in_use flag if disk was reserved
+        user_id = reservation.get("user_id")
+        disk_name = reservation.get("disk_name")
+        if user_id and disk_name:
+            try:
+                mark_disk_not_in_use(user_id, disk_name)
+                logger.info(f"Cleared disk '{disk_name}' in_use flag for stuck preparing reservation {reservation_id}")
+            except Exception as disk_error:
+                logger.warning(f"Failed to clear disk in_use flag: {disk_error}")
 
         logger.info(
             f"Successfully marked stuck preparing reservation {reservation_id} as failed"
@@ -1285,6 +1525,14 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
                             logger.info(f"Deleting EBS volume {volume_id} after successful snapshot")
                             ec2_client.delete_volume(VolumeId=volume_id)
                             logger.info(f"Successfully deleted volume {volume_id}")
+
+                            # Step 5: Mark disk as no longer in use (allows CLI to show as available)
+                            if disk_name:
+                                try:
+                                    mark_disk_not_in_use(user_id, disk_name)
+                                    logger.info(f"Marked disk '{disk_name}' as not in use")
+                                except Exception as mark_error:
+                                    logger.warning(f"Failed to mark disk as not in use: {mark_error}")
                         except Exception as delete_error:
                             logger.error(f"Failed to delete volume {volume_id}: {delete_error}")
                             # Don't fail the whole cleanup if volume deletion fails
@@ -1377,12 +1625,36 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
             )
             # Don't fail the expiry for this
 
+        # Final safety: ensure disk is marked as not in use
+        # This handles edge cases where volume deletion failed but pod is gone
+        if reservation_data:
+            final_user_id = reservation_data.get('user_id')
+            final_disk_name = reservation_data.get('disk_name')
+            if final_user_id and final_disk_name:
+                try:
+                    mark_disk_not_in_use(final_user_id, final_disk_name)
+                    logger.info(f"Final cleanup: ensured disk '{final_disk_name}' is marked as not in use")
+                except Exception as final_disk_error:
+                    logger.warning(f"Final disk cleanup failed (non-fatal): {final_disk_error}")
+
     except Exception as e:
         logger.error(f"Error cleaning up pod {pod_name}: {str(e)}")
         logger.error(f"Exception type: {type(e).__name__}")
         import traceback
 
         logger.error(f"Full traceback: {traceback.format_exc()}")
+
+        # Even on error, try to mark disk as not in use to prevent stuck disks
+        if reservation_data:
+            error_user_id = reservation_data.get('user_id')
+            error_disk_name = reservation_data.get('disk_name')
+            if error_user_id and error_disk_name:
+                try:
+                    mark_disk_not_in_use(error_user_id, error_disk_name)
+                    logger.info(f"Error recovery: marked disk '{error_disk_name}' as not in use despite cleanup error")
+                except Exception as recovery_error:
+                    logger.error(f"Failed to mark disk as not in use during error recovery: {recovery_error}")
+
         raise
 
 

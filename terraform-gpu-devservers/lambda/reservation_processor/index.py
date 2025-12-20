@@ -57,8 +57,24 @@ CCACHE_SHARED_EFS_ID = os.environ.get("CCACHE_SHARED_EFS_ID")
 ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 
 # Version validation - injected via Terraform
-LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.2")
-MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.2")
+LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.5")
+MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.5")
+
+# GPU Configuration - single source of truth for all GPU type mappings
+GPU_CONFIG = {
+    "t4": {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
+    "l4": {"instance_type": "g6.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
+    "a10g": {"instance_type": "g5.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
+    "t4-small": {"instance_type": "g4dn.2xlarge", "max_gpus": 1, "cpus": 8, "memory_gb": 32},
+    "g5g": {"instance_type": "g5g.2xlarge", "max_gpus": 2, "cpus": 8, "memory_gb": 32},
+    "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8, "cpus": 96, "memory_gb": 1152},
+    "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
+    "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
+    "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
+    "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
+    "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
+}
+GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192}
 
 
 def retry_with_backoff(func, *args, max_retries=5, initial_delay=1, max_delay=32, **kwargs):
@@ -2255,7 +2271,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 # Create BuildKit job to build the image
                 # Use short reservation ID as tag
                 image_tag = reservation_id[:8]
-                buildkit_job_name = create_buildkit_job(
+                buildkit_job_name, is_cached = create_buildkit_job(
                     k8s_client,
                     reservation_id,
                     dockerfile_base64_data,
@@ -2263,57 +2279,72 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     ECR_REPOSITORY_URL
                 )
 
-                # Create progress callback to update DynamoDB status (with deduplication)
-                # Use list to allow modification in nested function
-                last_progress_message = [None]
+                # Extract actual image tag from job name (buildkit-{hash})
+                actual_image_tag = buildkit_job_name.replace("buildkit-", "")
 
-                def progress_callback(progress_message):
-                    try:
-                        # Only update if the progress message has actually changed
-                        if progress_message != last_progress_message[0]:
-                            update_reservation_status(
-                                reservation_id,
-                                "creating_server",
-                                detailed_status=progress_message
-                            )
-                            logger.info(
-                                f"Updated build progress for {reservation_id}: {progress_message}")
-                            last_progress_message[0] = progress_message
-                        # If message hasn't changed, skip the update (no log spam)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to update build progress for {reservation_id}: {str(e)}")
-
-                # Wait for build to complete
-                logger.info(
-                    f"Waiting for Docker build to complete: {buildkit_job_name}")
-                build_result = wait_for_buildkit_job(
-                    k8s_client,
-                    buildkit_job_name,
-                    timeout_seconds=900,  # 15 minutes
-                    progress_callback=progress_callback
-                )
-
-                if build_result["success"]:
-                    logger.info(
-                        f"Docker build successful for {reservation_id}")
-                    # Use the built image
-                    dockerimage = f"{ECR_REPOSITORY_URL}:{image_tag}"
-                    logger.info(f"Will use built image: {dockerimage}")
-                else:
-                    build_logs = build_result.get('logs', 'No logs available')
-                    logger.error(
-                        f"Docker build failed for {reservation_id}: {build_result['message']}")
-                    logger.error(
-                        f"Build logs for {reservation_id}:\n{build_logs}")
-                    # Update reservation to failed
+                if is_cached:
+                    # Image already exists in ECR - skip build, just use cached image
+                    logger.info(f"Using cached Docker image for {reservation_id}")
                     update_reservation_status(
                         reservation_id,
-                        "failed",
-                        detailed_status="Docker image build failed",
-                        failure_reason=f"Docker image build failed: {build_result['message']}\nLogs: {build_logs}"
+                        "creating_server",
+                        detailed_status="Using cached Docker image"
                     )
-                    return  # Don't raise exception, we've already marked as failed
+                    dockerimage = f"{ECR_REPOSITORY_URL}:{actual_image_tag}"
+                    logger.info(f"Will use cached image: {dockerimage}")
+                else:
+                    # Need to build or wait for build
+                    # Create progress callback to update DynamoDB status (with deduplication)
+                    # Use list to allow modification in nested function
+                    last_progress_message = [None]
+
+                    def progress_callback(progress_message):
+                        try:
+                            # Only update if the progress message has actually changed
+                            if progress_message != last_progress_message[0]:
+                                update_reservation_status(
+                                    reservation_id,
+                                    "creating_server",
+                                    detailed_status=progress_message
+                                )
+                                logger.info(
+                                    f"Updated build progress for {reservation_id}: {progress_message}")
+                                last_progress_message[0] = progress_message
+                            # If message hasn't changed, skip the update (no log spam)
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to update build progress for {reservation_id}: {str(e)}")
+
+                    # Wait for build to complete
+                    logger.info(
+                        f"Waiting for Docker build to complete: {buildkit_job_name}")
+                    build_result = wait_for_buildkit_job(
+                        k8s_client,
+                        buildkit_job_name,
+                        timeout_seconds=900,  # 15 minutes
+                        progress_callback=progress_callback
+                    )
+
+                    if build_result["success"]:
+                        logger.info(
+                            f"Docker build successful for {reservation_id}")
+                        # Use the built image
+                        dockerimage = f"{ECR_REPOSITORY_URL}:{actual_image_tag}"
+                        logger.info(f"Will use built image: {dockerimage}")
+                    else:
+                        build_logs = build_result.get('logs', 'No logs available')
+                        logger.error(
+                            f"Docker build failed for {reservation_id}: {build_result['message']}")
+                        logger.error(
+                            f"Build logs for {reservation_id}:\n{build_logs}")
+                        # Update reservation to failed
+                        update_reservation_status(
+                            reservation_id,
+                            "failed",
+                            detailed_status="Docker image build failed",
+                            failure_reason=f"Docker image build failed: {build_result['message']}\nLogs: {build_logs}"
+                        )
+                        return  # Don't raise exception, we've already marked as failed
 
             except Exception as build_error:
                 logger.error(
@@ -2407,6 +2438,13 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 )
 
                 logger.info(f"Persistent disk ready: {persistent_volume_id} (is_new={is_new_disk})")
+
+                # Mark disk as in_use in disks table (prevents CLI from showing as available)
+                try:
+                    mark_disk_in_use(user_id, disk_name or "default", True, reservation_id)
+                    logger.info(f"Marked disk '{disk_name or 'default'}' as in_use for reservation {reservation_id[:8]}")
+                except Exception as mark_error:
+                    logger.warning(f"Failed to mark disk as in_use: {mark_error}")
 
                 # Store disk_name in DynamoDB for tracking
                 if disk_name:
@@ -3259,64 +3297,29 @@ def find_available_node_port(k8s_client) -> int:
 
 def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> dict:
     """Get resource limits for pod based on GPU type and deployment mode"""
-    # Convert Decimal to int if coming from DynamoDB
     gpu_count = int(gpu_count)
     limits = {}
+    config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
+    max_gpus = config["max_gpus"]
 
-    # Define max GPUs per node for each GPU type
-    gpu_max_per_node = {
-        "t4": 4, "l4": 4, "a10g": 4, "t4-small": 1, "g5g": 2,
-        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
-        "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
-    }
-
-    # Set appropriate resource limits based on instance type and proportional allocation
     if gpu_type.startswith("cpu-"):
         # CPU instances get reasonable limits for dedicated nodes
         limits.update({
-            "cpu": "15",      # Reserve 1 CPU for system on 16-CPU nodes
-            "memory": "30Gi"  # Reserve 2GB for system on 32GB nodes
+            "cpu": str(config["cpus"] - 2),  # Reserve some for system
+            "memory": f"{config['memory_gb'] - 2}Gi"
         })
     else:
         # GPU instances get proportional CPU/memory based on GPU allocation
         if gpu_count > 0:
             limits["nvidia.com/gpu"] = str(gpu_count)
 
-            # Get instance specs for proportional allocation
-            instance_specs = {
-                "g4dn.12xlarge": {"cpus": 48, "memory_gb": 192},    # T4
-                "g6.12xlarge": {"cpus": 48, "memory_gb": 192},      # L4
-                "g5.12xlarge": {"cpus": 48, "memory_gb": 192},      # A10G
-                "g4dn.2xlarge": {"cpus": 8, "memory_gb": 32},       # T4-small
-                "p4d.24xlarge": {"cpus": 96, "memory_gb": 1152},    # A100
-                "p5.48xlarge": {"cpus": 192, "memory_gb": 2048},    # H100
-                "p5e.48xlarge": {"cpus": 192, "memory_gb": 2048},   # H200
-                "p6-b200.48xlarge": {"cpus": 192, "memory_gb": 2048}  # B200
-            }
-
-            # Get max GPUs per node for this GPU type
-            max_gpus = gpu_max_per_node.get(gpu_type, 1)
-
-            # Calculate proportional allocation: (requested_gpus / max_gpus) * total_resources
             gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
 
-            # Default fallback specs if instance type not found
-            default_specs = {"cpus": 48, "memory_gb": 192}
-
-            # Find instance type from GPU type mapping (approximate)
-            instance_type_map = {
-                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "a10g": "g5.12xlarge",
-                "t4-small": "g4dn.2xlarge", "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
-                "h200": "p5e.48xlarge", "b200": "p6-b200.48xlarge"
-            }
-
-            instance_type = instance_type_map.get(gpu_type)
-            specs = instance_specs.get(instance_type, default_specs)
-
-            # Calculate proportional limits (reserve some for system)
-            # 90% to reserve for system
-            proportional_cpu = int(specs["cpus"] * gpu_ratio * 0.9)
-            proportional_memory = int(specs["memory_gb"] * gpu_ratio * 0.9)
+            # Calculate proportional limits with CPU overprovisioning
+            # Give 1.5x CPU to allow burst capacity, capped at node total
+            fractional_cpu = config["cpus"] * gpu_ratio
+            proportional_cpu = min(config["cpus"], int(fractional_cpu * 1.5))
+            proportional_memory = int(config["memory_gb"] * gpu_ratio)
 
             limits.update({
                 "cpu": str(proportional_cpu),
@@ -3324,96 +3327,53 @@ def get_pod_resource_limits(gpu_count: int, gpu_type: str, is_multinode: bool = 
             })
 
     # EFA optimization: Only use EFA for full-node multinode deployments
-    # This prevents partial-node reservations from competing for limited EFA resources
-    max_gpus = gpu_max_per_node.get(gpu_type, 1)
     use_efa = (
-        gpu_type != "t4-small" and  # EFA not supported on t4-small
-        not gpu_type.startswith("cpu-") and  # EFA not needed for CPU instances
-        is_multinode and            # Only for multinode deployments
-        gpu_count == max_gpus       # Only when using all GPUs per node
+        gpu_type != "t4-small" and
+        not gpu_type.startswith("cpu-") and
+        is_multinode and
+        gpu_count == max_gpus
     )
 
     if use_efa:
         limits["vpc.amazonaws.com/efa"] = "1"
-        logger.info(
-            f"Using EFA for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
+        logger.info(f"Using EFA for multinode full-node deployment: {gpu_count}/{max_gpus} GPUs")
     else:
-        logger.info(
-            f"Skipping EFA: multinode={is_multinode}, gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
+        logger.info(f"Skipping EFA: multinode={is_multinode}, gpu_count={gpu_count}/{max_gpus}, gpu_type={gpu_type}")
 
     return limits
 
 
 def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> dict:
     """Get resource requests for pod based on GPU type and deployment mode"""
-    # Convert Decimal to int if coming from DynamoDB
     gpu_count = int(gpu_count)
     requests = {}
+    config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
+    max_gpus = config["max_gpus"]
 
-    # Define max GPUs per node for each GPU type
-    gpu_max_per_node = {
-        "t4": 4, "l4": 4, "a10g": 4, "t4-small": 1, "g5g": 2,
-        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
-        "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
-    }
-
-    # Set appropriate resource requests based on instance type
     if gpu_type.startswith("cpu-"):
-        # CPU instances request reasonable baseline
-        requests.update({
-            "cpu": "2",       # Reasonable baseline request
-            "memory": "4Gi"   # Reasonable baseline request
-        })
+        requests.update({"cpu": "2", "memory": "4Gi"})
     else:
-        # GPU instances get proportional requests (same logic as limits but more conservative)
         if gpu_count > 0:
             requests["nvidia.com/gpu"] = str(gpu_count)
-
-            # Reuse the same calculation logic for consistency
-            instance_specs = {
-                "g4dn.12xlarge": {"cpus": 48, "memory_gb": 192},
-                "g6.12xlarge": {"cpus": 48, "memory_gb": 192},
-                "g5.12xlarge": {"cpus": 48, "memory_gb": 192},
-                "g4dn.2xlarge": {"cpus": 8, "memory_gb": 32},
-                "p4d.24xlarge": {"cpus": 96, "memory_gb": 1152},
-                "p5.48xlarge": {"cpus": 192, "memory_gb": 2048},
-                "p5e.48xlarge": {"cpus": 192, "memory_gb": 2048},
-                "p6-b200.48xlarge": {"cpus": 192, "memory_gb": 2048}
-            }
-
-            max_gpus = gpu_max_per_node.get(gpu_type, 1)
             gpu_ratio = gpu_count / max_gpus if max_gpus > 0 else 1.0
 
-            instance_type_map = {
-                "t4": "g4dn.12xlarge", "l4": "g6.12xlarge", "a10g": "g5.12xlarge",
-                "t4-small": "g4dn.2xlarge", "a100": "p4d.24xlarge", "h100": "p5.48xlarge",
-                "h200": "p5e.48xlarge", "b200": "p6-b200.48xlarge"
-            }
-
-            instance_type = instance_type_map.get(gpu_type)
-            specs = instance_specs.get(
-                instance_type, {"cpus": 48, "memory_gb": 192})
-
             # Set requests = limits for Guaranteed QoS (enables CPU pinning)
-            # This ensures pods get dedicated CPU cores, not shared/time-sliced
-            proportional_cpu = int(specs["cpus"] * gpu_ratio * 0.9)
-            proportional_memory = int(specs["memory_gb"] * gpu_ratio * 0.9)
+            fractional_cpu = config["cpus"] * gpu_ratio
+            proportional_cpu = min(config["cpus"], int(fractional_cpu * 1.5))
+            proportional_memory = int(config["memory_gb"] * gpu_ratio)
 
             requests.update({
                 "cpu": str(proportional_cpu),
                 "memory": f"{proportional_memory}Gi"
             })
 
-    # EFA optimization: Only use EFA for full-node multinode deployments
-    # This prevents partial-node reservations from competing for limited EFA resources
-    max_gpus = gpu_max_per_node.get(gpu_type, 1)
+    # EFA: Only for full-node multinode deployments
     use_efa = (
-        gpu_type != "t4-small" and  # EFA not supported on t4-small
-        not gpu_type.startswith("cpu-") and  # EFA not needed for CPU instances
-        is_multinode and            # Only for multinode deployments
-        gpu_count == max_gpus       # Only when using all GPUs per node
+        gpu_type != "t4-small" and
+        not gpu_type.startswith("cpu-") and
+        is_multinode and
+        gpu_count == max_gpus
     )
-
     if use_efa:
         requests["vpc.amazonaws.com/efa"] = "1"
 
@@ -3422,17 +3382,49 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
 
 def _pod_uses_efa(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> bool:
     """Check if pod will use EFA based on configuration"""
-    gpu_max_per_node = {
-        "t4": 4, "l4": 4, "a10g": 4, "t4-small": 1, "g5g": 2,
-        "a100": 8, "h100": 8, "h200": 8, "b200": 8,
-        "cpu-arm": 0, "cpu-x86": 0  # CPU instances have 0 GPUs
-    }
-    max_gpus = gpu_max_per_node.get(gpu_type, 1)
+    config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
     return (
-        gpu_type != "t4-small" and  # EFA not supported on t4-small
-        is_multinode and            # Only for multinode deployments
-        gpu_count == max_gpus       # Only when using all GPUs per node
+        gpu_type != "t4-small" and
+        is_multinode and
+        gpu_count == config["max_gpus"]
     )
+
+
+def get_cpu_thread_env_vars(gpu_count: int, gpu_type: str) -> list:
+    """Get environment variables for CPU thread limiting.
+
+    These ensure that Python's multiprocessing, OpenMP, MKL, and other
+    parallel libraries use the correct number of threads based on the
+    pod's proportional CPU allocation (matching the resource limits).
+    """
+    from kubernetes import client
+
+    gpu_count = int(gpu_count)
+    config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
+    max_gpus = config["max_gpus"]
+
+    if gpu_type.startswith("cpu-"):
+        # CPU instances get all CPUs minus some for system
+        thread_count = max(1, config["cpus"] - 2)
+    elif max_gpus > 0 and gpu_count > 0:
+        # Proportional allocation matching resource limits calculation
+        gpu_ratio = gpu_count / max_gpus
+        fractional_cpu = config["cpus"] * gpu_ratio
+        # Use the same 1.5x factor as resource limits for consistency
+        thread_count = max(1, min(config["cpus"], int(fractional_cpu * 1.5)))
+    else:
+        thread_count = config["cpus"]
+
+    thread_str = str(thread_count)
+
+    return [
+        client.V1EnvVar(name="OMP_NUM_THREADS", value=thread_str),
+        client.V1EnvVar(name="MKL_NUM_THREADS", value=thread_str),
+        client.V1EnvVar(name="NUMEXPR_MAX_THREADS", value=thread_str),
+        client.V1EnvVar(name="OPENBLAS_NUM_THREADS", value=thread_str),
+        client.V1EnvVar(name="GOMAXPROCS", value=thread_str),
+        client.V1EnvVar(name="MAX_JOBS", value=thread_str),  # PyTorch build parallelism
+    ]
 
 
 def get_nccl_env_vars(gpu_type: str) -> list:
@@ -4323,7 +4315,7 @@ EOF
                         client.V1EnvVar(
                             name="NVIDIA_DRIVER_CAPABILITIES", value="compute,utility"
                         )
-                    ] + get_nccl_env_vars(gpu_type),
+                    ] + get_nccl_env_vars(gpu_type) + get_cpu_thread_env_vars(gpu_count, gpu_type),
                     resources=client.V1ResourceRequirements(
                         limits=get_pod_resource_limits(
                             gpu_count, gpu_type, is_multinode),
@@ -4681,6 +4673,44 @@ def get_node_instance_id() -> str:
         return None
 
 
+def mark_disk_in_use(user_id: str, disk_name: str, in_use: bool, reservation_id: str = None) -> None:
+    """
+    Update the disks table to mark a disk as in_use or not.
+    This prevents CLI from showing disk as available while cleanup is in progress.
+
+    Args:
+        user_id: User identifier
+        disk_name: Disk name
+        in_use: True to mark as in use, False to mark as available
+        reservation_id: Optional reservation ID that owns the disk
+    """
+    try:
+        disks_table_name = os.environ.get('DISKS_TABLE_NAME', 'pytorch-gpu-dev-disks')
+        disks_table = dynamodb.Table(disks_table_name)
+
+        update_expr = "SET in_use = :in_use, last_used = :last_used"
+        expr_values = {
+            ":in_use": in_use,
+            ":last_used": datetime.utcnow().isoformat()
+        }
+
+        if in_use and reservation_id:
+            update_expr += ", attached_to_reservation = :reservation_id"
+            expr_values[":reservation_id"] = reservation_id
+        elif not in_use:
+            update_expr += " REMOVE attached_to_reservation"
+
+        disks_table.update_item(
+            Key={'user_id': user_id, 'disk_name': disk_name},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_values
+        )
+        logger.info(f"Updated disk '{disk_name}' in_use={in_use} for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error updating disk in_use status: {e}")
+        raise
+
+
 def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, disk_name: str = None, reservation_id: str = None) -> tuple[str, bool, str]:
     """
     NEW snapshot-first workflow: Always recreate disk from latest snapshot or create empty.
@@ -4698,6 +4728,7 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
         logger.info(f"Creating disk for user {user_id} in AZ {availability_zone}" + (f", disk_name={disk_name}" if disk_name else ""))
 
         # Step 1: Check for in-use volumes with matching disk_name (prevent concurrent use)
+        # If volume is in-use, wait for it to be released (cleanup in progress)
         if disk_name:
             filters = [
                 {"Name": "tag:gpu-dev-user", "Values": [user_id]},
@@ -4705,12 +4736,43 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                 {"Name": "status", "Values": ["in-use", "available"]},
             ]
 
+            # Wait up to 2 minutes for volume to be released (cleanup takes ~30-60 seconds)
+            max_wait_seconds = 120
+            check_interval = 10
+            waited = 0
+
+            while waited < max_wait_seconds:
+                response = ec2_client.describe_volumes(Filters=filters)
+                in_use_volumes = [v for v in response.get("Volumes", []) if v["State"] == "in-use"]
+
+                if not in_use_volumes:
+                    if waited > 0:
+                        logger.info(f"Disk '{disk_name}' is now available after waiting {waited}s")
+                    break
+
+                volume_id = in_use_volumes[0]["VolumeId"]
+
+                if waited == 0:
+                    # First check - update status to show we're waiting
+                    logger.info(f"Disk '{disk_name}' (volume {volume_id}) is in use - waiting for cleanup to complete")
+                    if reservation_id:
+                        update_reservation_status(
+                            reservation_id,
+                            "preparing",
+                            detailed_status=f"Waiting for disk '{disk_name}' to be released from previous reservation"
+                        )
+
+                time.sleep(check_interval)
+                waited += check_interval
+                logger.info(f"Still waiting for disk '{disk_name}' to be released... ({waited}s/{max_wait_seconds}s)")
+
+            # Final check after wait loop
             response = ec2_client.describe_volumes(Filters=filters)
             in_use_volumes = [v for v in response.get("Volumes", []) if v["State"] == "in-use"]
 
             if in_use_volumes:
                 volume_id = in_use_volumes[0]["VolumeId"]
-                error_msg = f"Disk '{disk_name}' is currently in use (volume {volume_id}). Please wait for the current reservation to end."
+                error_msg = f"Disk '{disk_name}' is still in use after waiting {max_wait_seconds}s (volume {volume_id}). The previous reservation may not have cleaned up properly."
                 logger.error(error_msg)
                 raise RuntimeError(error_msg)
 
@@ -5206,12 +5268,12 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
 
         # Map instance type to GPU type
         gpu_type_mapping = {
-            "g4dn.xlarge": "T4",
-            "g4dn.2xlarge": "T4",
             "g4dn.4xlarge": "T4",
             "g4dn.8xlarge": "T4",
             "g4dn.12xlarge": "T4",
             "g4dn.16xlarge": "T4",
+            "g5.12xlarge": "A10G",
+            "g5g.2xlarge": "G5G",
             "g6.12xlarge": "L4",
             "g6.16xlarge": "L4",
             "g6.24xlarge": "L4",

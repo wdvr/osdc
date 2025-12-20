@@ -250,6 +250,14 @@ def _show_single_reservation(connection_info: dict) -> None:
         if warning_message:
             warning_section = f"\n\n{warning_message}"
 
+        # Check for OOM events
+        oom_count = connection_info.get("oom_count", 0)
+        last_oom_at = connection_info.get("last_oom_at")
+        oom_section = ""
+        if oom_count and int(oom_count) > 0:
+            oom_time_display = format_timestamp(last_oom_at) if last_oom_at else "Unknown"
+            oom_section = f"\n[red]⚠️  OOM Events:[/red] [red]{oom_count} OOM(s) detected (last: {oom_time_display})[/red]"
+
         panel_content = (
             f"[green]Reservation Details[/green]\n\n"
             f"[blue]Quick Connect:[/blue] {connect_command}\n"
@@ -263,6 +271,7 @@ def _show_single_reservation(connection_info: dict) -> None:
             + f"[blue]Storage:[/blue] {disk_status}\n"
             f"[blue]Started:[/blue] {launched_formatted}\n"
             f"[blue]Expires:[/blue] {expires_formatted}"
+            + oom_section
             + warning_section
         )
         panel = Panel.fit(panel_content, title="🚀 Active Reservation")
@@ -676,6 +685,10 @@ def reserve(
             # This comes BEFORE duration so user knows what they're reserving
             if disk is None and gpu_count <= max_gpus:  # Single node only
                 disk = select_disk_interactive(user_info["user_id"], config)
+                # Check if user cancelled
+                if disk == "__cancelled__":
+                    rprint("[yellow]Reservation cancelled.[/yellow]")
+                    return
                 # Check if user explicitly chose "no disk"
                 if disk == "__no_disk__":
                     explicit_no_disk = True
@@ -731,6 +744,10 @@ def reserve(
                             rprint(f"[red]❌ {str(e)}[/red]")
                             return
                     disk = select_disk_interactive(user_info["user_id"], config)
+                    # Check if user cancelled
+                    if disk == "__cancelled__":
+                        rprint("[yellow]Reservation cancelled.[/yellow]")
+                        return
                     # Check if user explicitly chose "no disk"
                     if disk == "__no_disk__":
                         explicit_no_disk = True
@@ -1475,6 +1492,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                             else:
                                 created_formatted = str(created_at)
 
+                    # Check for OOM events
+                    oom_count = reservation.get("oom_count", 0)
+                    if oom_count:
+                        oom_count = int(oom_count)
+
                     # Add color coding to status and determine if whole row should be dimmed
                     dim_row = False
                     if res_status == "failed":
@@ -1485,7 +1507,11 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                     elif res_status in ["queued", "pending", "preparing"]:
                         status_display = f"[yellow]{res_status}[/yellow]"
                     elif res_status == "active":
-                        status_display = f"[green]{res_status}[/green]"
+                        if oom_count > 0:
+                            # Show OOM indicator for active reservations that have OOMed
+                            status_display = f"[green]{res_status}[/green] [red](OOM x{oom_count})[/red]"
+                        else:
+                            status_display = f"[green]{res_status}[/green]"
                     else:
                         # No color for unknown statuses
                         status_display = str(res_status)

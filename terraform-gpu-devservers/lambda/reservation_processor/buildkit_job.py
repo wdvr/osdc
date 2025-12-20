@@ -18,7 +18,7 @@ def create_buildkit_job(
     dockerfile_base64_data: str,
     image_tag: str,
     ecr_repository_url: str
-) -> str:
+) -> tuple:
     """
     Create a Kubernetes Job that builds a Docker image using BuildKit
     Job name is based on build context hash, so identical Dockerfiles reuse the same job/image
@@ -31,7 +31,7 @@ def create_buildkit_job(
         ecr_repository_url: ECR repository URL
 
     Returns:
-        Job name that was created (or already exists)
+        Tuple of (job_name, is_cached) where is_cached=True if image already exists in ECR
     """
 
     # Hash the build context to create deterministic job name
@@ -60,7 +60,7 @@ def create_buildkit_job(
         )
         if response.get('imageDetails'):
             logger.info(f"Image {full_image_uri} already exists in ECR, skipping build")
-            return job_name  # Return job name for consistency, even though no job was created
+            return (job_name, True)  # Return job name and cached=True
     except ecr_client.exceptions.ImageNotFoundException:
         logger.info(f"Image {image_tag} not found in ECR, will build it")
     except Exception as e:
@@ -74,10 +74,10 @@ def create_buildkit_job(
         # Job exists - check its status
         if existing_job.status.succeeded:
             logger.info(f"BuildKit job {job_name} succeeded, image should be in ECR")
-            return job_name
+            return (job_name, True)  # Already built = cached
         elif existing_job.status.active:
             logger.info(f"BuildKit job {job_name} is already building this image, will wait for it")
-            return job_name
+            return (job_name, False)  # Still building, not cached
         elif existing_job.status.failed:
             logger.warning(f"BuildKit job {job_name} previously failed, deleting and recreating...")
             batch_v1.delete_namespaced_job(
@@ -148,15 +148,16 @@ EOF
             echo "[BUILDKIT] Docker config created"
 
             # Build with BuildKit daemonless mode with registry cache
+            # mode=max caches ALL intermediate layers, not just final result
             CACHE_URI="{ecr_repository_url.split(':')[0]}:cache"
-            echo "[BUILDKIT] Starting BuildKit build with registry cache..."
+            echo "[BUILDKIT] Starting BuildKit build with registry cache (mode=max)..."
             echo "[BUILDKIT] Cache location: $CACHE_URI"
             buildctl-daemonless.sh build \\
                 --frontend dockerfile.v0 \\
                 --local context=/tmp/work \\
                 --local dockerfile=/tmp/work \\
                 --output type=image,name={full_image_uri},push=true \\
-                --export-cache type=registry,ref=$CACHE_URI \\
+                --export-cache type=registry,ref=$CACHE_URI,mode=max \\
                 --import-cache type=registry,ref=$CACHE_URI
 
             echo "[BUILDKIT] Build completed successfully: {full_image_uri}"
@@ -230,7 +231,7 @@ EOF
     try:
         batch_v1.create_namespaced_job(namespace="gpu-dev", body=job)
         logger.info(f"Successfully created BuildKit job: {job_name}")
-        return job_name
+        return (job_name, False)  # New build, not cached
     except Exception as e:
         logger.error(f"Failed to create BuildKit job {job_name}: {str(e)}")
         raise

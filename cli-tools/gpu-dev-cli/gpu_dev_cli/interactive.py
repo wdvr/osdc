@@ -559,111 +559,130 @@ def _validate_extension(hours_str: str) -> bool:
 def select_disk_interactive(user_id: str, config: Any) -> Optional[str]:
     """
     Interactive disk selection for reserve command.
-    Returns disk_name or None if user chooses no disk or cancels.
+    Returns:
+        - disk_name: User selected an existing disk
+        - "__no_disk__": User explicitly chose no disk
+        - "__create_new__": User wants to create a new disk (handled internally)
+        - "__cancelled__": User cancelled (Ctrl+C or EOF)
     """
     if not check_interactive_support():
-        return None
+        return "__cancelled__"
 
     from .disks import list_disks
 
-    try:
-        # Get user's disks
-        disks = list_disks(user_id, config)
+    while True:  # Loop to support "Refresh list"
+        try:
+            # Get user's disks
+            disks = list_disks(user_id, config)
 
-        # Build choices
-        choices = []
+            # Build choices
+            choices = []
 
-        if disks:
-            # Add header
-            choices.append(questionary.Separator("=== Your Disks ==="))
+            if disks:
+                # Add header
+                choices.append(questionary.Separator("=== Your Disks ==="))
 
-            for disk in disks:
-                disk_name = disk['name']
-                size_gb = disk['size_gb']
-                snapshot_count = disk['snapshot_count']
+                for disk in disks:
+                    disk_name = disk['name']
+                    size_gb = disk['size_gb']
+                    disk_size = disk.get('disk_size', '')  # Actual used size like "23G"
+                    snapshot_count = disk['snapshot_count']
 
-                # Format display name
-                display_parts = [f"{disk_name} ({size_gb}GB, {snapshot_count} snapshots)"]
+                    # Format display name - show used/total like "23G / 1024GB"
+                    if disk_size:
+                        size_display = f"{disk_size} / {size_gb}GB"
+                    else:
+                        size_display = f"{size_gb}GB"
+                    display_parts = [f"{disk_name} ({size_display}, {snapshot_count} snapshots)"]
 
-                # Check if disk is deleted or in use
-                if disk.get('is_deleted', False):
-                    display_parts.append("[DELETED]")
-                    delete_date = disk.get('delete_date', 'unknown')
-                    choices.append(questionary.Choice(
-                        title=" ".join(display_parts),
-                        value=None,
-                        disabled=f"Soft-deleted, expires {delete_date}"
-                    ))
-                elif disk['in_use']:
-                    display_parts.append("[IN USE]")
-                    # Disable this choice
-                    choices.append(questionary.Choice(
-                        title=" ".join(display_parts),
-                        value=None,
-                        disabled="Currently in use by another reservation"
-                    ))
-                else:
-                    choices.append(questionary.Choice(
-                        title=" ".join(display_parts),
-                        value=disk_name
-                    ))
+                    # Check if disk is deleted or in use
+                    if disk.get('is_deleted', False):
+                        display_parts.append("[DELETED]")
+                        delete_date = disk.get('delete_date', 'unknown')
+                        choices.append(questionary.Choice(
+                            title=" ".join(display_parts),
+                            value=None,
+                            disabled=f"Soft-deleted, expires {delete_date}"
+                        ))
+                    elif disk['in_use']:
+                        display_parts.append("[IN USE]")
+                        # Disable this choice
+                        choices.append(questionary.Choice(
+                            title=" ".join(display_parts),
+                            value=None,
+                            disabled="Currently in use by another reservation"
+                        ))
+                    else:
+                        choices.append(questionary.Choice(
+                            title=" ".join(display_parts),
+                            value=disk_name
+                        ))
 
-        # Add options for creating new disk or no disk
-        choices.append(questionary.Separator("=== Options ==="))
-        choices.append(questionary.Choice(
-            title="Create new disk",
-            value="__create_new__"
-        ))
-        choices.append(questionary.Choice(
-            title="No disk (temporary storage only)",
-            value="__no_disk__"
-        ))
+            # Add options for creating new disk or no disk
+            choices.append(questionary.Separator("=== Options ==="))
+            choices.append(questionary.Choice(
+                title="Create new disk",
+                value="__create_new__"
+            ))
+            choices.append(questionary.Choice(
+                title="No disk (temporary storage only)",
+                value="__no_disk__"
+            ))
+            choices.append(questionary.Choice(
+                title="↻ Refresh list",
+                value="__refresh__"
+            ))
 
-        # Show selection
-        answer = questionary.select(
-            "Select a persistent disk:",
-            choices=choices,
-            style=custom_style,
-        ).ask()
-
-        if answer is None:
-            # User cancelled
-            return None
-
-        if answer == "__no_disk__":
-            # Return special marker to indicate explicit "no disk" choice
-            return "__no_disk__"
-
-        if answer == "__create_new__":
-            # Ask for disk name
-            disk_name = questionary.text(
-                "Enter name for new disk (alphanumeric, hyphens, underscores):",
-                validate=lambda x: _validate_disk_name(x),
+            # Show selection
+            answer = questionary.select(
+                "Select a persistent disk:",
+                choices=choices,
                 style=custom_style,
             ).ask()
 
-            if not disk_name:
-                return None
+            if answer is None:
+                # User cancelled (Ctrl+C)
+                return "__cancelled__"
 
-            # Create the disk
-            from .disks import create_disk
-            console.print(f"\n[cyan]Creating new disk '{disk_name}'...[/cyan]")
+            if answer == "__refresh__":
+                console.print("[cyan]Refreshing disk list...[/cyan]")
+                continue  # Loop back to refresh
 
-            success = create_disk(disk_name, user_id, config)
-            if success:
-                return disk_name
-            else:
-                console.print("[red]Failed to create disk. Continuing without persistent disk.[/red]")
-                return None
+            if answer == "__no_disk__":
+                # Return special marker to indicate explicit "no disk" choice
+                return "__no_disk__"
 
-        # Return selected disk name
-        return answer
+            if answer == "__create_new__":
+                # Ask for disk name
+                disk_name = questionary.text(
+                    "Enter name for new disk (alphanumeric, hyphens, underscores):",
+                    validate=lambda x: _validate_disk_name(x),
+                    style=custom_style,
+                ).ask()
 
-    except EOFError:
-        # Handle EOF (e.g., piped input) gracefully
-        console.print("\n[yellow]Disk selection cancelled. Continuing without persistent disk.[/yellow]")
-        return None
-    # Note: KeyboardInterrupt is NOT caught here - let it propagate to cancel the entire reservation
+                if not disk_name:
+                    return "__cancelled__"
+
+                # Create the disk
+                from .disks import create_disk
+                console.print(f"\n[cyan]Creating new disk '{disk_name}'...[/cyan]")
+
+                success = create_disk(disk_name, user_id, config)
+                if success:
+                    return disk_name
+                else:
+                    console.print("[red]Failed to create disk. Continuing without persistent disk.[/red]")
+                    return "__cancelled__"
+
+            # Return selected disk name
+            return answer
+
+        except EOFError:
+            # Handle EOF (e.g., piped input) gracefully
+            return "__cancelled__"
+        except KeyboardInterrupt:
+            # Handle Ctrl+C explicitly
+            return "__cancelled__"
 
 
 def _validate_disk_name(disk_name: str) -> bool:

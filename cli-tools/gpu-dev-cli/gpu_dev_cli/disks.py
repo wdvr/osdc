@@ -31,25 +31,51 @@ def get_disk_in_use_status(disk_name: str, user_id: str, config: Config) -> Tupl
     Check if a disk is currently in use by any reservation.
     Returns (is_in_use, reservation_id)
 
-    In snapshot-first system, we check for active reservations with disk_name field,
-    not for in-use volumes (volumes are ephemeral, created from snapshots on demand).
+    We check TWO sources to handle all race conditions:
+    1. Disks table `in_use` field - set by Lambda when disk is attached, cleared after cleanup
+    2. Reservations table - for in-progress reservations that haven't started disk setup yet
+
+    This prevents race conditions during both spinning up (queued/pending) and
+    winding down (cancelled but cleanup still running).
     """
     dynamodb = get_dynamodb_resource(config)
 
     try:
+        # First check: disks table in_use field (most reliable for cleanup in progress)
+        disks_table_name = config.disks_table if hasattr(config, 'disks_table') else f"{config.queue_name.rsplit('-', 1)[0]}-disks"
+        disks_table = dynamodb.Table(disks_table_name)
+
+        try:
+            disk_response = disks_table.get_item(
+                Key={'user_id': user_id, 'disk_name': disk_name}
+            )
+            disk_item = disk_response.get('Item', {})
+
+            # Check if disk is marked as in_use in the disks table
+            if disk_item.get('in_use', False):
+                attached_reservation = disk_item.get('attached_to_reservation')
+                return True, attached_reservation
+        except Exception as disk_check_error:
+            # If disks table check fails, fall through to reservation check
+            pass
+
+        # Second check: reservations table for in-progress reservations
         reservations_table = dynamodb.Table(config.reservations_table)
 
         # Use UserIndex for efficient query (instead of scan with pagination)
+        # Check ALL in-progress statuses to prevent race conditions
         response = reservations_table.query(
             IndexName="UserIndex",
             KeyConditionExpression="user_id = :user_id",
-            FilterExpression="disk_name = :disk_name AND #status IN (:active, :preparing)",
+            FilterExpression="disk_name = :disk_name AND #status IN (:active, :preparing, :queued, :pending)",
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={
                 ":user_id": user_id,
                 ":disk_name": disk_name,
                 ":active": "active",
-                ":preparing": "preparing"
+                ":preparing": "preparing",
+                ":queued": "queued",
+                ":pending": "pending"
             }
         )
 
@@ -59,13 +85,15 @@ def get_disk_in_use_status(disk_name: str, user_id: str, config: Config) -> Tupl
             response = reservations_table.query(
                 IndexName="UserIndex",
                 KeyConditionExpression="user_id = :user_id",
-                FilterExpression="disk_name = :disk_name AND #status IN (:active, :preparing)",
+                FilterExpression="disk_name = :disk_name AND #status IN (:active, :preparing, :queued, :pending)",
                 ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={
                     ":user_id": user_id,
                     ":disk_name": disk_name,
                     ":active": "active",
-                    ":preparing": "preparing"
+                    ":preparing": "preparing",
+                    ":queued": "queued",
+                    ":pending": "pending"
                 },
                 ExclusiveStartKey=response["LastEvaluatedKey"]
             )
