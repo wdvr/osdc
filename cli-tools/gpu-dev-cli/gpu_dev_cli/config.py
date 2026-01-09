@@ -106,28 +106,51 @@ class Config:
     def _load_environment_config(self) -> Dict[str, Any]:
         """Load environment configuration from ~/.config/.gpu-dev-environment.json
 
+        Migrates from legacy location ~/.gpu-dev-environment.json if needed.
         Creates the file with default region if it doesn't exist.
         """
-        if not self.environment_config_file.exists():
-            # Create default config with region on first run
-            default_config = {"region": "us-east-2"}
-            try:
-                # Ensure ~/.config directory exists
-                self.environment_config_file.parent.mkdir(parents=True, exist_ok=True)
-                with open(self.environment_config_file, "w") as f:
-                    json.dump(default_config, f, indent=2)
-            except Exception as e:
-                print(f"Warning: Could not create environment config file: {e}")
-            return default_config
+        legacy_config_file = Path.home() / ".gpu-dev-environment.json"
 
+        # If new config exists, use it
+        if self.environment_config_file.exists():
+            try:
+                with open(self.environment_config_file, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(
+                    f"Warning: Could not load environment config: {e}"
+                )
+                return {}
+
+        # Check for legacy config and migrate
+        if legacy_config_file.exists():
+            try:
+                with open(legacy_config_file, "r") as f:
+                    config = json.load(f)
+                # Migrate to new location
+                self.environment_config_file.parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                with open(self.environment_config_file, "w") as f:
+                    json.dump(config, f, indent=2)
+                print(
+                    f"Migrated config from {legacy_config_file} "
+                    f"to {self.environment_config_file}"
+                )
+                return config
+            except Exception as e:
+                print(f"Warning: Could not migrate legacy config: {e}")
+                return {}
+
+        # No config exists, create default with region
+        default_config = {"region": "us-east-2"}
         try:
-            with open(self.environment_config_file, "r") as f:
-                return json.load(f)
+            self.environment_config_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.environment_config_file, "w") as f:
+                json.dump(default_config, f, indent=2)
         except Exception as e:
-            print(
-                f"Warning: Could not load environment config file {self.environment_config_file}: {e}"
-            )
-            return {}
+            print(f"Warning: Could not create environment config file: {e}")
+        return default_config
 
     def _load_user_config(self) -> Dict[str, Any]:
         """Load user configuration from ~/.gpu-dev-config"""
