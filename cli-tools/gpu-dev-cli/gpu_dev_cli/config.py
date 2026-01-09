@@ -13,7 +13,7 @@ class Config:
     def __init__(self):
         # Config file paths
         self.config_file = Path.home() / ".gpu-dev-config"
-        self.environment_config_file = Path.home() / ".gpu-dev-environment.json"
+        self.environment_config_file = Path.home() / ".config" / ".gpu-dev-environment.json"
 
         # Load environment config first to get region
         self.environment_config = self._load_environment_config()
@@ -104,9 +104,21 @@ class Config:
             )
 
     def _load_environment_config(self) -> Dict[str, Any]:
-        """Load environment configuration from ~/.gpu-dev-environment.json"""
+        """Load environment configuration from ~/.config/.gpu-dev-environment.json
+
+        Creates the file with default region if it doesn't exist.
+        """
         if not self.environment_config_file.exists():
-            return {}
+            # Create default config with region on first run
+            default_config = {"region": "us-east-2"}
+            try:
+                # Ensure ~/.config directory exists
+                self.environment_config_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.environment_config_file, "w") as f:
+                    json.dump(default_config, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Could not create environment config file: {e}")
+            return default_config
 
         try:
             with open(self.environment_config_file, "r") as f:
