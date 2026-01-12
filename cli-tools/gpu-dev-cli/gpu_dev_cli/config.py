@@ -127,63 +127,65 @@ class Config:
         - ~/.gpu-dev-config (user config)
         - ~/.gpu-dev-environment.json (environment config)
 
-        Creates default config with prod environment if nothing exists.
+        Ensures required environment keys exist, filling from defaults.
         """
-        # If new config exists, use it
+        config = {}
+        needs_save = False
+
+        # Try to load existing config
         if self.CONFIG_FILE.exists():
             try:
                 with open(self.CONFIG_FILE, "r") as f:
-                    return json.load(f)
+                    config = json.load(f)
             except Exception as e:
                 print(f"Warning: Could not load config: {e}")
-                return {}
+        else:
+            # Migrate from legacy files
+            migrated_from = []
 
-        # Migrate from legacy files
-        merged_config = {}
-        migrated_from = []
+            if self.LEGACY_CONFIG_FILE.exists():
+                try:
+                    with open(self.LEGACY_CONFIG_FILE, "r") as f:
+                        config.update(json.load(f))
+                    migrated_from.append(str(self.LEGACY_CONFIG_FILE))
+                except Exception as e:
+                    print(f"Warning: Could not read {self.LEGACY_CONFIG_FILE}: {e}")
 
-        # Check legacy user config (~/.gpu-dev-config)
-        if self.LEGACY_CONFIG_FILE.exists():
-            try:
-                with open(self.LEGACY_CONFIG_FILE, "r") as f:
-                    merged_config.update(json.load(f))
-                migrated_from.append(str(self.LEGACY_CONFIG_FILE))
-            except Exception as e:
-                print(f"Warning: Could not read {self.LEGACY_CONFIG_FILE}: {e}")
+            if self.LEGACY_ENVIRONMENT_FILE.exists():
+                try:
+                    with open(self.LEGACY_ENVIRONMENT_FILE, "r") as f:
+                        config.update(json.load(f))
+                    migrated_from.append(str(self.LEGACY_ENVIRONMENT_FILE))
+                except Exception as e:
+                    print(f"Warning: Could not read {self.LEGACY_ENVIRONMENT_FILE}: {e}")
 
-        # Check legacy environment config (~/.gpu-dev-environment.json)
-        if self.LEGACY_ENVIRONMENT_FILE.exists():
-            try:
-                with open(self.LEGACY_ENVIRONMENT_FILE, "r") as f:
-                    merged_config.update(json.load(f))
-                migrated_from.append(str(self.LEGACY_ENVIRONMENT_FILE))
-            except Exception as e:
-                print(f"Warning: Could not read {self.LEGACY_ENVIRONMENT_FILE}: {e}")
-
-        # If we migrated anything, save to new location
-        if migrated_from:
-            try:
-                self._save_config(merged_config)
+            if migrated_from:
                 print(
                     f"Migrated config from {', '.join(migrated_from)} "
                     f"to {self.CONFIG_FILE}"
                 )
-            except Exception as e:
-                print(f"Warning: Could not save migrated config: {e}")
-            return merged_config
+                needs_save = True
 
-        # No config exists, create default with prod environment
+        # Ensure required environment keys exist
         default_env = self.ENVIRONMENTS[self.DEFAULT_ENVIRONMENT]
-        default_config = {
-            "environment": self.DEFAULT_ENVIRONMENT,
-            "region": default_env["region"],
-            "workspace": default_env["workspace"],
-        }
-        try:
-            self._save_config(default_config)
-        except Exception as e:
-            print(f"Warning: Could not create config file: {e}")
-        return default_config
+        if "region" not in config:
+            config["region"] = default_env["region"]
+            needs_save = True
+        if "environment" not in config:
+            config["environment"] = self.DEFAULT_ENVIRONMENT
+            needs_save = True
+        if "workspace" not in config:
+            config["workspace"] = default_env["workspace"]
+            needs_save = True
+
+        # Save if we added any defaults or migrated
+        if needs_save:
+            try:
+                self._save_config(config)
+            except Exception as e:
+                print(f"Warning: Could not save config: {e}")
+
+        return config
 
     def _save_config(self, config: Dict[str, Any]) -> None:
         """Save config dict to file."""
