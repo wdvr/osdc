@@ -43,8 +43,8 @@ class Config:
             self.aws_region = os.getenv(
                 "AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-2")
             )
-        
-        os.environ["AWS_DEFAULT_REGION"] = self.user_config["region"]
+
+        os.environ["AWS_DEFAULT_REGION"] = self.aws_region
 
         # Resource naming convention - no config needed!
         self.prefix = "pytorch-gpu-dev"
