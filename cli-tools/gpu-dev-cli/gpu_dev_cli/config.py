@@ -10,21 +10,41 @@ from typing import Dict, Any, Optional
 class Config:
     """Zero-config AWS-based configuration"""
 
+    # Environment configurations (test vs prod)
+    ENVIRONMENTS = {
+        "test": {
+            "region": "us-west-1",
+            "workspace": "default",
+            "description": "Test environment",
+        },
+        "prod": {
+            "region": "us-east-2",
+            "workspace": "prod",
+            "description": "Production environment",
+        },
+    }
+    DEFAULT_ENVIRONMENT = "prod"
+
+    # Config file path (class-level for access without instantiation)
+    CONFIG_FILE = Path.home() / ".config" / "gpu-dev" / "config.json"
+
+    # Legacy paths for migration
+    LEGACY_CONFIG_FILE = Path.home() / ".gpu-dev-config"
+    LEGACY_ENVIRONMENT_FILE = Path.home() / ".gpu-dev-environment.json"
+
     def __init__(self):
-        # Config file paths
-        self.config_file = Path.home() / ".gpu-dev-config"
-        self.environment_config_file = Path.home() / ".config" / ".gpu-dev-environment.json"
+        # Load unified config (handles migration from legacy files)
+        self.user_config = self._load_config()
 
-        # Load environment config first to get region
-        self.environment_config = self._load_environment_config()
-
-        # Get region from environment config file, then AWS env vars, or default
-        if self.environment_config.get("region"):
-            self.aws_region = self.environment_config["region"]
+        # Get region from config, then AWS env vars, or default
+        if self.user_config.get("region"):
+            self.aws_region = self.user_config["region"]
         else:
             self.aws_region = os.getenv(
                 "AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-2")
             )
+        
+        os.environ["AWS_DEFAULT_REGION"] = self.user_config["region"]
 
         # Resource naming convention - no config needed!
         self.prefix = "pytorch-gpu-dev"
@@ -43,9 +63,6 @@ class Config:
         self._sts_client = None
         self._sqs_client = None
         self._dynamodb = None
-
-        # Load user config
-        self.user_config = self._load_user_config()
 
     def _create_aws_session(self):
         """Create AWS session with profile support"""
@@ -103,86 +120,125 @@ class Config:
                 f"Cannot get AWS caller identity. Check AWS credentials: {e}"
             )
 
-    def _load_environment_config(self) -> Dict[str, Any]:
-        """Load environment configuration from ~/.config/.gpu-dev-environment.json
+    def _load_config(self) -> Dict[str, Any]:
+        """Load unified config from ~/.config/gpu-dev/config.json
 
-        Migrates from legacy location ~/.gpu-dev-environment.json if needed.
-        Creates the file with default region if it doesn't exist.
+        Migrates from legacy locations if needed:
+        - ~/.gpu-dev-config (user config)
+        - ~/.gpu-dev-environment.json (environment config)
+
+        Creates default config with prod environment if nothing exists.
         """
-        legacy_config_file = Path.home() / ".gpu-dev-environment.json"
-
         # If new config exists, use it
-        if self.environment_config_file.exists():
+        if self.CONFIG_FILE.exists():
             try:
-                with open(self.environment_config_file, "r") as f:
+                with open(self.CONFIG_FILE, "r") as f:
                     return json.load(f)
             except Exception as e:
-                print(
-                    f"Warning: Could not load environment config: {e}"
-                )
+                print(f"Warning: Could not load config: {e}")
                 return {}
 
-        # Check for legacy config and migrate
-        if legacy_config_file.exists():
+        # Migrate from legacy files
+        merged_config = {}
+        migrated_from = []
+
+        # Check legacy user config (~/.gpu-dev-config)
+        if self.LEGACY_CONFIG_FILE.exists():
             try:
-                with open(legacy_config_file, "r") as f:
-                    config = json.load(f)
-                # Migrate to new location
-                self.environment_config_file.parent.mkdir(
-                    parents=True, exist_ok=True
-                )
-                with open(self.environment_config_file, "w") as f:
-                    json.dump(config, f, indent=2)
-                print(
-                    f"Migrated config from {legacy_config_file} "
-                    f"to {self.environment_config_file}"
-                )
-                return config
+                with open(self.LEGACY_CONFIG_FILE, "r") as f:
+                    merged_config.update(json.load(f))
+                migrated_from.append(str(self.LEGACY_CONFIG_FILE))
             except Exception as e:
-                print(f"Warning: Could not migrate legacy config: {e}")
-                return {}
+                print(f"Warning: Could not read {self.LEGACY_CONFIG_FILE}: {e}")
 
-        # No config exists, create default with region
-        default_config = {"region": "us-east-2"}
+        # Check legacy environment config (~/.gpu-dev-environment.json)
+        if self.LEGACY_ENVIRONMENT_FILE.exists():
+            try:
+                with open(self.LEGACY_ENVIRONMENT_FILE, "r") as f:
+                    merged_config.update(json.load(f))
+                migrated_from.append(str(self.LEGACY_ENVIRONMENT_FILE))
+            except Exception as e:
+                print(f"Warning: Could not read {self.LEGACY_ENVIRONMENT_FILE}: {e}")
+
+        # If we migrated anything, save to new location
+        if migrated_from:
+            try:
+                self._save_config(merged_config)
+                print(
+                    f"Migrated config from {', '.join(migrated_from)} "
+                    f"to {self.CONFIG_FILE}"
+                )
+            except Exception as e:
+                print(f"Warning: Could not save migrated config: {e}")
+            return merged_config
+
+        # No config exists, create default with prod environment
+        default_env = self.ENVIRONMENTS[self.DEFAULT_ENVIRONMENT]
+        default_config = {
+            "environment": self.DEFAULT_ENVIRONMENT,
+            "region": default_env["region"],
+            "workspace": default_env["workspace"],
+        }
         try:
-            self.environment_config_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.environment_config_file, "w") as f:
-                json.dump(default_config, f, indent=2)
+            self._save_config(default_config)
         except Exception as e:
-            print(f"Warning: Could not create environment config file: {e}")
+            print(f"Warning: Could not create config file: {e}")
         return default_config
 
-    def _load_user_config(self) -> Dict[str, Any]:
-        """Load user configuration from ~/.gpu-dev-config"""
-        if not self.config_file.exists():
-            return {}
+    def _save_config(self, config: Dict[str, Any]) -> None:
+        """Save config dict to file."""
+        self.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.CONFIG_FILE, "w") as f:
+            json.dump(config, f, indent=2)
 
-        try:
-            with open(self.config_file, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Warning: Could not load config file {self.config_file}: {e}")
-            return {}
-
-    def save_user_config(self, key: str, value: str) -> None:
-        """Save a configuration value to ~/.gpu-dev-config"""
-        # Update in-memory config
+    def save_config(self, key: str, value: Any) -> None:
+        """Save a configuration value."""
         self.user_config[key] = value
+        self._save_config(self.user_config)
 
-        # Save to file
-        try:
-            with open(self.config_file, "w") as f:
-                json.dump(self.user_config, f, indent=2)
-        except Exception as e:
-            raise RuntimeError(f"Could not save config to {self.config_file}: {e}")
+    def set_environment(self, env_name: str) -> Dict[str, Any]:
+        """Set the environment (test or prod).
+
+        Args:
+            env_name: Environment name ('test' or 'prod')
+
+        Returns:
+            The environment config dict
+
+        Raises:
+            ValueError: If env_name is not valid
+
+        Note:
+            This does not invalidate cached AWS clients. In the CLI, this is
+            fine since each command is a separate process. If using Config
+            as a library, create a new instance after changing environments.
+        """
+        if env_name not in self.ENVIRONMENTS:
+            raise ValueError(
+                f"Invalid environment: {env_name}. "
+                f"Must be one of: {list(self.ENVIRONMENTS.keys())}"
+            )
+
+        env_config = self.ENVIRONMENTS[env_name]
+
+        # Update config with environment settings
+        self.user_config["environment"] = env_name
+        self.user_config["region"] = env_config["region"]
+        self.user_config["workspace"] = env_config["workspace"]
+
+        self._save_config(self.user_config)
+        self.aws_region = env_config["region"]
+        os.environ["AWS_DEFAULT_REGION"] = self.user_config["region"]
+
+        return env_config
+
+    def get(self, key: str) -> Optional[Any]:
+        """Get a config value."""
+        return self.user_config.get(key)
 
     def get_github_username(self) -> Optional[str]:
-        """Get GitHub username from config"""
+        """Get GitHub username from config."""
         return self.user_config.get("github_user")
-
-    def get_user_config_value(self, key: str) -> Optional[str]:
-        """Get any config value"""
-        return self.user_config.get(key)
 
 
 def load_config() -> Config:
