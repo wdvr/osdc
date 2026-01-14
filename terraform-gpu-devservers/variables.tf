@@ -172,3 +172,16 @@ variable "grafana_cloud_prometheus_password" {
   default     = ""
 }
 
+# GitHub Container Registry (ghcr.io) credentials for pull-through cache
+variable "ghcr_username" {
+  description = "GitHub username for ghcr.io authentication"
+  type        = string
+  default     = ""  # Set in tfvars
+}
+
+variable "ghcr_token" {
+  description = "GitHub Personal Access Token with read:packages scope for ghcr.io"
+  type        = string
+  sensitive   = true
+  default     = ""  # Set in tfvars
+}

@@ -14,6 +14,19 @@ systemctl stop nodeadm-run.service || true
 # Install basic monitoring tools
 yum install -y htop wget
 
+# Configure containerd to trust internal HTTP registry for pull-through cache
+# This must be done BEFORE nodeadm init starts containerd
+mkdir -p /etc/containerd/certs.d/registry-ghcr.gpu-controlplane.svc.cluster.local:5000
+cat > /etc/containerd/certs.d/registry-ghcr.gpu-controlplane.svc.cluster.local:5000/hosts.toml <<'REGISTRY_EOF'
+server = "http://registry-ghcr.gpu-controlplane.svc.cluster.local:5000"
+
+[host."http://registry-ghcr.gpu-controlplane.svc.cluster.local:5000"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+REGISTRY_EOF
+
+echo "Configured containerd to trust internal registry cache"
+
 # Configure and run nodeadm for EKS cluster joining
 # Get the base64 certificate data from AWS
 CA_DATA=$(aws eks describe-cluster --region ${region} --name ${cluster_name} --query 'cluster.certificateAuthority.data' --output text)
