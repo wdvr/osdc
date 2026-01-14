@@ -211,8 +211,46 @@ flowchart TB
 
 - **Node Groups**: GPU-enabled EC2 instances (g4dn.12xlarge for testing, p5.48xlarge for production)
 - **Namespace**: `gpu-dev` - dedicated namespace for reservation pods
+- **Namespace**: `gpu-controlplane` - control plane infrastructure (PostgreSQL, registry cache)
 - **NVIDIA Device Plugin**: Exposes GPU resources to Kubernetes scheduler
 - **Networking**: Full internet access, DNS resolution, NodePort services for SSH
+
+#### 6. **Node Management**
+
+Nodes are managed via **Terraform Auto Scaling Groups (ASGs)** with Launch Templates:
+
+```
+Terraform (tofu apply)
+    │
+    ├── Launch Templates (user-data scripts with containerd/docker config)
+    │       │
+    │       └── AWS Auto Scaling Groups
+    │               │
+    │               ├── GPU ASGs (one per GPU type: t4, a100, h100, h200, etc.)
+    │               │   └── min = max = desired (fixed size, no dynamic autoscaling)
+    │               │
+    │               └── CPU ASG (management nodes)
+    │                   └── min=1, max=4, desired=2
+```
+
+**Key Points:**
+- GPU ASGs have `min = max = desired` (fixed count from config)
+- ASG auto-replaces unhealthy nodes
+- User-data scripts baked into Launch Template, applied on instance boot
+- To update node config: `tofu apply` → instance refresh
+
+#### 7. **Registry Pull-Through Cache**
+
+Internal Docker registry that caches images from ghcr.io:
+
+- **Namespace**: `gpu-controlplane`
+- **Service**: `registry-ghcr:5000`
+- **Purpose**: Avoid ghcr.io authentication issues, improve pull times
+- **Usage**: `registry-ghcr.gpu-controlplane.svc.cluster.local:5000/org/image:tag`
+
+Nodes are configured to trust this HTTP registry via:
+- containerd: `/etc/containerd/certs.d/registry-ghcr.../hosts.toml`
+- Docker: `/etc/docker/daemon.json` with `insecure-registries`
 
 #### 6. **Kubernetes Resources**
 
@@ -331,3 +369,89 @@ The CLI determines which region to use in this order:
 1. `AWS_REGION` environment variable
 2. `AWS_DEFAULT_REGION` environment variable  
 3. Hardcoded default: `us-east-2` (production)
+
+## Node Management Operations
+
+### Replace Nodes with Updated Config
+
+When you update user-data scripts (e.g., containerd/docker config), nodes need to be replaced:
+
+```bash
+# 1. Apply Terraform to update launch templates
+tofu apply
+
+# 2. Cordon all nodes (prevent new scheduling)
+for node in $(kubectl get nodes -o name); do
+  kubectl cordon $node
+done
+
+# 3. Drain all nodes (evict pods)
+for node in $(kubectl get nodes -o name); do
+  kubectl drain $node --ignore-daemonsets --delete-emptydir-data --force --disable-eviction
+done
+
+# 4. Trigger instance refresh on ASGs
+aws autoscaling start-instance-refresh \
+  --region us-west-1 \
+  --auto-scaling-group-name pytorch-gpu-dev-cpu-nodes \
+  --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 300}'
+
+# 5. Monitor new nodes coming up
+kubectl get nodes -w
+```
+
+### Force Delete All Pods (Bypass PDB)
+
+If pods have PodDisruptionBudgets preventing drain:
+
+```bash
+# Delete all pods in specific namespaces
+kubectl delete pods --all -n gpu-controlplane --force --grace-period=0
+kubectl delete pods --all -n gpu-dev --force --grace-period=0
+kubectl delete pods -n kube-system -l app=ebs-csi-controller --force --grace-period=0
+kubectl delete pods -n kube-system -l k8s-app=kube-dns --force --grace-period=0
+```
+
+### List Auto Scaling Groups
+
+```bash
+aws autoscaling describe-auto-scaling-groups --region us-west-1 \
+  --query 'AutoScalingGroups[].{Name:AutoScalingGroupName,Desired:DesiredCapacity}' \
+  --output table
+```
+
+### Check Instance Refresh Status
+
+```bash
+aws autoscaling describe-instance-refreshes \
+  --region us-west-1 \
+  --auto-scaling-group-name pytorch-gpu-dev-cpu-nodes \
+  --query 'InstanceRefreshes[0].{Status:Status,PercentComplete:PercentageComplete}'
+```
+
+## Control Plane Infrastructure
+
+The `gpu-controlplane` namespace contains infrastructure services:
+
+### PostgreSQL (Primary-Replica)
+
+```bash
+# Check PostgreSQL pods
+kubectl get pods -n gpu-controlplane -l app=postgres
+
+# Connect to PostgreSQL
+kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev
+
+# Check replication status
+kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev -c "SELECT * FROM pg_stat_replication;"
+```
+
+### Registry Pull-Through Cache
+
+```bash
+# Check registry status
+kubectl get pods -n gpu-controlplane -l app=registry-cache
+
+# Test registry connectivity from a pod
+kubectl run test-registry --rm -it --image=busybox -- wget -q -O- http://registry-ghcr.gpu-controlplane:5000/v2/
+```
