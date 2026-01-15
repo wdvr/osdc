@@ -327,8 +327,8 @@ resource "kubernetes_config_map" "postgres_init_script" {
         -- Create replication user if not exists
         DO \$\$
         BEGIN
-          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$REPLICATION_USER') THEN
-            CREATE ROLE $REPLICATION_USER WITH REPLICATION LOGIN PASSWORD '$REPLICATION_PASSWORD';
+          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$${REPLICATION_USER}') THEN
+            CREATE ROLE $${REPLICATION_USER} WITH REPLICATION LOGIN PASSWORD '$${REPLICATION_PASSWORD}';
           END IF;
         END
         \$\$;
@@ -340,9 +340,9 @@ resource "kubernetes_config_map" "postgres_init_script" {
         CREATE EXTENSION IF NOT EXISTS pg_partman;
         
         -- Grant permissions
-        GRANT ALL ON SCHEMA pgmq TO $POSTGRES_USER;
-        GRANT ALL ON ALL TABLES IN SCHEMA pgmq TO $POSTGRES_USER;
-        GRANT ALL ON ALL SEQUENCES IN SCHEMA pgmq TO $POSTGRES_USER;
+        GRANT ALL ON SCHEMA pgmq TO $${POSTGRES_USER};
+        GRANT ALL ON ALL TABLES IN SCHEMA pgmq TO $${POSTGRES_USER};
+        GRANT ALL ON ALL SEQUENCES IN SCHEMA pgmq TO $${POSTGRES_USER};
       EOSQL
       
       echo "PGMQ extension enabled and replication user created."
@@ -435,6 +435,8 @@ resource "kubernetes_stateful_set" "postgres_primary" {
     }
   }
 
+  wait_for_rollout = false
+
   spec {
     service_name = "postgres-primary-headless"
     replicas     = 1
@@ -457,6 +459,12 @@ resource "kubernetes_stateful_set" "postgres_primary" {
       spec {
         service_account_name = kubernetes_service_account.postgres_sa.metadata[0].name
 
+        # Set fsGroup to postgres UID so volumes are writable
+        security_context {
+          fs_group                = 999
+          fs_group_change_policy  = "OnRootMismatch"
+        }
+
         # Prefer running on CPU management nodes
         node_selector = {
           NodeType = "cpu"
@@ -473,6 +481,10 @@ resource "kubernetes_stateful_set" "postgres_primary" {
         init_container {
           name  = "init-config"
           image = "busybox:1.36"
+
+          security_context {
+            run_as_user = 999
+          }
 
           command = ["/bin/sh", "-c"]
           args = [<<-EOT
@@ -683,6 +695,8 @@ resource "kubernetes_stateful_set" "postgres_replica" {
     }
   }
 
+  wait_for_rollout = false
+
   spec {
     service_name = "postgres-replica-headless"
     replicas     = 1
@@ -705,6 +719,12 @@ resource "kubernetes_stateful_set" "postgres_replica" {
       spec {
         service_account_name = kubernetes_service_account.postgres_sa.metadata[0].name
 
+        # Set fsGroup to postgres UID so volumes are writable
+        security_context {
+          fs_group                = 999
+          fs_group_change_policy  = "OnRootMismatch"
+        }
+
         # Prefer running on CPU management nodes
         node_selector = {
           NodeType = "cpu"
@@ -722,6 +742,10 @@ resource "kubernetes_stateful_set" "postgres_replica" {
         init_container {
           name  = "init-replica"
           image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
+
+          security_context {
+            run_as_user = 999
+          }
 
           command = ["/bin/bash", "-c"]
           args = [<<-EOT
