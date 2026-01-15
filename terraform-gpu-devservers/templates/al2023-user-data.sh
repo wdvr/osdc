@@ -73,20 +73,22 @@ yum install -y htop wget
 # =============================================================================
 
 # Configure containerd (certs.d method for containerd 1.5+)
-mkdir -p /etc/containerd/certs.d/registry-ghcr.gpu-controlplane.svc.cluster.local:5000
-cat > /etc/containerd/certs.d/registry-ghcr.gpu-controlplane.svc.cluster.local:5000/hosts.toml <<'REGISTRY_EOF'
-server = "http://registry-ghcr.gpu-controlplane.svc.cluster.local:5000"
+# Using Route53 private hosted zone DNS name (resolved via VPC DNS)
+REGISTRY_DNS="registry-ghcr.internal.pytorch-gpu-dev.local:5000"
+mkdir -p /etc/containerd/certs.d/$REGISTRY_DNS
+cat > /etc/containerd/certs.d/$REGISTRY_DNS/hosts.toml <<REGISTRY_EOF
+server = "http://$REGISTRY_DNS"
 
-[host."http://registry-ghcr.gpu-controlplane.svc.cluster.local:5000"]
+[host."http://$REGISTRY_DNS"]
   capabilities = ["pull", "resolve"]
   skip_verify = true
 REGISTRY_EOF
 
 # Configure Docker daemon (if Docker is present/used)
 mkdir -p /etc/docker
-cat > /etc/docker/daemon.json <<'DOCKER_EOF'
+cat > /etc/docker/daemon.json <<DOCKER_EOF
 {
-  "insecure-registries": ["registry-ghcr.gpu-controlplane.svc.cluster.local:5000"],
+  "insecure-registries": ["$REGISTRY_DNS"],
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "100m",
