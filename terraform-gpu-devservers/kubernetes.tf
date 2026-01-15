@@ -1,5 +1,10 @@
 # Kubernetes resources for GPU development pods
 
+# Local variable for internal registry DNS name (Route53 private hosted zone)
+locals {
+  registry_ghcr_dns = "registry-ghcr.internal.${var.prefix}.local:5000"
+}
+
 # AWS Auth ConfigMap to allow Lambda roles to access EKS
 # Use the kubernetes_config_map resource to manage the full ConfigMap
 resource "kubernetes_config_map" "aws_auth" {
@@ -490,7 +495,7 @@ resource "kubernetes_stateful_set" "postgres_primary" {
 
         container {
           name  = "postgres"
-          image = "registry-ghcr.gpu-controlplane.svc.cluster.local:5000/pgmq/pg18-pgmq:v1.8.1"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
 
           port {
             container_port = 5432
@@ -716,7 +721,7 @@ resource "kubernetes_stateful_set" "postgres_replica" {
         # Init container to set up streaming replication
         init_container {
           name  = "init-replica"
-          image = "registry-ghcr.gpu-controlplane.svc.cluster.local:5000/pgmq/pg18-pgmq:v1.8.1"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
 
           command = ["/bin/bash", "-c"]
           args = [<<-EOT
@@ -776,7 +781,7 @@ resource "kubernetes_stateful_set" "postgres_replica" {
 
         container {
           name  = "postgres"
-          image = "registry-ghcr.gpu-controlplane.svc.cluster.local:5000/pgmq/pg18-pgmq:v1.8.1"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
 
           port {
             container_port = 5432
@@ -923,7 +928,8 @@ resource "kubernetes_service" "postgres_replica" {
 # =============================================================================
 # Caches images from ghcr.io to avoid authentication issues and improve pull times
 # Usage: Instead of ghcr.io/org/image:tag, use:
-#        registry-ghcr.gpu-controlplane.svc.cluster.local:5000/org/image:tag
+#        registry-ghcr.internal.pytorch-gpu-dev.local:5000/org/image:tag
+# The DNS name is resolved via Route53 private hosted zone → internal NLB → registry pod
 
 # Secret for ghcr.io credentials (GitHub PAT with read:packages scope)
 # To create the PAT: GitHub → Settings → Developer settings → Personal access tokens
@@ -1189,6 +1195,7 @@ resource "kubernetes_deployment" "registry_ghcr" {
 }
 
 # Service for ghcr.io pull-through cache
+# Uses internal Network Load Balancer so nodes can reach it via VPC DNS
 resource "kubernetes_service" "registry_ghcr" {
   depends_on = [kubernetes_namespace.controlplane]
 
@@ -1198,10 +1205,17 @@ resource "kubernetes_service" "registry_ghcr" {
     labels = {
       app = "registry-cache"
     }
+    annotations = {
+      # Use internal NLB (not internet-facing)
+      "service.beta.kubernetes.io/aws-load-balancer-internal" = "true"
+      "service.beta.kubernetes.io/aws-load-balancer-type"     = "nlb"
+      # Cross-zone load balancing for reliability
+      "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
+    }
   }
 
   spec {
-    type = "ClusterIP"
+    type = "LoadBalancer"
 
     selector = {
       app      = "registry-cache"
