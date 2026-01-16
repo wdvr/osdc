@@ -5,6 +5,38 @@
 
 set -o xtrace
 
+# =============================================================================
+# Configure container runtimes to trust internal HTTP registry (pull-through cache)
+# This must be done BEFORE bootstrap.sh starts containerd/docker
+# =============================================================================
+
+# Configure containerd (certs.d method for containerd 1.5+)
+# Using Route53 private hosted zone DNS name (resolved via VPC DNS)
+REGISTRY_DNS="registry-ghcr.internal.pytorch-gpu-dev.local:5000"
+mkdir -p /etc/containerd/certs.d/$REGISTRY_DNS
+cat > /etc/containerd/certs.d/$REGISTRY_DNS/hosts.toml <<REGISTRY_EOF
+server = "http://$REGISTRY_DNS"
+
+[host."http://$REGISTRY_DNS"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+REGISTRY_EOF
+
+# Configure Docker daemon (if Docker is present/used)
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<DOCKER_EOF
+{
+  "insecure-registries": ["$REGISTRY_DNS"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "3"
+  }
+}
+DOCKER_EOF
+
+echo "Configured containerd and Docker to trust internal registry cache"
+
 # Join the EKS cluster using the standard bootstrap script with GPU type label
 /etc/eks/bootstrap.sh ${cluster_name} --kubelet-extra-args '--node-labels=GpuType=${gpu_type}'
 

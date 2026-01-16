@@ -156,6 +156,92 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:909
 kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
 ```
 
+## Node Management (Jan 2026)
+
+**Architecture:**
+- Nodes created via Terraform-managed Auto Scaling Groups (ASGs) with Launch Templates
+- GPU ASGs: Fixed size (min = max = desired from config), one per GPU type
+- CPU ASG: min=1, max=4, desired=2 for management workloads
+- No dynamic autoscaling - ASG maintains fixed count, replaces unhealthy nodes
+
+**User-data Scripts (terraform-gpu-devservers/templates/):**
+- `al2023-user-data.sh` - Amazon Linux 2023 GPU nodes
+- `al2023-cpu-user-data.sh` - Amazon Linux 2023 CPU nodes
+- `user-data-self-managed.sh` - Ubuntu 22.04 nodes
+- `user-data.sh` - Amazon Linux 2 nodes
+
+**Registry Configuration in User-data:**
+All templates configure containerd and Docker to trust the internal HTTP registry:
+```bash
+# containerd: /etc/containerd/certs.d/registry-ghcr.gpu-controlplane.svc.cluster.local:5000/hosts.toml
+# Docker: /etc/docker/daemon.json with insecure-registries
+```
+
+**Node Replacement Commands:**
+```bash
+# Cordon all nodes
+for node in $(kubectl get nodes -o name); do kubectl cordon $node; done
+
+# Drain all nodes (bypass PDB)
+for node in $(kubectl get nodes -o name); do
+  kubectl drain $node --ignore-daemonsets --delete-emptydir-data --force --disable-eviction
+done
+
+# Force delete pods if needed
+kubectl delete pods --all -n gpu-controlplane --force --grace-period=0
+kubectl delete pods -n kube-system -l app=ebs-csi-controller --force --grace-period=0
+
+# Trigger instance refresh
+aws autoscaling start-instance-refresh --region us-west-1 \
+  --auto-scaling-group-name pytorch-gpu-dev-cpu-nodes \
+  --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 300}'
+
+# Monitor
+kubectl get nodes -w
+```
+
+## Control Plane Infrastructure (Jan 2026)
+
+**Namespace:** `gpu-controlplane`
+
+**Components:**
+1. **PostgreSQL Primary-Replica** (replacing DynamoDB)
+   - Image: `ghcr.io/pgmq/pg18-pgmq:v1.8.1` (via registry cache)
+   - PGMQ extension enabled (replacing SQS)
+   - Services: `postgres-primary:5432` (read-write), `postgres-replica:5432` (read-only)
+   - Storage: 100Gi gp3 PVC per instance
+   - Credentials in `postgres-credentials` secret
+
+2. **Registry Pull-Through Cache** (for ghcr.io)
+   - Image: `registry:2` (from Docker Hub)
+   - Service: `registry-ghcr:5000`
+   - Proxies requests to ghcr.io with authentication
+   - Credentials in `registry-ghcr-credentials` secret (GHCR_USERNAME, GHCR_TOKEN)
+   - ConfigMap: `registry-ghcr-config` (config template)
+   - Storage: 50Gi gp3 PVC
+
+**Terraform Variables for ghcr.io auth:**
+```hcl
+# In tfvars (gitignored)
+ghcr_username = "your-github-username"
+ghcr_token    = "ghp_xxxxxxxxxxxx"  # PAT with read:packages scope
+```
+
+**Useful Commands:**
+```bash
+# Check control plane pods
+kubectl get pods -n gpu-controlplane
+
+# Connect to PostgreSQL
+kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev
+
+# Check registry logs
+kubectl logs -n gpu-controlplane -l app=registry-cache
+
+# Test PGMQ
+kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev -c "SELECT pgmq.create('test_queue');"
+```
+
 ## Recent Fixes (Oct 27, 2025)
 
 **NVIDIA Profiling Bootstrap Configuration (Oct 27, 2025):**
@@ -204,6 +290,16 @@ kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
 - **Benefit**: No more waiting for disk detachment, no snapshot restoration, clean EmptyDir volume from the start. Even if disk operations fail mid-way, exception handler ensures no disk is attached.
 
 ### 📋 Remaining Tasks
+
+- **PostgreSQL Migration (In Progress)** - Replace SQS/DynamoDB with PostgreSQL + PGMQ:
+  - [x] Create gpu-controlplane namespace
+  - [x] Deploy PostgreSQL primary-replica with PGMQ
+  - [x] Set up registry pull-through cache for ghcr.io
+  - [x] Configure containerd/docker on nodes to trust internal registry
+  - [ ] Define PostgreSQL schema for reservations/disks tables
+  - [ ] Create reservation controller service (replaces Lambda)
+  - [ ] Migrate CLI to use PostgreSQL directly
+  - [ ] Remove SQS/DynamoDB dependencies
 
 - **FQDN for devservers** - Set up proper domain names for development server access
 - **Automated SSH config per reservation** - ✅ DONE - Each reservation now gets `~/.devgpu/<reservation_id>-sshconfig` file, use with `ssh -F ~/.devgpu/<reservation_id>-sshconfig <pod_name>`
@@ -269,11 +365,17 @@ kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
 
 **Reservation System:**
 
-- SQS queue for async reservation requests
+- SQS queue for async reservation requests (migrating to PostgreSQL + PGMQ)
 - Lambda functions for pod creation and expiry management
-- DynamoDB for reservation and server state tracking
+- DynamoDB for reservation and server state tracking (migrating to PostgreSQL)
 - Kubernetes pods with GPU resource allocation (1/2/4 GPUs)
 - NodePort services for SSH access to pods
+
+**Control Plane Infrastructure (gpu-controlplane namespace):**
+
+- PostgreSQL primary-replica with PGMQ extension (replacing SQS/DynamoDB)
+- Registry pull-through cache for ghcr.io images
+- Future: Reservation controller service (replacing Lambda)
 
 **Authentication & Access:**
 

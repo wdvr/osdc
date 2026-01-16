@@ -14,6 +14,38 @@ systemctl stop nodeadm-run.service || true
 # Install basic monitoring tools
 yum install -y htop wget
 
+# =============================================================================
+# Configure container runtimes to trust internal HTTP registry (pull-through cache)
+# This must be done BEFORE nodeadm init starts containerd/docker
+# =============================================================================
+
+# Configure containerd (certs.d method for containerd 1.5+)
+# Using Route53 private hosted zone DNS name (resolved via VPC DNS)
+REGISTRY_DNS="registry-ghcr.internal.pytorch-gpu-dev.local:5000"
+mkdir -p /etc/containerd/certs.d/$REGISTRY_DNS
+cat > /etc/containerd/certs.d/$REGISTRY_DNS/hosts.toml <<REGISTRY_EOF
+server = "http://$REGISTRY_DNS"
+
+[host."http://$REGISTRY_DNS"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+REGISTRY_EOF
+
+# Configure Docker daemon (if Docker is present/used)
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<DOCKER_EOF
+{
+  "insecure-registries": ["$REGISTRY_DNS"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "3"
+  }
+}
+DOCKER_EOF
+
+echo "Configured containerd and Docker to trust internal registry cache"
+
 # Configure and run nodeadm for EKS cluster joining
 # Get the base64 certificate data from AWS
 CA_DATA=$(aws eks describe-cluster --region ${region} --name ${cluster_name} --query 'cluster.certificateAuthority.data' --output text)
