@@ -1,0 +1,454 @@
+# GPU Dev Infrastructure - Claude AI Context
+
+> **Purpose**: This document provides context for AI assistants (like Claude) working on this project.
+
+## 📋 Project Overview
+
+**GPU Development Infrastructure** - Terraform-managed Kubernetes infrastructure for on-demand GPU development environments.
+
+### Key Components
+
+1. **EKS Cluster** - Kubernetes cluster with GPU and CPU node groups
+2. **PostgreSQL + PGMQ** - Database with message queue for job management
+3. **API Service** - REST API for job submission with AWS IAM auth
+4. **SSH Proxy** - Secure access to development environments
+5. **Registry Cache** - Docker image caching (GHCR)
+
+## 🏗️ Architecture
+
+```
+┌──────────────┐
+│  CLI Client  │ (User's laptop with AWS credentials)
+└──────┬───────┘
+       │ AWS IAM Auth
+       ↓
+┌──────────────────────────────────────────┐
+│  Classic LoadBalancer (Internet-facing)  │
+└──────┬───────────────────────────────────┘
+       │
+┌──────▼──────────────────────────────────┐
+│  EKS Cluster (gpu-controlplane)         │
+│                                          │
+│  ┌────────────┐     ┌──────────────┐   │
+│  │ API Service│────▶│ PostgreSQL   │   │
+│  │ (FastAPI)  │     │ + PGMQ       │   │
+│  └────────────┘     └──────────────┘   │
+│                                          │
+│  ┌────────────┐     ┌──────────────┐   │
+│  │ SSH Proxy  │     │ Registry     │   │
+│  │            │     │ Cache (GHCR) │   │
+│  └────────────┘     └──────────────┘   │
+└──────────────────────────────────────────┘
+```
+
+## 🚀 Quick Start Commands
+
+### Deploy Everything
+
+```bash
+cd terraform-gpu-devservers
+terraform init
+terraform apply
+```
+
+### Get API Service URL
+
+**Method 1: Terraform Output**
+```bash
+terraform output api_service_url
+# Output: http://a1234567890.us-east-1.elb.amazonaws.com
+```
+
+**Method 2: kubectl**
+```bash
+kubectl get svc -n gpu-controlplane api-service-public \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
+**Method 3: Wait and Watch**
+```bash
+# Watch LoadBalancer get created (2-3 minutes):
+kubectl get svc -n gpu-controlplane api-service-public -w
+```
+
+### Test API Service
+
+```bash
+# Get URL
+URL=$(terraform output -raw api_service_url)
+
+# Health check
+curl $URL/health | jq .
+
+# API info
+curl $URL/ | jq .
+
+# View Swagger docs
+echo "Open: $URL/docs"
+```
+
+## 📁 Project Structure
+
+```
+terraform-gpu-devservers/
+├── main.tf                 # EKS cluster, VPC, IAM
+├── kubernetes.tf           # K8s resources (postgres, ssh-proxy)
+├── api-service.tf          # API service deployment
+├── docker-build.tf         # Docker build utilities
+├── variables.tf            # Input variables
+├── outputs.tf              # Output values
+├── api-service/            # API service code
+│   ├── app/
+│   │   └── main.py        # FastAPI application (770 lines)
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── README.md          # API documentation
+│   └── test_api.sh
+└── README.md              # Main project documentation
+```
+
+## 🔑 Key Technologies
+
+- **Terraform** - Infrastructure as Code
+- **Kubernetes (EKS)** - Container orchestration
+- **PostgreSQL** - Database
+- **PGMQ** - Postgres-based message queue
+- **FastAPI** - Python async web framework
+- **aioboto3** - Async AWS SDK
+- **asyncpg** - Async PostgreSQL driver
+
+## 🗄️ Database Schema
+
+### `api_users` Table
+```sql
+CREATE TABLE api_users (
+    user_id SERIAL PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    email VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT true
+);
+
+-- Index for fast username lookups
+CREATE UNIQUE INDEX idx_api_users_username ON api_users(username);
+```
+
+### `api_keys` Table
+```sql
+CREATE TABLE api_keys (
+    key_id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES api_users(user_id) ON DELETE CASCADE,
+    key_hash VARCHAR(128) NOT NULL UNIQUE,
+    key_prefix VARCHAR(16) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    last_used_at TIMESTAMP WITH TIME ZONE,
+    is_active BOOLEAN DEFAULT true,
+    description TEXT
+);
+
+-- Indexes for performance
+CREATE INDEX idx_api_keys_hash ON api_keys(key_hash) WHERE is_active = true;
+CREATE INDEX idx_api_keys_user_id ON api_keys(user_id) WHERE is_active = true;
+CREATE INDEX idx_api_keys_expires_at ON api_keys(expires_at) 
+    WHERE is_active = true AND expires_at IS NOT NULL;
+```
+
+## 🔐 Authentication Flow
+
+1. **User** runs `gpu-dev login` with AWS credentials
+2. **CLI** sends credentials to API (`POST /v1/auth/aws-login`)
+3. **API** calls AWS STS to verify credentials and get ARN
+4. **API** checks if ARN contains role `SSOCloudDevGpuReservation`
+5. **API** extracts username from ARN
+6. **API** creates/updates user in database
+7. **API** generates time-limited API key (expires in 2 hours)
+8. **API** returns key to CLI
+9. **CLI** saves key locally (`~/.gpu-dev/credentials`)
+10. **CLI** uses key for subsequent API calls
+
+### Example Authentication Request
+
+```bash
+curl -X POST http://API_URL/v1/auth/aws-login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "aws_access_key_id": "ASIA...",
+    "aws_secret_access_key": "...",
+    "aws_session_token": "..."
+  }'
+```
+
+**Response:**
+```json
+{
+  "api_key": "long-secure-token-here",
+  "key_prefix": "firstchars",
+  "user_id": 123,
+  "username": "john",
+  "aws_arn": "arn:aws:sts::123:assumed-role/SSOCloudDevGpuReservation/john",
+  "expires_at": "2024-01-15T14:30:00Z",
+  "ttl_hours": 2
+}
+```
+
+## 🛠️ Common Development Tasks
+
+### Update API Code
+
+```bash
+# Edit code
+vim api-service/app/main.py
+
+# Terraform will rebuild and redeploy on next apply
+terraform apply
+
+# Or manually rebuild
+cd api-service
+docker build -t gpu-dev-api:latest .
+```
+
+### View API Logs
+
+```bash
+# Follow logs
+kubectl logs -f -n gpu-controlplane -l app=api-service
+
+# Last 100 lines
+kubectl logs -n gpu-controlplane -l app=api-service --tail=100
+
+# All pods
+kubectl logs -n gpu-controlplane -l app=api-service --all-containers
+```
+
+### Debug API Issues
+
+```bash
+# Check pod status
+kubectl get pods -n gpu-controlplane -l app=api-service
+
+# Describe pod
+kubectl describe pod -n gpu-controlplane -l app=api-service
+
+# Execute into pod
+kubectl exec -it -n gpu-controlplane deployment/api-service -- /bin/bash
+
+# Check environment variables
+kubectl exec -n gpu-controlplane deployment/api-service -- env | grep POSTGRES
+```
+
+### Database Access
+
+```bash
+# Port forward to postgres
+kubectl port-forward -n gpu-controlplane svc/postgres-primary 5432:5432
+
+# Connect with psql
+PGPASSWORD=$(kubectl get secret -n gpu-controlplane postgres-credentials \
+  -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d) \
+psql -h localhost -U gpudev -d gpudev
+
+# List tables
+\dt
+
+# Check users
+SELECT * FROM api_users;
+
+# Check active API keys
+SELECT key_prefix, username, expires_at, created_at 
+FROM api_keys k 
+JOIN api_users u ON k.user_id = u.user_id 
+WHERE k.is_active = true;
+```
+
+## 🔧 Configuration
+
+### API Service Environment Variables
+
+Set in `api-service.tf` ConfigMap:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `API_KEY_TTL_HOURS` | 2 | API key lifetime (1-168 hours) |
+| `ALLOWED_AWS_ROLE` | SSOCloudDevGpuReservation | Required AWS role name |
+| `AWS_REGION` | us-east-1 | AWS region for STS calls |
+| `QUEUE_NAME` | gpu_reservations | PGMQ queue name |
+
+### Database Connection
+
+Set via individual environment variables:
+- `POSTGRES_HOST` - Database hostname
+- `POSTGRES_PORT` - Database port (5432)
+- `POSTGRES_USER` - Database user (gpudev)
+- `POSTGRES_PASSWORD` - Database password (from secret)
+- `POSTGRES_DB` - Database name (gpudev)
+
+## 📊 API Endpoints
+
+### Public Endpoints
+
+- `GET /` - API information
+- `GET /health` - Health check
+- `GET /docs` - Swagger UI
+- `POST /v1/auth/aws-login` - AWS authentication
+
+### Authenticated Endpoints
+
+Require `Authorization: Bearer <api-key>` header:
+
+- `POST /v1/jobs/submit` - Submit GPU job
+- `GET /v1/jobs/{job_id}` - Get job status
+- `GET /v1/jobs` - List user's jobs
+- `POST /v1/keys/rotate` - Rotate API key
+
+## 🐛 Troubleshooting
+
+### LoadBalancer Stuck in Pending
+
+```bash
+# Check service status
+kubectl describe svc -n gpu-controlplane api-service-public
+
+# Check AWS LoadBalancer
+aws elb describe-load-balancers --region us-east-1 | grep gpu-dev
+
+# Wait for it (can take 2-3 minutes)
+kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' \
+  svc/api-service-public -n gpu-controlplane --timeout=5m
+```
+
+### Database Connection Failed
+
+```bash
+# Check postgres is running
+kubectl get pods -n gpu-controlplane -l app=postgres
+
+# Check postgres logs
+kubectl logs -n gpu-controlplane postgres-primary-0
+
+# Verify secret exists
+kubectl get secret -n gpu-controlplane postgres-credentials
+
+# Test connection from API pod
+kubectl exec -n gpu-controlplane deployment/api-service -- \
+  psql -h postgres-primary -U gpudev -d gpudev -c "SELECT 1"
+```
+
+### API Pod CrashLooping
+
+```bash
+# Check pod events
+kubectl describe pod -n gpu-controlplane -l app=api-service
+
+# Check logs
+kubectl logs -n gpu-controlplane -l app=api-service --previous
+
+# Common issues:
+# 1. Database password wrong -> Check POSTGRES_PASSWORD env var
+# 2. PGMQ not installed -> Check postgres logs
+# 3. IAM role not attached -> Check service account annotations
+```
+
+### Authentication Failed
+
+```bash
+# Test AWS credentials locally
+aws sts get-caller-identity
+
+# Check if role is correct
+aws sts get-caller-identity | jq -r .Arn
+# Should contain: SSOCloudDevGpuReservation
+
+# Test API directly
+curl -X POST http://API_URL/v1/auth/aws-login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "aws_access_key_id": "YOUR_KEY",
+    "aws_secret_access_key": "YOUR_SECRET",
+    "aws_session_token": "YOUR_TOKEN"
+  }' | jq .
+```
+
+## 🔒 Security Notes
+
+### What's Secure
+
+✅ API keys are SHA-256 hashed in database  
+✅ API keys expire after 2 hours  
+✅ AWS credentials verified with STS  
+✅ Role-based access control (RBAC)  
+✅ Database passwords in Kubernetes secrets  
+✅ No plaintext credentials in code  
+
+### What's NOT Secure (Yet)
+
+⚠️ HTTP only (no HTTPS) - Add ACM certificate for production  
+⚠️ No rate limiting - Add nginx ingress with rate limits  
+⚠️ No audit logging - Add logging/monitoring  
+⚠️ No DDoS protection - Use AWS Shield/CloudFlare  
+
+## 📝 Important Code Locations
+
+### API Service Code
+- **Main app**: `api-service/app/main.py` (770 lines)
+- **Authentication logic**: Lines 265-305 (AWS verification)
+- **API key generation**: Lines 328-347
+- **Job submission**: Lines 497-530
+
+### Terraform Configuration
+- **API deployment**: `api-service.tf` (433 lines)
+- **Docker build**: Lines 47-117
+- **Kubernetes resources**: Lines 119-417
+- **LoadBalancer**: Lines 380-417
+
+### Database Schema
+- **Schema creation**: `api-service/app/main.py` lines 76-118
+- **Indexes**: Lines 100-118
+
+## 🎯 Current State
+
+**✅ Completed:**
+- EKS cluster with GPU/CPU nodes
+- PostgreSQL with PGMQ installed
+- API service with AWS IAM auth
+- Classic LoadBalancer (internet-facing)
+- Docker build automation
+- Health checks and monitoring
+- Comprehensive documentation
+
+**🚧 In Progress:**
+- CLI tool integration
+- HTTPS/TLS (requires ACM certificate)
+
+**📋 TODO:**
+- Add rate limiting
+- Add audit logging
+- Add metrics/monitoring (Prometheus)
+- Implement job status tracking
+- Add CI/CD pipeline
+
+## 💡 Tips for AI Assistants
+
+1. **Always check current state** before making changes
+2. **Use kubectl** to verify Kubernetes resources
+3. **Check logs** when debugging issues
+4. **Read existing code** before suggesting changes
+5. **Test locally** when possible (docker-compose)
+6. **Follow existing patterns** in the codebase
+7. **Update documentation** when changing functionality
+
+## 📞 Getting Help
+
+- Check `README.md` in api-service directory
+- Review API docs at `http://API_URL/docs`
+- Check Kubernetes events: `kubectl describe pod ...`
+- View logs: `kubectl logs ...`
+- Check AWS console for LoadBalancer status
+
+---
+
+**Last Updated**: 2025-01-16  
+**Terraform Version**: 1.5+  
+**Kubernetes Version**: 1.28+  
+**Python Version**: 3.11  
+
