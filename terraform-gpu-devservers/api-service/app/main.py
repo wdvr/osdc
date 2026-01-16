@@ -12,8 +12,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import aioboto3
 import asyncpg
-import boto3
 from botocore.exceptions import ClientError
 from fastapi import Depends, FastAPI, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -98,11 +98,32 @@ async def lifespan(app: FastAPI):
             )
         """)
 
-        # Create index for faster lookups
+        # Create indexes for faster lookups
+        # Index on api_keys.key_hash (for API key verification)
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_api_keys_hash
             ON api_keys(key_hash)
             WHERE is_active = true
+        """)
+
+        # Index on api_keys.user_id (for listing user's keys)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_api_keys_user_id
+            ON api_keys(user_id)
+            WHERE is_active = true
+        """)
+
+        # Index on api_keys.expires_at (for cleanup queries)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at
+            ON api_keys(expires_at)
+            WHERE is_active = true AND expires_at IS NOT NULL
+        """)
+
+        # Index on api_users.username (for login lookups)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_api_users_username
+            ON api_users(username)
         """)
 
         # Create PGMQ queue if not exists
@@ -194,13 +215,22 @@ class APIKeyResponse(BaseModel):
 class AWSLoginRequest(BaseModel):
     """Request for AWS-based authentication"""
     aws_access_key_id: str = Field(
-        ..., description="AWS access key ID"
+        ...,
+        description="AWS access key ID",
+        min_length=16,
+        max_length=128
     )
     aws_secret_access_key: str = Field(
-        ..., description="AWS secret access key"
+        ...,
+        description="AWS secret access key",
+        min_length=40,
+        max_length=128
     )
     aws_session_token: str | None = Field(
-        None, description="AWS session token (for assumed roles)"
+        None,
+        description="AWS session token (for assumed roles)",
+        min_length=100,
+        max_length=2048
     )
 
 
@@ -234,7 +264,7 @@ def hash_api_key(api_key: str) -> str:
 
 def extract_username_from_arn(arn: str) -> str:
     """
-    Extract username from AWS ARN
+    Extract username from AWS ARN with validation
     Examples:
       arn:aws:sts::123456789:assumed-role/SSOCloudDevGpuReservation/john
         -> john
@@ -243,9 +273,54 @@ def extract_username_from_arn(arn: str) -> str:
     """
     parts = arn.split('/')
     if len(parts) >= 2:
-        return parts[-1]  # Last part is usually the username
-    # Fallback to using the full ARN as username
-    return arn.split(':')[-1].replace('/', '-')
+        username = parts[-1]
+        # Validate username contains only safe characters
+        # Allow: alphanumeric, dot, underscore, hyphen
+        if username and re.match(r'^[a-zA-Z0-9._-]+$', username):
+            return username[:255]  # Ensure max length
+        # If invalid characters, sanitize them
+        sanitized = re.sub(r'[^a-zA-Z0-9._-]', '-', username)[:255]
+        if sanitized:
+            return sanitized
+
+    # Fallback - sanitize ARN suffix
+    fallback = arn.split(':')[-1].replace('/', '-')
+    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '-', fallback)[:255]
+
+    # Ensure we got something valid
+    if not sanitized or len(sanitized) < 1:
+        raise ValueError(
+            f"Cannot extract valid username from ARN: {arn}"
+        )
+
+    return sanitized
+
+
+def extract_role_from_arn(arn: str) -> str:
+    """
+    Extract role name from AWS ARN (exact match, not substring)
+    Examples:
+      arn:aws:sts::123:assumed-role/SSOCloudDevGpuReservation/john
+        -> SSOCloudDevGpuReservation
+      arn:aws:iam::123:role/SSOCloudDevGpuReservation
+        -> SSOCloudDevGpuReservation
+      arn:aws:iam::123:user/john
+        -> (empty - not a role)
+    """
+    # Handle assumed-role format (most common for SSO)
+    if ':assumed-role/' in arn:
+        parts = arn.split('/')
+        if len(parts) >= 2:
+            return parts[1]  # Role name is 2nd part after 'assumed-role/'
+
+    # Handle direct role format
+    elif ':role/' in arn:
+        parts = arn.split('/')
+        if len(parts) >= 1:
+            return parts[-1]  # Role name is last part after 'role/'
+
+    # Not a role ARN (could be user, etc.)
+    return ""
 
 
 async def verify_aws_credentials(
@@ -254,7 +329,7 @@ async def verify_aws_credentials(
     aws_session_token: str | None = None
 ) -> dict[str, str]:
     """
-    Verify AWS credentials and return caller identity
+    Verify AWS credentials and return caller identity (async)
     Returns: {
         'account': '123456789',
         'user_id': 'AIDAI...',
@@ -262,23 +337,23 @@ async def verify_aws_credentials(
     }
     """
     try:
-        # Create STS client with provided credentials
-        sts_client = boto3.client(
+        # Create async STS client with provided credentials
+        session = aioboto3.Session()
+        async with session.client(
             'sts',
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
             aws_session_token=aws_session_token,
             region_name=AWS_REGION
-        )
+        ) as sts_client:
+            # Verify credentials by calling GetCallerIdentity (async)
+            identity = await sts_client.get_caller_identity()
 
-        # Verify credentials by calling GetCallerIdentity
-        identity = sts_client.get_caller_identity()
-
-        return {
-            'account': identity['Account'],
-            'user_id': identity['UserId'],
-            'arn': identity['Arn']
-        }
+            return {
+                'account': identity['Account'],
+                'user_id': identity['UserId'],
+                'arn': identity['Arn']
+            }
 
     except ClientError as e:
         error_code = e.response['Error']['Code']
@@ -300,12 +375,12 @@ async def verify_aws_credentials(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to verify AWS credentials: {str(e)}"
+            detail="Failed to verify AWS credentials"
         ) from e
 
 
 async def create_api_key_for_user(
-    conn,
+    conn: asyncpg.Connection,
     user_id: int,
     username: str,
     description: str = "API key"
@@ -336,6 +411,14 @@ async def verify_api_key(
 ) -> dict[str, Any]:
     """Verify API key and return user info"""
     api_key = credentials.credentials
+
+    # Validate API key format (length check)
+    if not api_key or len(api_key) < 16 or len(api_key) > 256:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key format"
+        )
+
     key_hash = hash_api_key(api_key)
 
     async with db_pool.acquire() as conn:
@@ -399,6 +482,15 @@ async def health_check() -> dict[str, Any]:
     db_status = "unknown"
     queue_status = "unknown"
 
+    # Check if db_pool is initialized
+    if db_pool is None:
+        return {
+            "status": "unhealthy",
+            "database": "not initialized",
+            "queue": "unknown",
+            "timestamp": datetime.now(UTC)
+        }
+
     try:
         async with db_pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
@@ -409,8 +501,9 @@ async def health_check() -> dict[str, Any]:
                 f"SELECT pgmq.queue_exists('{QUEUE_NAME}')"
             )
             queue_status = "healthy" if queue_exists else "missing"
-    except Exception as e:
-        db_status = f"unhealthy: {str(e)}"
+    except Exception:
+        # Don't expose exception details in health check
+        db_status = "unhealthy"
         queue_status = "unknown"
 
     overall_status = (
@@ -480,7 +573,7 @@ async def submit_job(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to submit job: {str(e)}"
+            detail="Failed to submit job"
         ) from e
 
 
@@ -546,7 +639,7 @@ async def rotate_api_key(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to rotate key: {str(e)}"
+            detail="Failed to rotate key"
         ) from e
 
 
@@ -570,11 +663,15 @@ async def aws_login(request: AWSLoginRequest) -> AWSLoginResponse:
         request.aws_session_token
     )
 
-    # 2. Check if the role is allowed
-    if ALLOWED_AWS_ROLE not in identity['arn']:
+    # 2. Extract and verify role (exact match, not substring)
+    role = extract_role_from_arn(identity['arn'])
+    if role != ALLOWED_AWS_ROLE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied. Required role: {ALLOWED_AWS_ROLE}"
+            detail=(
+                f"Access denied. Required role: {ALLOWED_AWS_ROLE}, "
+                f"got: {role or 'none'}"
+            )
         )
 
     # 3. Extract username from ARN
@@ -636,7 +733,7 @@ async def aws_login(request: AWSLoginRequest) -> AWSLoginResponse:
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create API key: {str(e)}"
+            detail="Failed to create API key"
         ) from e
 
 
