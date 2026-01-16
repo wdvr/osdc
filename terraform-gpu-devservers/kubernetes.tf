@@ -389,10 +389,6 @@ resource "kubernetes_persistent_volume_claim" "postgres_replica_pvc" {
     kubernetes_storage_class.gp3,  # Storage class defined in monitoring.tf
   ]
 
-  # Don't wait for PVC to bind - gp3 uses WaitForFirstConsumer mode
-  # PVC will bind when the StatefulSet pod starts
-  wait_until_bound = false
-
   metadata {
     name      = "postgres-replica-data"
     namespace = kubernetes_namespace.controlplane.metadata[0].name
@@ -434,8 +430,6 @@ resource "kubernetes_stateful_set" "postgres_primary" {
       role = "primary"
     }
   }
-
-  wait_for_rollout = false
 
   spec {
     service_name = "postgres-primary-headless"
@@ -694,8 +688,6 @@ resource "kubernetes_stateful_set" "postgres_replica" {
       role = "replica"
     }
   }
-
-  wait_for_rollout = false
 
   spec {
     service_name = "postgres-replica-headless"

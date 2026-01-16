@@ -20,11 +20,21 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 # Configuration from environment
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://gpudev:CHANGEME@postgres-primary"
-    ".gpu-controlplane.svc.cluster.local:5432/gpudev"
-)
+# Build DATABASE_URL from components (or use pre-built URL)
+if os.getenv("DATABASE_URL"):
+    DATABASE_URL = os.getenv("DATABASE_URL")
+else:
+    # Build from individual components
+    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres-primary.gpu-controlplane.svc.cluster.local")
+    POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+    POSTGRES_USER = os.getenv("POSTGRES_USER", "gpudev")
+    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "CHANGEME")
+    POSTGRES_DB = os.getenv("POSTGRES_DB", "gpudev")
+    
+    DATABASE_URL = (
+        f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+        f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+    )
 API_KEY_LENGTH = 64
 QUEUE_NAME = os.getenv("QUEUE_NAME", "gpu_reservations")
 

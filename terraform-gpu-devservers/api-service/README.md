@@ -517,24 +517,86 @@ docker push 123456789.dkr.ecr.us-east-1.amazonaws.com/gpu-dev-api:latest
 ### Prerequisites
 
 1. **PostgreSQL with PGMQ** - Already deployed in `gpu-controlplane` namespace
-2. **AWS IAM Role** - API pod needs permissions to call STS
-3. **ECR Repository** - To store Docker images
-4. **ALB + Route53** - For HTTPS ingress
+2. **AWS IAM Role** - API pod needs permissions to call STS (IRSA)
+3. **EKS Cluster** - Kubernetes cluster running in AWS
+4. **Terraform** - Infrastructure as Code tool
 
-### Deploy to Kubernetes
+### Deploy with Terraform
 
 ```bash
-# Build and push image
-docker build -t gpu-dev-api:v1 .
-docker tag gpu-dev-api:v1 $ECR_REPO/gpu-dev-api:v1
-docker push $ECR_REPO/gpu-dev-api:v1
+# From the terraform-gpu-devservers directory:
+cd terraform-gpu-devservers
 
-# Apply Kubernetes manifests (coming soon)
-kubectl apply -f kubernetes-api-service.yaml
+# Deploy everything (builds image, pushes to ECR, deploys to K8s)
+terraform apply
 
-# Verify deployment
+# Wait for deployment (2-3 minutes)
+kubectl wait --for=condition=available \
+  deployment/api-service -n gpu-controlplane --timeout=5m
+```
+
+### Get the API URL
+
+**Method 1: Terraform Output (Easiest)**
+```bash
+# Get the full URL:
+terraform output api_service_url
+
+# Or just the hostname:
+terraform output -raw api_service_url
+```
+
+**Method 2: kubectl**
+```bash
+# Watch LoadBalancer get created (takes 2-3 min):
+kubectl get svc -n gpu-controlplane api-service-public -w
+
+# Get the URL:
+echo "http://$(kubectl get svc -n gpu-controlplane api-service-public \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+```
+
+**Output example:**
+```
+http://a1234567890abc-123456789.us-east-1.elb.amazonaws.com
+```
+
+### Test the Deployment
+
+```bash
+# Get URL
+URL=$(terraform output -raw api_service_url)
+
+# Test health
+curl $URL/health
+
+# View API docs
+echo "Open in browser: $URL/docs"
+
+# Test authentication (with your AWS credentials)
+curl -X POST $URL/v1/auth/aws-login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "aws_access_key_id": "YOUR_KEY",
+    "aws_secret_access_key": "YOUR_SECRET",
+    "aws_session_token": "YOUR_TOKEN"
+  }'
+```
+
+### Verify Deployment
+
+```bash
+# Check pods
 kubectl get pods -n gpu-controlplane -l app=api-service
-kubectl logs -n gpu-controlplane -l app=api-service
+
+# Check logs
+kubectl logs -n gpu-controlplane -l app=api-service --tail=50
+
+# Check service
+kubectl get svc -n gpu-controlplane api-service-public
+
+# Describe LoadBalancer
+kubectl describe svc -n gpu-controlplane api-service-public
 ```
 
 ## 🔧 Development

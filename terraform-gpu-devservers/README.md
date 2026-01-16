@@ -455,3 +455,40 @@ kubectl get pods -n gpu-controlplane -l app=registry-cache
 # Test registry connectivity from a pod
 kubectl run test-registry --rm -it --image=busybox -- wget -q -O- http://registry-ghcr.gpu-controlplane:5000/v2/
 ```
+
+### API Service (Job Submission)
+
+REST API for submitting GPU jobs with AWS IAM authentication.
+
+```bash
+# Get API URL
+terraform output api_service_url
+
+# Or via kubectl
+kubectl get svc -n gpu-controlplane api-service-public \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+# Check API service status
+kubectl get pods -n gpu-controlplane -l app=api-service
+
+# View API logs
+kubectl logs -n gpu-controlplane -l app=api-service --tail=50
+
+# Test health endpoint
+URL=$(terraform output -raw api_service_url)
+curl $URL/health | jq .
+
+# View Swagger docs
+echo "Open in browser: $URL/docs"
+```
+
+**Features:**
+- AWS IAM-based authentication (SSOCloudDevGpuReservation role)
+- Time-limited API keys (2-hour expiration)
+- PGMQ-based job queue
+- RESTful API with Swagger documentation
+- Classic LoadBalancer (internet-facing)
+
+**Documentation:**
+- Full API docs: `api-service/README.md`
+- Claude context: `CLAUDE.md`
