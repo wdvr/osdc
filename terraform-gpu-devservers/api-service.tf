@@ -276,10 +276,25 @@ resource "kubernetes_deployment" "api_service" {
             }
           }
 
-          # Database URL from secret
+          # Database connection parameters
           env {
-            name = "DATABASE_URL"
-            value = "postgresql://gpudev:$(POSTGRES_PASSWORD)@postgres-primary.${kubernetes_namespace.controlplane.metadata[0].name}.svc.cluster.local:5432/gpudev"
+            name  = "POSTGRES_HOST"
+            value = "postgres-primary.${kubernetes_namespace.controlplane.metadata[0].name}.svc.cluster.local"
+          }
+
+          env {
+            name  = "POSTGRES_PORT"
+            value = "5432"
+          }
+
+          env {
+            name  = "POSTGRES_USER"
+            value = "gpudev"
+          }
+
+          env {
+            name  = "POSTGRES_DB"
+            value = "gpudev"
           }
 
           env {
@@ -362,30 +377,21 @@ resource "kubernetes_service" "api_service" {
 # ALB Ingress for Public Access
 # ============================================================================
 
-# Service annotations for AWS Load Balancer Controller
+# Public LoadBalancer Service (Classic - Cloud-agnostic)
+# Uses standard Kubernetes LoadBalancer (no AWS-specific annotations)
+# In EKS, this creates a Classic Load Balancer (CLB) automatically
 resource "kubernetes_service" "api_service_public" {
   depends_on = [
     kubernetes_namespace.controlplane,
     kubernetes_deployment.api_service
   ]
 
+  wait_for_load_balancer = false
+
   metadata {
     name      = "api-service-public"
     namespace = kubernetes_namespace.controlplane.metadata[0].name
-    
-    annotations = {
-      "service.beta.kubernetes.io/aws-load-balancer-type"              = "external"
-      "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type"   = "ip"
-      "service.beta.kubernetes.io/aws-load-balancer-scheme"            = "internet-facing"
-      "service.beta.kubernetes.io/aws-load-balancer-backend-protocol"  = "http"
-      # SSL/TLS configuration (uncomment when you have a certificate)
-      # "service.beta.kubernetes.io/aws-load-balancer-ssl-cert"          = "arn:aws:acm:region:account:certificate/xxx"
-      # "service.beta.kubernetes.io/aws-load-balancer-ssl-ports"         = "443"
-      # Health check configuration
-      "service.beta.kubernetes.io/aws-load-balancer-healthcheck-path"  = "/health"
-      "service.beta.kubernetes.io/aws-load-balancer-healthcheck-port"  = "traffic-port"
-    }
-    
+
     labels = {
       app = "api-service"
     }
@@ -405,13 +411,8 @@ resource "kubernetes_service" "api_service_public" {
       protocol    = "TCP"
     }
 
-    # Uncomment for HTTPS
-    # port {
-    #   name        = "https"
-    #   port        = 443
-    #   target_port = 8000
-    #   protocol    = "TCP"
-    # }
+    # Health checks automatically use the readiness probe
+    # defined in the deployment spec
   }
 }
 
