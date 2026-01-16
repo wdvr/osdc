@@ -507,10 +507,14 @@ async def health_check() -> dict[str, Any]:
             db_status = "healthy"
 
             # Check if PGMQ queue exists
-            queue_exists = await conn.fetchval(
-                f"SELECT pgmq.queue_exists('{QUEUE_NAME}')"
+            # Note: queue_exists() doesn't exist, use list_queues() instead
+            queues = await conn.fetch(
+                "SELECT queue_name FROM pgmq.list_queues()"
             )
-            queue_status = "healthy" if queue_exists else "missing"
+            queue_names = [row['queue_name'] for row in queues]
+            queue_status = (
+                "healthy" if QUEUE_NAME in queue_names else "missing"
+            )
     except Exception:
         # Don't expose exception details in health check
         db_status = "unhealthy"
