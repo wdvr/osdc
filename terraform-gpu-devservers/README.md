@@ -1,6 +1,25 @@
 # GPU Developer Servers Infrastructure
 
-Terraform configuration for PyTorch GPU development servers using AWS EKS with Kubernetes pod scheduling.
+OpenTofu configuration for PyTorch GPU development servers using AWS EKS with Kubernetes pod scheduling.
+
+> **⚠️ CRITICAL: USE OPENTOFU ONLY - DO NOT USE TERRAFORM**
+>
+> This project uses **OpenTofu** exclusively. Mixing Terraform and OpenTofu can cause:
+> - State file corruption
+> - Resource inconsistencies
+> - Severe infrastructure loss
+> - Irreversible data corruption
+>
+> **Requirements:**
+> - ✅ OpenTofu installed: `brew install opentofu` (macOS) or see https://opentofu.org/docs/intro/install/
+> - ❌ Never use `terraform` commands on this infrastructure
+> - ✅ Always use `tofu` instead of `terraform`
+>
+> **Verify OpenTofu is installed:**
+> ```bash
+> tofu version  # Should show OpenTofu v1.8+
+> which terraform  # Should NOT be used for this project
+> ```
 
 ## Quick Start
 
@@ -9,8 +28,8 @@ Terraform configuration for PyTorch GPU development servers using AWS EKS with K
 Deploy to us-west-1 with 2x T4 instances for cost-effective testing:
 
 ```bash
-terraform init
-terraform apply
+tofu init
+tofu apply
 # This deploys to us-west-1 with 2x g4dn.12xlarge instances (8x T4 GPUs total)
 ```
 
@@ -19,8 +38,8 @@ terraform apply
 Deploy to us-east-2 with A100 instances for production workloads:
 
 ```bash
-terraform init
-terraform apply -var-file="prod.tfvars"
+tofu init
+tofu apply -var-file="prod.tfvars"
 # This deploys to us-east-2 with 2x p4d.24xlarge instances (16x A100 GPUs total)
 ```
 
@@ -28,8 +47,8 @@ terraform apply -var-file="prod.tfvars"
 
 | Environment | Region | Command | Instance Type | GPU Type | Total GPUs | Cost/hour |
 |-------------|--------|---------|---------------|----------|------------|-----------|
-| **Test (default)** | us-west-1 | `terraform apply` | g4dn.12xlarge | T4 | 8 | ~$7.82 |
-| **Production** | us-east-2 | `terraform apply -var-file="prod.tfvars"` | p4d.24xlarge | A100 | 16 | ~$49.54 |
+| **Test (default)** | us-west-1 | `tofu apply` | g4dn.12xlarge | T4 | 8 | ~$7.82 |
+| **Production** | us-east-2 | `tofu apply -var-file="prod.tfvars"` | p4d.24xlarge | A100 | 16 | ~$49.54 |
 
 **Test Environment Features:**
 - Cost-effective T4 GPUs for development and testing
@@ -217,10 +236,10 @@ flowchart TB
 
 #### 6. **Node Management**
 
-Nodes are managed via **Terraform Auto Scaling Groups (ASGs)** with Launch Templates:
+Nodes are managed via **OpenTofu Auto Scaling Groups (ASGs)** with Launch Templates:
 
 ```
-Terraform (tofu apply)
+OpenTofu (tofu apply)
     │
     ├── Launch Templates (user-data scripts with containerd/docker config)
     │       │
@@ -317,7 +336,7 @@ The system uses **Kubernetes-native GPU tracking** instead of manual allocation:
 - **Instances**: 2x g4dn.12xlarge (4x T4 GPUs each = 8 total)
 - **GPU Types**: T4 only (cost-effective testing)
 - **Cost**: ~$7.82/hour
-- **Usage**: `terraform apply`
+- **Usage**: `tofu apply`
 
 #### Production Environment
 
@@ -325,7 +344,7 @@ The system uses **Kubernetes-native GPU tracking** instead of manual allocation:
 - **Instances**: 2x p4d.24xlarge (8x A100 GPUs each = 16 total)
 - **GPU Types**: T4, A100, H100, H200, B200 (full support)
 - **Cost**: ~$49.54/hour
-- **Usage**: `terraform apply -var-file="prod.tfvars"`
+- **Usage**: `tofu apply -var-file="prod.tfvars"`
 
 ## CLI Usage
 
@@ -377,7 +396,7 @@ The CLI determines which region to use in this order:
 When you update user-data scripts (e.g., containerd/docker config), nodes need to be replaced:
 
 ```bash
-# 1. Apply Terraform to update launch templates
+# 1. Apply OpenTofu to update launch templates
 tofu apply
 
 # 2. Cordon all nodes (prevent new scheduling)
@@ -462,7 +481,7 @@ REST API for submitting GPU jobs with AWS IAM authentication.
 
 ```bash
 # Get API URL
-terraform output api_service_url
+tofu output api_service_url
 
 # Or via kubectl
 kubectl get svc -n gpu-controlplane api-service-public \
@@ -475,7 +494,7 @@ kubectl get pods -n gpu-controlplane -l app=api-service
 kubectl logs -n gpu-controlplane -l app=api-service --tail=50
 
 # Test health endpoint
-URL=$(terraform output -raw api_service_url)
+URL=$(tofu output -raw api_service_url)
 curl $URL/health | jq .
 
 # View Swagger docs

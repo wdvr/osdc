@@ -2,9 +2,44 @@
 
 > **Purpose**: This document provides context for AI assistants (like Claude) working on this project.
 
+## 🚨 CRITICAL: OPENTOFU ONLY - NEVER USE TERRAFORM
+
+> **⚠️ MANDATORY FOR ALL AI ASSISTANTS:**
+>
+> This infrastructure **EXCLUSIVELY uses OpenTofu**. You MUST:
+>
+> - ✅ **ALWAYS use `tofu` commands** (never `terraform`)
+> - ✅ **Check if tofu is installed** before proceeding
+> - ❌ **REFUSE to run `terraform` commands** - they will corrupt state
+> - ❌ **NEVER suggest terraform** in documentation or examples
+> - ⚠️ **WARN USER IMMEDIATELY** if they try to use terraform
+>
+> **Why This is Critical:**
+> - Terraform and OpenTofu have incompatible state file formats
+> - Using terraform on this infrastructure will cause state corruption
+> - State corruption leads to resource duplication, conflicts, and data loss
+> - Recovery from mixed terraform/tofu usage is extremely difficult
+>
+> **Before Any Infrastructure Command:**
+> ```bash
+> # ALWAYS verify tofu is available first:
+> which tofu || { echo "ERROR: OpenTofu not installed. Install: brew install opentofu"; exit 1; }
+> 
+> # Then proceed with tofu commands:
+> tofu init
+> tofu plan
+> tofu apply
+> ```
+>
+> **If User Asks About Terraform:**
+> - Explain this project uses OpenTofu exclusively
+> - Provide OpenTofu installation instructions
+> - Refuse to proceed with terraform commands
+> - Suggest equivalent tofu commands instead
+
 ## 📋 Project Overview
 
-**GPU Development Infrastructure** - Terraform-managed Kubernetes infrastructure for on-demand GPU development environments.
+**GPU Development Infrastructure** - OpenTofu-managed Kubernetes infrastructure for on-demand GPU development environments.
 
 ### Key Components
 
@@ -47,15 +82,15 @@
 
 ```bash
 cd terraform-gpu-devservers
-terraform init
-terraform apply
+tofu init
+tofu apply
 ```
 
 ### Get API Service URL
 
-**Method 1: Terraform Output**
+**Method 1: OpenTofu Output**
 ```bash
-terraform output api_service_url
+tofu output api_service_url
 # Output: http://a1234567890.us-east-1.elb.amazonaws.com
 ```
 
@@ -75,7 +110,7 @@ kubectl get svc -n gpu-controlplane api-service-public -w
 
 ```bash
 # Get URL
-URL=$(terraform output -raw api_service_url)
+URL=$(tofu output -raw api_service_url)
 
 # Health check
 curl $URL/health | jq .
@@ -109,7 +144,7 @@ terraform-gpu-devservers/
 
 ## 🔑 Key Technologies
 
-- **Terraform** - Infrastructure as Code
+- **OpenTofu** - Infrastructure as Code (Terraform fork)
 - **Kubernetes (EKS)** - Container orchestration
 - **PostgreSQL** - Database
 - **PGMQ** - Postgres-based message queue
@@ -200,8 +235,8 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 # Edit code
 vim api-service/app/main.py
 
-# Terraform will rebuild and redeploy on next apply
-terraform apply
+# OpenTofu will rebuild and redeploy on next apply
+tofu apply
 
 # Or manually rebuild
 cd api-service
@@ -395,7 +430,7 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 - **API key generation**: Lines 328-347
 - **Job submission**: Lines 497-530
 
-### Terraform Configuration
+### OpenTofu Configuration
 - **API deployment**: `api-service.tf` (433 lines)
 - **Docker build**: Lines 47-117
 - **Kubernetes resources**: Lines 119-417
@@ -429,6 +464,32 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 
 ## 💡 Tips for AI Assistants
 
+### 🚨 CRITICAL: Always Verify OpenTofu First
+
+**Before ANY infrastructure command:**
+```bash
+# 1. Check if tofu is installed
+if ! command -v tofu &> /dev/null; then
+    echo "ERROR: OpenTofu is not installed!"
+    echo "Install: brew install opentofu (macOS)"
+    echo "Or see: https://opentofu.org/docs/intro/install/"
+    exit 1
+fi
+
+# 2. Verify it's NOT terraform
+if command -v terraform &> /dev/null; then
+    TERRAFORM_PATH=$(which terraform)
+    echo "WARNING: terraform found at $TERRAFORM_PATH"
+    echo "Ensure you use 'tofu' commands only!"
+fi
+
+# 3. Then proceed
+tofu plan
+tofu apply
+```
+
+### General Tips
+
 1. **Always check current state** before making changes
 2. **Use kubectl** to verify Kubernetes resources
 3. **Check logs** when debugging issues
@@ -436,6 +497,53 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 5. **Test locally** when possible (docker-compose)
 6. **Follow existing patterns** in the codebase
 7. **Update documentation** when changing functionality
+8. **NEVER use terraform** - always use tofu
+
+## 📝 Command Reference (OpenTofu Only)
+
+### ✅ Correct Commands (Use These)
+```bash
+tofu init          # Initialize OpenTofu
+tofu plan          # Preview changes
+tofu apply         # Apply changes
+tofu destroy       # Destroy infrastructure
+tofu output        # Show outputs
+tofu state list    # List resources
+tofu validate      # Validate configuration
+```
+
+### ❌ FORBIDDEN Commands (Never Use)
+```bash
+terraform init     # ❌ Will corrupt state
+terraform plan     # ❌ Will cause conflicts  
+terraform apply    # ❌ Will destroy resources
+terraform *        # ❌ ANY terraform command is dangerous
+```
+
+### 🛡️ Safety Check Script
+```bash
+#!/bin/bash
+# Add this to your workflow to prevent accidents
+
+if ! command -v tofu &> /dev/null; then
+    echo "❌ ERROR: OpenTofu not installed"
+    echo "Install: brew install opentofu"
+    exit 1
+fi
+
+if command -v terraform &> /dev/null; then
+    echo "⚠️  WARNING: terraform is installed"
+    echo "Remember to use 'tofu' not 'terraform'"
+    read -p "Type 'tofu' to confirm: " confirm
+    if [ "$confirm" != "tofu" ]; then
+        echo "Aborted for safety"
+        exit 1
+    fi
+fi
+
+# Safe to proceed
+tofu "$@"
+```
 
 ## 📞 Getting Help
 
@@ -448,7 +556,7 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 ---
 
 **Last Updated**: 2025-01-16  
-**Terraform Version**: 1.5+  
+**OpenTofu Version**: 1.8+  
 **Kubernetes Version**: 1.28+  
 **Python Version**: 3.11  
 
