@@ -519,16 +519,16 @@ docker push 123456789.dkr.ecr.us-east-1.amazonaws.com/gpu-dev-api:latest
 1. **PostgreSQL with PGMQ** - Already deployed in `gpu-controlplane` namespace
 2. **AWS IAM Role** - API pod needs permissions to call STS (IRSA)
 3. **EKS Cluster** - Kubernetes cluster running in AWS
-4. **Terraform** - Infrastructure as Code tool
+4. **OpenTofu** - Infrastructure as Code tool (Terraform fork)
 
-### Deploy with Terraform
+### Deploy with OpenTofu
 
 ```bash
 # From the terraform-gpu-devservers directory:
 cd terraform-gpu-devservers
 
 # Deploy everything (builds image, pushes to ECR, deploys to K8s)
-terraform apply
+tofu apply
 
 # Wait for deployment (2-3 minutes)
 kubectl wait --for=condition=available \
@@ -537,13 +537,13 @@ kubectl wait --for=condition=available \
 
 ### Get the API URL
 
-**Method 1: Terraform Output (Easiest)**
+**Method 1: OpenTofu Output (Easiest)**
 ```bash
 # Get the full URL:
-terraform output api_service_url
+tofu output api_service_url
 
 # Or just the hostname:
-terraform output -raw api_service_url
+tofu output -raw api_service_url
 ```
 
 **Method 2: kubectl**
@@ -565,7 +565,7 @@ http://a1234567890abc-123456789.us-east-1.elb.amazonaws.com
 
 ```bash
 # Get URL
-URL=$(terraform output -raw api_service_url)
+URL=$(tofu output -raw api_service_url)
 
 # Test health
 curl $URL/health
