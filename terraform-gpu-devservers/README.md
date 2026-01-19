@@ -45,6 +45,21 @@ OpenTofu configuration for PyTorch GPU development servers using AWS EKS with Ku
 > terraform *    # ❌ NEVER - Will destroy infrastructure
 > ```
 
+## Overview
+
+This infrastructure provides on-demand GPU development servers through Kubernetes, with a REST API for job submission and AWS IAM-based authentication.
+
+**System Status:**
+- ✅ **API Service**: Deployed with AWS IAM auth and job submission
+- ✅ **PostgreSQL + PGMQ**: Operational database and message queue
+- 🚧 **CLI Integration**: Being updated to use API (currently uses SQS/DynamoDB)
+- 🚧 **Job Processor**: K8s pod in development (Lambda functions active temporarily)
+
+**User Impact:**
+- Users will need to upgrade CLI when new version is released
+- No backward compatibility with old CLI (atomic migration)
+- New CLI will use `gpu-dev login` for AWS authentication
+
 ## Quick Start
 
 ### 1. Test Environment (Default)
@@ -133,98 +148,114 @@ kubectl exec -it <pod-name> -n gpu-dev -- /bin/bash
 title: GPU Developer Servers Architecture
 ---
 flowchart TB
-    CLI(("🖥️ GPU Dev CLI<br/>Python Tool")) --> |Reserve/Cancel| SQS{"📬 SQS Queue<br/>gpu-reservation-queue"}
-    CLI --> |Query Status| DDB[("💾 DynamoDB<br/>Reservations Table")]
+    CLI(("🖥️ GPU Dev CLI<br/>Python Tool")) --> |1. AWS IAM Auth| API["🌐 API Service<br/>(FastAPI + ALB)"]
+    CLI --> |2. Submit Jobs| API
 
-    SQS --> |Process Messages| LAMBDA1(["⚡ Reservation Processor<br/>Lambda Function"])
-    SCHED(["⏰ CloudWatch Events<br/>Every 1 minute"]) --> |Queue Management| LAMBDA1
+    API --> |Authenticate| AWS["☁️ AWS STS<br/>IAM Verification"]
+    API --> |Store Users/Keys| PG[("🐘 PostgreSQL<br/>Users + Reservations")]
+    API --> |Push Jobs| PGMQ[("📬 PGMQ Queue<br/>gpu_reservations")]
 
-    LAMBDA1 --> |Update Status| DDB
-    LAMBDA1 --> |Create/Delete Pods| EKS[["☸️ EKS Cluster<br/>GPU Nodes"]]
-    LAMBDA1 --> |Query Capacity| EKS
-
-    SCHED2(["⏰ CloudWatch Events<br/>Every 5 minutes"]) --> |Expiry Check| LAMBDA2(["⚡ Reservation Expiry<br/>Lambda Function"])
-    LAMBDA2 --> |Check/Update| DDB
-    LAMBDA2 --> |Cleanup Pods| EKS
+    JOBPROC["⚙️ Job Processor Pod<br/>(Pulling Model)"] --> |Poll & Consume| PGMQ
+    JOBPROC --> |Read/Write State| PG
+    JOBPROC --> |Create/Delete Pods| EKS[["☸️ EKS Cluster<br/>GPU Nodes"]]
+    JOBPROC --> |Query Capacity| EKS
 
     EKS --> |SSH Access| PODS(("🔧 GPU Dev Pods<br/>NodePort Services"))
     DEVS(("👩‍💻 Developers")) --> |SSH| PODS
 
-    %% AWS Orange theme colors
+    %% Theme colors
     style CLI fill:#FF9900,stroke:#232F3E,stroke-width:2px,color:#fff
-    style SQS fill:#FF9900,stroke:#232F3E,stroke-width:2px,color:#fff
-    style DDB fill:#3F48CC,stroke:#232F3E,stroke-width:2px,color:#fff
-    style LAMBDA1 fill:#FF9900,stroke:#232F3E,stroke-width:2px,color:#fff
-    style LAMBDA2 fill:#FF9900,stroke:#232F3E,stroke-width:2px,color:#fff
+    style API fill:#FF9900,stroke:#232F3E,stroke-width:2px,color:#fff
+    style AWS fill:#FF9900,stroke:#232F3E,stroke-width:2px,color:#fff
+    style PG fill:#336791,stroke:#232F3E,stroke-width:2px,color:#fff
+    style PGMQ fill:#336791,stroke:#232F3E,stroke-width:2px,color:#fff
+    style JOBPROC fill:#326CE5,stroke:#232F3E,stroke-width:2px,color:#fff
     style EKS fill:#326CE5,stroke:#232F3E,stroke-width:2px,color:#fff
     style PODS fill:#326CE5,stroke:#232F3E,stroke-width:2px,color:#fff
-    style SCHED fill:#87CEEB,stroke:#232F3E,stroke-width:2px,color:#000
-    style SCHED2 fill:#87CEEB,stroke:#232F3E,stroke-width:2px,color:#000
     style DEVS fill:#28A745,stroke:#232F3E,stroke-width:2px,color:#fff
 ```
+
+**Implementation Status:**
+- ✅ PostgreSQL + PGMQ: Deployed and operational
+- ✅ API Service: Deployed with AWS IAM auth and job submission endpoint
+- 🚧 CLI Integration: Being updated to use API (currently uses SQS/DynamoDB)
+- 🚧 Job Processor Pod: Being developed (Lambda functions handle this temporarily)
 
 ### Component Details
 
 #### 1. **CLI Tool** (`gpu-dev-cli`)
 
-- **Commands**: `reserve`, `list`, `cancel`, `connect`, `status`, `config`
-- **Authentication**: AWS credentials + GitHub SSH keys
-- **Configuration**: Zero-config approach with `~/.config/gpu-dev/config.json`
+- **Commands**: `reserve`, `list`, `cancel`, `connect`, `status`, `config`, `extend`
+- **Authentication**: AWS IAM credentials → API key (2-hour expiration)
+- **Configuration**: `~/.config/gpu-dev/config.json` and `~/.gpu-dev/credentials`
+- **SSH Keys**: Fetches from GitHub public keys
+- **Status**: 🚧 API integration in progress (currently uses SQS/DynamoDB)
 
-#### 2. **SQS Queue System**
+#### 2. **API Service** (`api-service`)
 
-- **Primary Queue**: `gpu-reservation-queue` - handles reservation and cancellation requests
-- **Dead Letter Queue**: `gpu-reservation-dlq` - failed messages after 3 retries
-- **Message Types**:
-  - `reservation` (default) - create new reservation
-  - `cancellation` - cancel existing reservation
+- **Framework**: FastAPI (Python async web framework)
+- **Location**: `gpu-controlplane` namespace
+- **Endpoint**: Public Classic LoadBalancer (internet-facing)
+- **Authentication**: AWS IAM STS verification
+- **Required Role**: `SSOCloudDevGpuReservation`
+- **API Key TTL**: 2 hours (configurable via `API_KEY_TTL_HOURS`)
+- **Documentation**: Swagger UI at `/docs`
 
-#### 3. **Lambda Functions**
+**Key Endpoints:**
+- `POST /v1/auth/aws-login` - Exchange AWS credentials for API key
+- `POST /v1/jobs/submit` - Submit GPU reservation job to PGMQ
+- `GET /v1/jobs/{job_id}` - Get job status (🚧 in progress)
+- `GET /v1/jobs` - List user's jobs (🚧 in progress)
+- `POST /v1/keys/rotate` - Rotate API key
+- `GET /health` - Health check
 
-##### Reservation Processor (`reservation_processor`)
+**Status**: ✅ Deployed and operational
 
-**Triggers**:
+#### 3. **PostgreSQL + PGMQ**
 
-- SQS messages (real-time processing)
-- CloudWatch Events (every 1 minute for queue management)
+- **Database**: PostgreSQL 16 with PGMQ extension
+- **Deployment**: Primary-replica setup in `gpu-controlplane` namespace
+- **Storage**: 100Gi gp3 PVC per instance
+- **Services**: 
+  - `postgres-primary:5432` (read-write)
+  - `postgres-replica:5432` (read-only)
 
-**Responsibilities**:
+**Tables:**
 
-- Process reservation requests from SQS
-- Create Kubernetes pods with GPU allocation
-- Manage queue positions and ETA updates
-- Handle cancellation requests
-- Real-time GPU capacity tracking via K8s API
+##### `api_users` - User Accounts
+```sql
+CREATE TABLE api_users (
+    user_id SERIAL PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    email VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT true
+);
+```
 
-##### Reservation Expiry (`reservation_expiry`)
+##### `api_keys` - Time-Limited API Keys
+```sql
+CREATE TABLE api_keys (
+    key_id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES api_users(user_id) ON DELETE CASCADE,
+    key_hash VARCHAR(128) NOT NULL UNIQUE,
+    key_prefix VARCHAR(16) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    last_used_at TIMESTAMP WITH TIME ZONE,
+    is_active BOOLEAN DEFAULT true,
+    description TEXT
+);
+```
 
-**Triggers**: CloudWatch Events (every 5 minutes)
-
-**Responsibilities**:
-
-- Check for expired reservations
-- Send warning notifications (30min, 15min, 5min before expiry)
-- Clean up expired pods and services
-- Cancel stale queued reservations (>5min old)
-
-#### 4. **DynamoDB Tables**
-
-##### Reservations Table
-
-**Primary Key**: `reservation_id`
-**Indexes**:
-
-- `StatusIndex` - Query by status (active, queued, pending, etc.)
-- `UserIndex` - Query by user_id
-
-**Schema**:
-
+##### `reservations` - GPU Reservations (🚧 Schema in progress)
 ```json
 {
   "reservation_id": "uuid-string",
-  "user_id": "aws-username",
+  "user_id": integer (FK to api_users),
   "github_user": "github-username",
   "gpu_count": 1-16,
+  "gpu_type": "t4|l4|a100|h100|h200|b200",
   "status": "pending|queued|preparing|active|expired|cancelled|failed",
   "created_at": "2025-01-12T10:30:00.000Z",
   "expires_at": "2025-01-12T18:30:00.000Z",
@@ -238,27 +269,58 @@ flowchart TB
   "node_ip": "1.2.3.4",
   "queue_position": 3,
   "estimated_wait_minutes": 45,
-  "last_queue_update": "2025-01-12T10:31:00.000Z",
-  "failure_reason": "error message",
-  "cancelled_at": "2025-01-12T11:00:00.000Z"
+  "failure_reason": "error message"
 }
 ```
 
-**Analytics Fields:**
+**PGMQ Queues:**
+- `gpu_reservations` - Job queue for reservation requests
 
-- `launched_at`: When the pod was successfully started (for wait time analysis: `launched_at - created_at`)
-- `reservation_ended`: When the reservation ended (cancelled/expired) for usage analysis
-- Early cancellation detection: `reservation_ended < expires_at`
+**Status**: ✅ Deployed (schema migration from DynamoDB in progress)
+
+#### 4. **Job Processor Pod** (🚧 In Progress)
+
+**Architecture**: Long-running Kubernetes deployment in `gpu-controlplane` namespace
+
+**Responsibilities**:
+- Continuously poll PGMQ `gpu_reservations` queue
+- Process reservation creation and cancellation requests
+- Create/delete Kubernetes pods and services in `gpu-dev` namespace
+- Query K8s API for real-time GPU capacity
+- Manage queue positions and ETA calculations
+- Monitor reservation expirations and send warnings
+- Clean up expired pods
+
+**Design:**
+- **Language**: Python (async/await)
+- **Database**: asyncpg for PostgreSQL
+- **Queue**: tembo-pgmq-python for PGMQ
+- **K8s Client**: kubernetes-asyncio for pod management
+- **Polling Model**: Continuous long-polling (vs event-driven Lambda)
+- **Benefits**: No cold starts, direct K8s API access, simpler debugging
+
+**Status**: 🚧 In development (Lambda functions handle this temporarily)
 
 #### 5. **EKS Cluster**
 
 - **Node Groups**: GPU-enabled EC2 instances (g4dn.12xlarge for testing, p5.48xlarge for production)
-- **Namespace**: `gpu-dev` - dedicated namespace for reservation pods
-- **Namespace**: `gpu-controlplane` - control plane infrastructure (PostgreSQL, registry cache)
+- **Namespaces**:
+  - `gpu-dev` - User dev server pods
+  - `gpu-controlplane` - Infrastructure (API, PostgreSQL, Job Processor, Registry)
 - **NVIDIA Device Plugin**: Exposes GPU resources to Kubernetes scheduler
 - **Networking**: Full internet access, DNS resolution, NodePort services for SSH
 
-#### 6. **Node Management**
+#### 6. **Temporary Components** (During Transition)
+
+The following AWS services are temporarily active while the new system is being finalized:
+
+- **SQS Queue** - CLI currently sends jobs here (will use API)
+- **DynamoDB** - CLI currently reads state here (will use API/PostgreSQL)
+- **Lambda Functions** - Currently process jobs (will use K8s Job Processor Pod)
+
+**Note:** These will be removed once CLI and Job Processor Pod migrations are complete. No backward compatibility will be maintained.
+
+#### 7. **Node Management**
 
 Nodes are managed via **OpenTofu Auto Scaling Groups (ASGs)** with Launch Templates:
 
@@ -282,7 +344,7 @@ OpenTofu (tofu apply)
 - User-data scripts baked into Launch Template, applied on instance boot
 - To update node config: `tofu apply` → instance refresh
 
-#### 7. **Registry Pull-Through Cache**
+#### 8. **Registry Pull-Through Cache**
 
 Internal Docker registry that caches images from ghcr.io:
 
@@ -295,7 +357,7 @@ Nodes are configured to trust this HTTP registry via:
 - containerd: `/etc/containerd/certs.d/registry-ghcr.../hosts.toml`
 - Docker: `/etc/docker/daemon.json` with `insecure-registries`
 
-#### 6. **Kubernetes Resources**
+#### 9. **Kubernetes Resources**
 
 ##### Pod Specification
 
@@ -305,43 +367,62 @@ Nodes are configured to trust this HTTP registry via:
 - **Volumes**: `/home/dev` (user data), `/workspace` (shared storage, 100Gi)
 - **Services**: NodePort service for SSH access (port range: 30000-32767)
 
-### Message Flow
+### Request Flow
 
 #### Reservation Creation
 
 1. User runs `gpu-dev reserve --gpus 2 --hours 4`
-2. CLI sends reservation message to SQS queue
-3. CLI creates "pending" record in DynamoDB for immediate polling
-4. CLI polls DynamoDB for status updates with real-time countdown
-5. Reservation Processor Lambda triggered by SQS message
-6. Lambda checks GPU availability via K8s API
-7. If available: creates pod → status becomes "preparing" → "active"
-8. If unavailable: status becomes "queued" with position and ETA
+2. CLI authenticates with AWS credentials (if needed) → receives API key
+3. CLI sends reservation request to `POST /v1/jobs/submit`
+4. API Service validates API key and pushes job to PGMQ `gpu_reservations` queue
+5. API Service returns job ID to CLI
+6. CLI polls API for status updates with real-time countdown
+7. Job Processor Pod pulls message from PGMQ queue
+8. Job Processor checks GPU availability via K8s API
+9. If available: creates pod → status "preparing" → "active"
+10. If unavailable: status "queued" with position and ETA
+11. User receives SSH command and connects to pod
 
-#### Queue Management (Every Minute)
+**Note:** Steps 2-6 currently use SQS/DynamoDB (CLI integration in progress)
 
-1. CloudWatch triggers Reservation Processor Lambda
-2. Lambda queries all "queued" and "pending" reservations
-3. Lambda checks current GPU availability via K8s API
+#### Queue Management (Continuous)
+
+1. Job Processor Pod continuously polls PGMQ queue
+2. Processor queries all "queued" and "pending" reservations from PostgreSQL
+3. Processor checks current GPU availability via K8s API
 4. For each queued reservation:
    - If GPUs available: allocate and create pod
-   - If not available: update queue position and ETA
+   - If not available: update queue position and ETA in database
 5. ETAs calculated based on active reservation expiry times
+
+**Note:** Lambda functions currently handle this (Job Processor Pod in development)
 
 #### Cancellation
 
 1. User runs `gpu-dev cancel abc12345`
-2. CLI sends cancellation message to SQS queue
-3. Reservation Processor Lambda handles cancellation message
-4. Lambda updates status to "cancelled" and cleans up pod if active
+2. CLI sends cancellation request to API
+3. API Service pushes cancellation message to PGMQ
+4. Job Processor handles cancellation:
+   - Deletes K8s pod and service (if active)
+   - Updates status to "cancelled" in PostgreSQL
+   - Records cancellation timestamp
 
-#### Expiry Management (Every 5 Minutes)
+**Note:** CLI currently sends to SQS (API integration in progress)
 
-1. CloudWatch triggers Reservation Expiry Lambda
-2. Lambda queries all "active" reservations
-3. Sends warnings at 30min, 15min, 5min before expiry
-4. Cleans up expired pods and updates status to "expired"
-5. Cancels stale queued reservations (>5min old)
+#### Expiry Management (Continuous)
+
+1. Job Processor continuously monitors active reservations
+2. For reservations approaching expiry:
+   - Sends warning at 30min before expiry
+   - Sends warning at 15min before expiry
+   - Sends warning at 5min before expiry
+3. For expired reservations:
+   - Deletes K8s pod and service
+   - Updates status to "expired" in PostgreSQL
+   - Records end timestamp
+4. Cancels stale queued reservations (>5min old)
+
+**Note:** Lambda functions currently handle this (Job Processor Pod in development)
 
 ### GPU Resource Management
 
@@ -474,34 +555,11 @@ aws autoscaling describe-instance-refreshes \
 
 ## Control Plane Infrastructure
 
-The `gpu-controlplane` namespace contains infrastructure services:
+The `gpu-controlplane` namespace contains the core infrastructure services that manage GPU reservations:
 
-### PostgreSQL (Primary-Replica)
+### API Service
 
-```bash
-# Check PostgreSQL pods
-kubectl get pods -n gpu-controlplane -l app=postgres
-
-# Connect to PostgreSQL
-kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev
-
-# Check replication status
-kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev -c "SELECT * FROM pg_stat_replication;"
-```
-
-### Registry Pull-Through Cache
-
-```bash
-# Check registry status
-kubectl get pods -n gpu-controlplane -l app=registry-cache
-
-# Test registry connectivity from a pod
-kubectl run test-registry --rm -it --image=busybox -- wget -q -O- http://registry-ghcr.gpu-controlplane:5000/v2/
-```
-
-### API Service (Job Submission)
-
-REST API for submitting GPU jobs with AWS IAM authentication.
+REST API for job submission with AWS IAM authentication.
 
 ```bash
 # Get API URL
@@ -526,12 +584,89 @@ echo "Open in browser: $URL/docs"
 ```
 
 **Features:**
-- AWS IAM-based authentication (SSOCloudDevGpuReservation role)
-- Time-limited API keys (2-hour expiration)
-- PGMQ-based job queue
-- RESTful API with Swagger documentation
-- Classic LoadBalancer (internet-facing)
+- ✅ AWS IAM-based authentication (`SSOCloudDevGpuReservation` role)
+- ✅ Time-limited API keys (2-hour expiration)
+- ✅ PGMQ-based job submission
+- ✅ RESTful API with Swagger documentation
+- ✅ Classic LoadBalancer (internet-facing)
+
+**Endpoints:**
+- `POST /v1/auth/aws-login` - Authenticate and get API key
+- `POST /v1/jobs/submit` - Submit GPU reservation job
+- `GET /v1/jobs/{job_id}` - Get job status (🚧 in progress)
+- `GET /v1/jobs` - List user's jobs (🚧 in progress)
+
+### PostgreSQL (Primary-Replica)
+
+PostgreSQL 16 with PGMQ extension for state and queue management.
+
+```bash
+# Check PostgreSQL pods
+kubectl get pods -n gpu-controlplane -l app=postgres
+
+# Connect to PostgreSQL
+kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev
+
+# Check replication status
+kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev -c "SELECT * FROM pg_stat_replication;"
+
+# View PGMQ queues
+kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev -c "SELECT * FROM pgmq.list_queues();"
+```
+
+**Database:**
+- ✅ `api_users` - User accounts
+- ✅ `api_keys` - API key management
+- 🚧 `reservations` - GPU reservation state (schema in progress)
+- 🚧 `disks` - Persistent disk tracking (schema in progress)
+
+**Queue:**
+- ✅ `gpu_reservations` - PGMQ queue for job messages
+
+### Job Processor Pod (🚧 In Development)
+
+Long-running pod that processes reservation requests from PGMQ.
+
+```bash
+# When deployed, check status:
+# kubectl get pods -n gpu-controlplane -l app=job-processor
+# kubectl logs -n gpu-controlplane -l app=job-processor --tail=50
+```
+
+**Responsibilities:**
+- Poll PGMQ `gpu_reservations` queue continuously
+- Create/delete K8s dev server pods in `gpu-dev` namespace
+- Query K8s API for real-time GPU capacity
+- Manage reservation lifecycle and queue positions
+- Monitor expirations and send warnings
+
+**Status:** 🚧 In development (Lambda functions handle this temporarily)
+
+### Registry Pull-Through Cache
+
+Internal Docker registry that caches ghcr.io images.
+
+```bash
+# Check registry status
+kubectl get pods -n gpu-controlplane -l app=registry-cache
+
+# Test registry connectivity from a pod
+kubectl run test-registry --rm -it --image=busybox -- wget -q -O- http://registry-ghcr.gpu-controlplane:5000/v2/
+```
+
+**Purpose:** Avoid ghcr.io rate limits and authentication issues.
+
+### SSH Proxy
+
+SSH proxy service for secure access to dev pods.
+
+```bash
+# Check SSH proxy status
+kubectl get pods -n gpu-controlplane -l app=ssh-proxy
+```
+
+---
 
 **Documentation:**
 - Full API docs: `api-service/README.md`
-- Claude context: `CLAUDE.md`
+- Architecture details: `CLAUDE.md`

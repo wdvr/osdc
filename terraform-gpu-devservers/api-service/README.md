@@ -4,31 +4,70 @@ REST API service for submitting GPU development jobs using **PGMQ (PostgreSQL Me
 
 ## 🎯 Overview
 
-This API service replaces AWS SQS with a self-hosted PostgreSQL-based queue (PGMQ) while maintaining seamless AWS IAM authentication. Users authenticate with their existing AWS credentials (`SSOCloudDevGpuReservation` role) and receive time-limited API keys.
+REST API service for GPU development job submission with AWS IAM-based authentication and PostgreSQL-backed message queue.
+
+**Core Features:**
+- **AWS IAM Authentication**: Users authenticate with AWS credentials (`SSOCloudDevGpuReservation` role)
+- **Time-Limited API Keys**: 2-hour expiration for secure, stateless access
+- **PostgreSQL + PGMQ**: Database for users/keys/state + message queue for job processing
+- **FastAPI**: High-performance async Python web framework
+- **Public Endpoint**: Internet-facing Classic LoadBalancer
+
+**Status:**
+- ✅ API deployed and operational
+- ✅ Authentication working
+- ✅ Job submission endpoint functional
+- 🚧 CLI integration in progress
+- 🚧 Job status endpoints in progress
 
 ## 🏗️ Architecture
 
 ```
 ┌─────────────┐
-│  CLI Client │ (has AWS credentials)
+│  CLI Client │ (AWS credentials)
 └──────┬──────┘
-       │ 1. Authenticates with AWS creds
-       ↓ POST /v1/auth/aws-login
-┌─────────────┐
-│  ALB + ACM  │ (HTTPS termination, AWS Certificate Manager)
-└──────┬──────┘
-       │ 2. Validates with AWS STS
-       ↓ HTTP
-┌─────────────┐
-│ K8s Service │ → API Pods (FastAPI + aioboto3)
-└──────┬──────┘
-       │ 3. Returns time-limited API key (2 hours)
+       │ 
+       ↓ POST /v1/auth/aws-login (AWS creds)
+┌─────────────────────────────────┐
+│  Classic LoadBalancer           │ (Internet-facing, HTTP)
+└──────┬──────────────────────────┘
+       │ 
        ↓
-┌─────────────┐
-│  Postgres   │ → Stores users, API keys (hashed)
-│  + PGMQ     │ → Queue for GPU job requests
-└─────────────┘
+┌─────────────────────────────────┐
+│  API Service (K8s Deployment)   │
+│  - FastAPI + aioboto3           │
+│  - Validates AWS creds via STS  │
+│  - Issues API keys (2h TTL)     │
+│  - Accepts job submissions      │
+└──────┬──────────────────────────┘
+       │ 
+       ↓
+┌─────────────────────────────────┐
+│  PostgreSQL + PGMQ              │
+│  - api_users (user accounts)    │
+│  - api_keys (hashed keys)       │
+│  - reservations (job state)     │
+│  - gpu_reservations (queue)     │
+└──────┬──────────────────────────┘
+       │ 
+       ↓ (polls queue)
+┌─────────────────────────────────┐
+│  Job Processor Pod (🚧)         │
+│  - Polls PGMQ continuously      │
+│  - Creates K8s dev server pods  │
+│  - Manages lifecycle            │
+└─────────────────────────────────┘
 ```
+
+**Data Flow:**
+1. User → API: AWS credentials
+2. API → AWS STS: Verify credentials
+3. API → PostgreSQL: Store user + API key (hashed)
+4. API → User: Return API key
+5. User → API: Submit job with API key
+6. API → PGMQ: Push job message
+7. Job Processor → PGMQ: Poll and consume jobs
+8. Job Processor → K8s: Create dev server pods
 
 ## 🔐 Authentication Flow
 
@@ -89,21 +128,52 @@ $ gpu-dev submit --image my-model:v2 --instance p5.48xlarge
 
 ### Public Endpoints (No Authentication)
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | API information and documentation links |
-| `/health` | GET | Health check (DB + queue status) |
-| `/docs` | GET | Swagger UI (interactive docs) |
-| `/v1/auth/aws-login` | POST | AWS authentication → API key |
+| Endpoint | Method | Status | Description |
+|----------|--------|--------|-------------|
+| `/` | GET | ✅ | API information and documentation links |
+| `/health` | GET | ✅ | Health check (DB + queue status) |
+| `/docs` | GET | ✅ | Swagger UI (interactive docs) |
+| `/v1/auth/aws-login` | POST | ✅ | AWS authentication → API key |
 
 ### Authenticated Endpoints (Require API Key)
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/jobs/submit` | POST | Submit GPU job to queue |
-| `/v1/jobs/{job_id}` | GET | Get job status (not impl yet) |
-| `/v1/jobs` | GET | List user's jobs (not impl yet) |
-| `/v1/keys/rotate` | POST | Generate new API key |
+| Endpoint | Method | Status | Description |
+|----------|--------|--------|-------------|
+| `/v1/jobs/submit` | POST | ✅ | Submit GPU job to PGMQ queue |
+| `/v1/jobs/{job_id}` | GET | 🚧 | Get job status (in progress) |
+| `/v1/jobs` | GET | 🚧 | List user's jobs (in progress) |
+| `/v1/keys/rotate` | POST | ✅ | Generate new API key |
+
+**Legend:**
+- ✅ Implemented and functional
+- 🚧 In progress/planned
+
+## 🔄 How It Works
+
+### Complete Workflow
+
+1. **User Login** (🚧 CLI integration in progress)
+   - User runs `gpu-dev login`
+   - CLI sends AWS credentials to `POST /v1/auth/aws-login`
+   - API validates with AWS STS and returns time-limited API key (2 hours)
+   - CLI stores API key locally
+
+2. **Job Submission**
+   - User runs `gpu-dev reserve --gpus 2 --hours 4`
+   - CLI sends request to `POST /v1/jobs/submit` with API key
+   - API validates key and pushes job to PGMQ queue
+   - Returns job ID to CLI
+
+3. **Job Processing** (🚧 K8s pod in development)
+   - Job Processor Pod polls PGMQ continuously
+   - Pulls job message and checks GPU availability
+   - Creates K8s dev server pod with requested GPUs
+   - Updates reservation state in PostgreSQL
+
+4. **User Access**
+   - User receives SSH command when pod is ready
+   - Connects directly to dev server pod via NodePort
+   - Uses pod for GPU development work
 
 ## 🔑 Authentication Details
 
@@ -753,27 +823,45 @@ API pod needs:
 }
 ```
 
-## 🚦 Migration from SQS
+## 🔄 System Components
 
-### Phase 1: Deploy API (Current)
-- API deployed with AWS auth
-- SQS still works (no breaking changes)
-- Users can test early
+### API Service (This Component)
+**Status**: ✅ Deployed and operational
 
-### Phase 2: Update CLI
-- Add `gpu-dev login` command
-- Add AWS auth module
-- Keep SQS as fallback
+- FastAPI application with AWS IAM authentication
+- Manages user accounts and API keys
+- Submits jobs to PGMQ queue
+- Provides REST endpoints for CLI
 
-### Phase 3: Switch Default
-- CLI defaults to API
-- SQS deprecated but functional
-- Gradual rollout to users
+**Endpoints:**
+- `POST /v1/auth/aws-login` - AWS authentication
+- `POST /v1/jobs/submit` - Submit GPU reservation job
+- `GET /v1/jobs/{job_id}` - Get job status (🚧 in progress)
+- `GET /v1/jobs` - List jobs (🚧 in progress)
+- `POST /v1/keys/rotate` - Rotate API key
 
-### Phase 4: Remove SQS
-- CLI removes SQS code
-- SQS resources deleted
-- Full PGMQ migration complete
+### CLI Integration
+**Status**: 🚧 In progress
+
+- CLI will call API endpoints instead of direct AWS services
+- Authentication: `gpu-dev login` (AWS creds → API key)
+- Job submission: Uses API key for all requests
+- No backward compatibility with legacy SQS/DynamoDB approach
+
+### Job Processor Pod
+**Status**: 🚧 In development
+
+- Polls PGMQ `gpu_reservations` queue continuously
+- Creates/manages K8s dev server pods
+- Updates reservation state in PostgreSQL
+- Replaces Lambda functions with long-running pod
+
+**Why Pulling Model:**
+- No cold starts (always warm)
+- Direct K8s API access (same cluster)
+- Simpler debugging (standard K8s logs)
+- Lower cost (vs per-invocation Lambda)
+- Better observability
 
 ## 📚 Additional Documentation
 

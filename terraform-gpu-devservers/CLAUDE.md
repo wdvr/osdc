@@ -108,26 +108,54 @@
 ┌──────────────┐
 │  CLI Client  │ (User's laptop with AWS credentials)
 └──────┬───────┘
-       │ AWS IAM Auth
+       │ 1. AWS IAM Auth → API Key
+       │ 2. Submit job requests
        ↓
 ┌──────────────────────────────────────────┐
 │  Classic LoadBalancer (Internet-facing)  │
 └──────┬───────────────────────────────────┘
        │
 ┌──────▼──────────────────────────────────┐
-│  EKS Cluster (gpu-controlplane)         │
+│  EKS Cluster                             │
 │                                          │
-│  ┌────────────┐     ┌──────────────┐   │
-│  │ API Service│────▶│ PostgreSQL   │   │
-│  │ (FastAPI)  │     │ + PGMQ       │   │
-│  └────────────┘     └──────────────┘   │
+│  ┌─── gpu-controlplane namespace ─────┐ │
+│  │                                     │ │
+│  │  ┌────────────┐  ┌──────────────┐ │ │
+│  │  │ API Service│─▶│ PostgreSQL   │ │ │
+│  │  │ (FastAPI)  │  │ + PGMQ       │ │ │
+│  │  └──────┬─────┘  └──────▲───────┘ │ │
+│  │         │               │          │ │
+│  │         │ Push jobs     │ Pull jobs│ │
+│  │         ↓               │          │ │
+│  │  ┌────────────────────┴─────────┐ │ │
+│  │  │ Job Processor Pod (🚧)       │ │ │
+│  │  │ - Polls PGMQ queue           │ │ │
+│  │  │ - Creates dev server pods    │ │ │
+│  │  │ - Manages reservations       │ │ │
+│  │  └──────────────────────────────┘ │ │
+│  │                                     │ │
+│  │  ┌────────────┐  ┌──────────────┐ │ │
+│  │  │ SSH Proxy  │  │ Registry     │ │ │
+│  │  │            │  │ Cache (GHCR) │ │ │
+│  │  └────────────┘  └──────────────┘ │ │
+│  └─────────────────────────────────────┘ │
 │                                          │
-│  ┌────────────┐     ┌──────────────┐   │
-│  │ SSH Proxy  │     │ Registry     │   │
-│  │            │     │ Cache (GHCR) │   │
-│  └────────────┘     └──────────────┘   │
+│  ┌─── gpu-dev namespace ──────────────┐ │
+│  │                                     │ │
+│  │  ┌──────────────────────────────┐  │ │
+│  │  │ GPU Dev Server Pods          │  │ │
+│  │  │ - PyTorch + CUDA             │  │ │
+│  │  │ - SSH access via NodePort    │  │ │
+│  │  └──────────────────────────────┘  │ │
+│  └─────────────────────────────────────┘ │
 └──────────────────────────────────────────┘
 ```
+
+**Status:**
+- ✅ PostgreSQL + PGMQ deployed
+- ✅ API Service deployed with AWS IAM authentication
+- 🚧 CLI integration with API (in progress)
+- 🚧 K8s Job Processor Pod (in progress - replacing Lambda)
 
 ## 🚀 Quick Start Commands
 
@@ -244,7 +272,7 @@ CREATE INDEX idx_api_keys_expires_at ON api_keys(expires_at)
 
 ## 🔐 Authentication Flow
 
-1. **User** runs `gpu-dev login` with AWS credentials
+1. **User** runs `gpu-dev login` with AWS credentials (🚧 command in progress)
 2. **CLI** sends credentials to API (`POST /v1/auth/aws-login`)
 3. **API** calls AWS STS to verify credentials and get ARN
 4. **API** checks if ARN contains role `SSOCloudDevGpuReservation`
@@ -254,6 +282,8 @@ CREATE INDEX idx_api_keys_expires_at ON api_keys(expires_at)
 8. **API** returns key to CLI
 9. **CLI** saves key locally (`~/.gpu-dev/credentials`)
 10. **CLI** uses key for subsequent API calls
+
+**Note:** CLI currently uses direct SQS/DynamoDB access. API integration is in progress.
 
 ### Example Authentication Request
 
@@ -384,10 +414,25 @@ Set via individual environment variables:
 
 Require `Authorization: Bearer <api-key>` header:
 
-- `POST /v1/jobs/submit` - Submit GPU job
-- `GET /v1/jobs/{job_id}` - Get job status
-- `GET /v1/jobs` - List user's jobs
+- `POST /v1/jobs/submit` - Submit GPU job to PGMQ queue
+- `GET /v1/jobs/{job_id}` - Get job status (🚧 implementation in progress)
+- `GET /v1/jobs` - List user's jobs (🚧 implementation in progress)
 - `POST /v1/keys/rotate` - Rotate API key
+
+## 🔄 Job Processing Flow
+
+1. **CLI** submits job via `POST /v1/jobs/submit` with API key
+2. **API Service** validates API key and pushes job message to PGMQ queue
+3. **Job Processor Pod** continuously polls PGMQ queue (🚧 in progress)
+4. **Job Processor** processes job:
+   - Checks GPU availability via K8s API
+   - Creates K8s pod and service for dev server
+   - Updates reservation state in PostgreSQL
+   - Manages queue positions and ETAs
+5. **CLI** polls API for status updates until pod is ready
+6. **User** connects via SSH to dev server pod
+
+**Note:** Job Processor Pod is currently being developed. Lambda functions are handling job processing temporarily.
 
 ## 🐛 Troubleshooting
 
@@ -493,27 +538,32 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 - **Schema creation**: `api-service/app/main.py` lines 76-118
 - **Indexes**: Lines 100-118
 
-## 🎯 Current State
+## 🎯 Implementation Status
 
 **✅ Completed:**
 - EKS cluster with GPU/CPU nodes
-- PostgreSQL with PGMQ installed
-- API service with AWS IAM auth
-- Classic LoadBalancer (internet-facing)
+- PostgreSQL primary-replica with PGMQ extension
+- API service with AWS IAM authentication
+- Public endpoint via Classic LoadBalancer
+- Job submission endpoint (`POST /v1/jobs/submit`)
+- API key management (creation, rotation, expiration)
+- Database schema (api_users, api_keys)
 - Docker build automation
 - Health checks and monitoring
 - Comprehensive documentation
 
 **🚧 In Progress:**
-- CLI tool integration
+- **CLI Integration**: Update CLI to use API endpoints instead of direct AWS services
+- **Job Processor Pod**: K8s deployment that polls PGMQ and manages dev server lifecycle
+- **PostgreSQL Schema**: Reservations and disks tables (currently in DynamoDB)
 - HTTPS/TLS (requires ACM certificate)
 
-**📋 TODO:**
-- Add rate limiting
-- Add audit logging
-- Add metrics/monitoring (Prometheus)
-- Implement job status tracking
-- Add CI/CD pipeline
+**📋 Future Enhancements:**
+- Rate limiting
+- Audit logging
+- Metrics/monitoring (Prometheus)
+- Advanced job status tracking
+- CI/CD pipeline
 
 ## 💡 Tips for AI Assistants
 

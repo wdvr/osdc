@@ -291,15 +291,24 @@ kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpu
 
 ### 📋 Remaining Tasks
 
-- **PostgreSQL Migration (In Progress)** - Replace SQS/DynamoDB with PostgreSQL + PGMQ:
+- **API & PostgreSQL System (In Progress)** - New architecture with API/PGMQ/K8s Job Processor:
   - [x] Create gpu-controlplane namespace
   - [x] Deploy PostgreSQL primary-replica with PGMQ
   - [x] Set up registry pull-through cache for ghcr.io
   - [x] Configure containerd/docker on nodes to trust internal registry
+  - [x] Deploy API Service with AWS IAM authentication
+  - [x] Implement API endpoints (auth, job submission, key rotation)
+  - [x] Create database schema (api_users, api_keys)
   - [ ] Define PostgreSQL schema for reservations/disks tables
-  - [ ] Create reservation controller service (replaces Lambda)
-  - [ ] Migrate CLI to use PostgreSQL directly
-  - [ ] Remove SQS/DynamoDB dependencies
+  - [ ] Create K8s Job Processor Pod (replaces Lambda)
+  - [ ] Update CLI to use API endpoints
+  - [ ] Implement job status tracking endpoints
+
+**Current State:**
+- API Service: ✅ Deployed and functional
+- PostgreSQL + PGMQ: ✅ Operational
+- CLI: 🚧 Uses SQS/DynamoDB (API integration in progress)
+- Job Processing: 🚧 Lambda functions (K8s pod in development)
 
 - **FQDN for devservers** - Set up proper domain names for development server access
 - **Automated SSH config per reservation** - ✅ DONE - Each reservation now gets `~/.devgpu/<reservation_id>-sshconfig` file, use with `ssh -F ~/.devgpu/<reservation_id>-sshconfig <pod_name>`
@@ -352,12 +361,12 @@ kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpu
   - Reservation extensions
   - Usage monitoring and quotas
 
-## Current Working Architecture
+## System Architecture
 
 **Infrastructure (us-east-2):**
 
 - **Current**: 2x p4d.24xlarge instances (8 A100 GPUs each = 16 total GPUs)
-- **Previous testing**: 2x g4dn.12xlarge instances (4 T4 GPUs each = 8 total GPUs)
+- **Test**: 2x g4dn.12xlarge instances (4 T4 GPUs each = 8 total GPUs)
 - **Future**: 2x p5.48xlarge instances (8 H100 GPUs each = 16 total GPUs) when capacity available
 - EKS cluster with GPU-optimized node groups
 - NVIDIA device plugin for GPU resource exposure
@@ -365,26 +374,31 @@ kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpu
 
 **Reservation System:**
 
-- SQS queue for async reservation requests (migrating to PostgreSQL + PGMQ)
-- Lambda functions for pod creation and expiry management
-- DynamoDB for reservation and server state tracking (migrating to PostgreSQL)
-- Kubernetes pods with GPU resource allocation (1/2/4 GPUs)
-- NodePort services for SSH access to pods
+- **API Service**: Public REST API with AWS IAM authentication (✅ deployed)
+- **PostgreSQL + PGMQ**: Database and message queue (✅ deployed)
+- **Job Processor Pod**: Polls PGMQ and manages pod lifecycle (🚧 in progress)
+- **GPU Dev Pods**: K8s pods with GPU allocation (1/2/4/8/16 GPUs)
+- **SSH Access**: NodePort services for direct pod access
 
 **Control Plane Infrastructure (gpu-controlplane namespace):**
 
-- PostgreSQL primary-replica with PGMQ extension (replacing SQS/DynamoDB)
+- PostgreSQL primary-replica with PGMQ extension
+- API Service (FastAPI) with public LoadBalancer endpoint
+- Job Processor Pod for reservation management (🚧 in development)
 - Registry pull-through cache for ghcr.io images
-- Future: Reservation controller service (replacing Lambda)
+- SSH Proxy service
 
 **Authentication & Access:**
 
-- GitHub username configuration for SSH key fetching
-- Public key injection into pods via init containers
-- Copy-pasteable SSH commands with NodePort access
+- **API Authentication**: AWS IAM STS → time-limited API keys (2 hours)
+- **SSH Authentication**: GitHub public key fetching and injection
+- **SSH Access**: Copy-pasteable commands with NodePort
 
 **CLI Tool:**
 
 - Python CLI with config at `~/.config/gpu-dev/config.json`
-- Commands: `reserve`, `list`, `config`
+- Commands: `reserve`, `list`, `cancel`, `extend`, `config`, `connect`, `status`
+- Authentication: AWS credentials → API key (🚧 integration in progress)
 - Real-time polling until reservation is ready
+
+**Note:** CLI currently uses SQS/DynamoDB (legacy). API integration in progress. Lambda functions temporarily handle job processing until K8s Job Processor Pod is ready.
