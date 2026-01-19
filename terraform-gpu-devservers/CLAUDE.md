@@ -4,38 +4,91 @@
 
 ## 🚨 CRITICAL: OPENTOFU ONLY - NEVER USE TERRAFORM
 
-> **⚠️ MANDATORY FOR ALL AI ASSISTANTS:**
+> ## ⚠️ ABSOLUTE REQUIREMENT FOR ALL AI ASSISTANTS AND USERS ⚠️
 >
-> This infrastructure **EXCLUSIVELY uses OpenTofu**. You MUST:
+> **THIS INFRASTRUCTURE EXCLUSIVELY USES OPENTOFU - TERRAFORM IS FORBIDDEN**
 >
-> - ✅ **ALWAYS use `tofu` commands** (never `terraform`)
-> - ✅ **Check if tofu is installed** before proceeding
-> - ❌ **REFUSE to run `terraform` commands** - they will corrupt state
-> - ❌ **NEVER suggest terraform** in documentation or examples
-> - ⚠️ **WARN USER IMMEDIATELY** if they try to use terraform
+> ### MANDATORY RULES (NO EXCEPTIONS):
 >
-> **Why This is Critical:**
-> - Terraform and OpenTofu have incompatible state file formats
-> - Using terraform on this infrastructure will cause state corruption
-> - State corruption leads to resource duplication, conflicts, and data loss
-> - Recovery from mixed terraform/tofu usage is extremely difficult
+> 1. ✅ **ALWAYS use `tofu` commands** (never `terraform`)
+> 2. ✅ **VERIFY tofu is installed** before ANY infrastructure operation
+> 3. ❌ **REFUSE to execute ANY `terraform` command** - will corrupt state
+> 4. ❌ **NEVER suggest `terraform` in code, docs, or examples**
+> 5. ⚠️ **STOP IMMEDIATELY and WARN USER** if they attempt to use terraform
+> 6. ❌ **DO NOT PROCEED if OpenTofu is not available** - unsafe to continue
 >
-> **Before Any Infrastructure Command:**
+> ### Why This is CRITICAL (Read This!):
+>
+> **Terraform and OpenTofu Have Incompatible State Files:**
+> - Running `terraform` will **reformat the state file**
+> - OpenTofu will then **reject the corrupted state**
+> - You'll get "state file too new" errors
+> - Recovery requires **manual state surgery** or **complete rebuild**
+> - Can result in **duplicate resources**, **orphaned infrastructure**, **data loss**
+>
+> **Real Consequences:**
+> - 🔥 **Duplicate EKS clusters** charging double
+> - 🔥 **Orphaned resources** continuing to bill
+> - 🔥 **Database state corruption**
+> - 🔥 **Lost persistent volumes**
+> - 🔥 **Broken replication**
+> - 💰 **Expensive mistakes** (hundreds/thousands of dollars)
+>
+> ### MANDATORY Safety Check (Run This First):
+>
 > ```bash
-> # ALWAYS verify tofu is available first:
-> which tofu || { echo "ERROR: OpenTofu not installed. Install: brew install opentofu"; exit 1; }
-> 
-> # Then proceed with tofu commands:
-> tofu init
-> tofu plan
-> tofu apply
+> # 1. VERIFY OpenTofu is installed
+> if ! command -v tofu &> /dev/null; then
+>     echo "❌ CRITICAL ERROR: OpenTofu not installed"
+>     echo "❌ Cannot proceed safely - STOP NOW"
+>     echo ""
+>     echo "Install OpenTofu:"
+>     echo "  macOS:  brew install opentofu"
+>     echo "  Linux:  https://opentofu.org/docs/intro/install/"
+>     echo ""
+>     exit 1
+> fi
+>
+> # 2. Verify it's OpenTofu (not terraform)
+> tofu version  # Should show: OpenTofu v1.8+
+>
+> # 3. NEVER run terraform
+> # If terraform command exists, DO NOT use it on this project
 > ```
 >
-> **If User Asks About Terraform:**
-> - Explain this project uses OpenTofu exclusively
-> - Provide OpenTofu installation instructions
-> - Refuse to proceed with terraform commands
-> - Suggest equivalent tofu commands instead
+> ### Correct Usage:
+>
+> ```bash
+> tofu init      # ✅ CORRECT
+> tofu plan      # ✅ CORRECT
+> tofu apply     # ✅ CORRECT
+> tofu output    # ✅ CORRECT
+> tofu destroy   # ✅ CORRECT (but be careful!)
+> ```
+>
+> ### FORBIDDEN (Will Destroy Infrastructure):
+>
+> ```bash
+> terraform init     # ❌ FORBIDDEN - Will corrupt state
+> terraform plan     # ❌ FORBIDDEN - Will cause conflicts  
+> terraform apply    # ❌ FORBIDDEN - Will destroy resources
+> terraform *        # ❌ FORBIDDEN - ANY terraform command is dangerous
+> ```
+>
+> ### If User Attempts to Use Terraform:
+>
+> **IMMEDIATELY:**
+> 1. 🛑 **STOP** - Do not execute the command
+> 2. ⚠️ **WARN** - Explain the severe risks above
+> 3. 📖 **EDUCATE** - Show them this section
+> 4. ✅ **REDIRECT** - Provide the equivalent `tofu` command
+> 5. ❌ **REFUSE** - Do not proceed until they use `tofu`
+>
+> **If Terraform Was Already Run:**
+> 1. 🚨 **ALERT** - State may be corrupted
+> 2. 🔍 **ASSESS** - Check `tofu plan` for unexpected changes
+> 3. 🆘 **ESCALATE** - May need state file recovery
+> 4. 📞 **CONTACT** - Get help immediately
 
 ## 📋 Project Overview
 

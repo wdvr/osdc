@@ -2,23 +2,47 @@
 
 OpenTofu configuration for PyTorch GPU development servers using AWS EKS with Kubernetes pod scheduling.
 
-> **⚠️ CRITICAL: USE OPENTOFU ONLY - DO NOT USE TERRAFORM**
+> ## 🚨 CRITICAL: OPENTOFU ONLY - NEVER USE TERRAFORM
 >
-> This project uses **OpenTofu** exclusively. Mixing Terraform and OpenTofu can cause:
-> - State file corruption
-> - Resource inconsistencies
-> - Severe infrastructure loss
-> - Irreversible data corruption
+> **⚠️ THIS INFRASTRUCTURE EXCLUSIVELY USES OPENTOFU ⚠️**
 >
-> **Requirements:**
-> - ✅ OpenTofu installed: `brew install opentofu` (macOS) or see https://opentofu.org/docs/intro/install/
-> - ❌ Never use `terraform` commands on this infrastructure
-> - ✅ Always use `tofu` instead of `terraform`
+> **SEVERE WARNING:** Mixing Terraform and OpenTofu will cause:
+> - 🔥 **State file corruption** (incompatible formats)
+> - 🔥 **Resource duplication and conflicts**
+> - 🔥 **Data loss and infrastructure destruction**
+> - 🔥 **Irreversible damage** requiring complete rebuild
 >
-> **Verify OpenTofu is installed:**
+> **MANDATORY REQUIREMENTS:**
+> - ✅ **OpenTofu MUST be installed**: `brew install opentofu` (macOS) or https://opentofu.org/docs/intro/install/
+> - ✅ **ALWAYS use `tofu` commands** - never `terraform`
+> - ❌ **DO NOT proceed if OpenTofu is not available**
+> - ❌ **NEVER run `terraform` commands on this infrastructure**
+> - ⚠️ **If you accidentally use terraform, STOP IMMEDIATELY and report it**
+>
+> **Verify Before Proceeding:**
 > ```bash
-> tofu version  # Should show OpenTofu v1.8+
-> which terraform  # Should NOT be used for this project
+> # Check OpenTofu is installed
+> tofu version  # Should show: OpenTofu v1.8+
+>
+> # Ensure terraform is NOT used
+> which terraform && echo "⚠️  WARNING: Do NOT use terraform on this project!"
+>
+> # SAFETY CHECK: Run this before ANY infrastructure changes
+> if ! command -v tofu &> /dev/null; then
+>     echo "❌ ERROR: OpenTofu not installed. Cannot proceed safely."
+>     echo "Install: brew install opentofu"
+>     exit 1
+> fi
+> ```
+>
+> **What to Use:**
+> ```bash
+> tofu init      # ✅ Correct
+> tofu plan      # ✅ Correct
+> tofu apply     # ✅ Correct
+> tofu output    # ✅ Correct
+>
+> terraform *    # ❌ NEVER - Will destroy infrastructure
 > ```
 
 ## Quick Start
