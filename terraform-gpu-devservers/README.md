@@ -49,16 +49,23 @@ OpenTofu configuration for PyTorch GPU development servers using AWS EKS with Ku
 
 This infrastructure provides on-demand GPU development servers through Kubernetes, with a REST API for job submission and AWS IAM-based authentication.
 
+**⚠️ IMPORTANT: This is a complete rewrite, not a migration**
+
+This is effectively a second project built on top of the existing infrastructure. It uses a completely different architecture:
+- **Old System**: CLI → SQS → Lambda → DynamoDB → K8s
+- **New System**: CLI → API → PostgreSQL + PGMQ → K8s Job Processor Pod → K8s
+
+**Breaking Changes:**
+- CLI requires complete replacement - no backward compatibility
+- Users must run `gpu-dev login` to authenticate
+- Old SQS/DynamoDB/Lambda code is not used by new CLI
+- This is NOT an evolution - it's a replacement
+
 **System Status:**
 - ✅ **API Service**: Deployed with AWS IAM auth and job submission
 - ✅ **PostgreSQL + PGMQ**: Operational database and message queue
-- 🚧 **CLI Integration**: Being updated to use API (currently uses SQS/DynamoDB)
-- 🚧 **Job Processor**: K8s pod in development (Lambda functions active temporarily)
-
-**User Impact:**
-- Users will need to upgrade CLI when new version is released
-- No backward compatibility with old CLI (atomic migration)
-- New CLI will use `gpu-dev login` for AWS authentication
+- ✅ **CLI**: Updated to use API exclusively (no SQS/DynamoDB fallback)
+- 🚧 **Job Processor Pod**: K8s pod in development (Lambda temporarily handles queue)
 
 ## Quick Start
 
@@ -70,7 +77,10 @@ Deploy to us-west-1 with 2x T4 instances for cost-effective testing:
 tofu init
 tofu apply
 # This deploys to us-west-1 with 2x g4dn.12xlarge instances (8x T4 GPUs total)
+# Includes CloudFront distribution for HTTPS (takes 15-20 minutes to deploy)
 ```
+
+**Note:** CloudFront distribution deployment takes 15-20 minutes to propagate globally. The API service will be available via HTTP immediately through the LoadBalancer, but HTTPS via CloudFront requires waiting for distribution deployment to complete.
 
 ### 2. Production Environment
 
@@ -113,6 +123,30 @@ export TF_VAR_gpu_instance_count=2
 # Override region
 export TF_VAR_aws_region="us-east-2"
 ```
+
+## Verify CloudFront Deployment
+
+After running `tofu apply`, check CloudFront distribution status:
+
+```bash
+# Get the CloudFront URL
+tofu output api_service_url
+# Output: https://d1234567890abc.cloudfront.net
+
+# Check distribution status (should be "Deployed")
+aws cloudfront list-distributions \
+  --query "DistributionList.Items[?Comment=='GPU Dev API Service - HTTPS endpoint'].{Domain:DomainName,Status:Status}" \
+  --output table
+
+# Test HTTPS endpoint (wait until Status = Deployed)
+curl https://d1234567890abc.cloudfront.net/health
+```
+
+**Timeline:**
+- **0-5 minutes**: LoadBalancer ready (HTTP works)
+- **15-20 minutes**: CloudFront deployed (HTTPS works)
+
+You can use the direct LoadBalancer URL immediately for testing, then switch to CloudFront URL once deployed.
 
 ## Development - Connect to Kubernetes
 
@@ -195,7 +229,9 @@ flowchart TB
 
 - **Framework**: FastAPI (Python async web framework)
 - **Location**: `gpu-controlplane` namespace
-- **Endpoint**: Public Classic LoadBalancer (internet-facing)
+- **Endpoints**: 
+  - **HTTPS (Primary)**: CloudFront distribution with AWS-managed SSL
+  - **HTTP (Fallback)**: Classic LoadBalancer (direct access)
 - **Authentication**: AWS IAM STS verification
 - **Required Role**: `SSOCloudDevGpuReservation`
 - **API Key TTL**: 2 hours (configurable via `API_KEY_TTL_HOURS`)
@@ -208,6 +244,13 @@ flowchart TB
 - `GET /v1/jobs` - List user's jobs (🚧 in progress)
 - `POST /v1/keys/rotate` - Rotate API key
 - `GET /health` - Health check
+
+**HTTPS Configuration:**
+- CloudFront provides HTTPS with AWS-managed certificate
+- No custom domain required
+- Free SSL for `*.cloudfront.net` domain
+- Automatic HTTPS redirect
+- No caching (configured for API traffic)
 
 **Status**: ✅ Deployed and operational
 
@@ -310,15 +353,15 @@ CREATE TABLE api_keys (
 - **NVIDIA Device Plugin**: Exposes GPU resources to Kubernetes scheduler
 - **Networking**: Full internet access, DNS resolution, NodePort services for SSH
 
-#### 6. **Temporary Components** (During Transition)
+#### 6. **Legacy Components** (Not Used by New System)
 
-The following AWS services are temporarily active while the new system is being finalized:
+The following AWS services exist from the old architecture but are **NOT used by the new CLI**:
 
-- **SQS Queue** - CLI currently sends jobs here (will use API)
-- **DynamoDB** - CLI currently reads state here (will use API/PostgreSQL)
-- **Lambda Functions** - Currently process jobs (will use K8s Job Processor Pod)
+- **SQS Queue** - Old system only (new CLI uses API)
+- **DynamoDB** - Old system only (new system uses PostgreSQL for state)
+- **Lambda Functions** - Currently processing PGMQ queue temporarily (being replaced by K8s Job Processor Pod)
 
-**Note:** These will be removed once CLI and Job Processor Pod migrations are complete. No backward compatibility will be maintained.
+**Note:** Lambda functions are temporarily being used to process the PGMQ queue until the K8s Job Processor Pod is ready. SQS and DynamoDB are not used at all by the new system. These can be removed once the Job Processor Pod is deployed.
 
 #### 7. **Node Management**
 
@@ -559,15 +602,15 @@ The `gpu-controlplane` namespace contains the core infrastructure services that 
 
 ### API Service
 
-REST API for job submission with AWS IAM authentication.
+REST API for job submission with AWS IAM authentication and HTTPS via CloudFront.
 
 ```bash
-# Get API URL
+# Get API URL (CloudFront HTTPS endpoint - use this!)
 tofu output api_service_url
+# Output: https://d1234567890abc.cloudfront.net
 
-# Or via kubectl
-kubectl get svc -n gpu-controlplane api-service-public \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+# For debugging: Direct LoadBalancer (HTTP only)
+tofu output api_service_loadbalancer_url
 
 # Check API service status
 kubectl get pods -n gpu-controlplane -l app=api-service
@@ -584,17 +627,26 @@ echo "Open in browser: $URL/docs"
 ```
 
 **Features:**
+- ✅ **HTTPS with AWS-managed SSL** (via CloudFront)
 - ✅ AWS IAM-based authentication (`SSOCloudDevGpuReservation` role)
 - ✅ Time-limited API keys (2-hour expiration)
 - ✅ PGMQ-based job submission
 - ✅ RESTful API with Swagger documentation
-- ✅ Classic LoadBalancer (internet-facing)
+- ✅ CloudFront global edge locations
+- ✅ Classic LoadBalancer backend
 
 **Endpoints:**
 - `POST /v1/auth/aws-login` - Authenticate and get API key
 - `POST /v1/jobs/submit` - Submit GPU reservation job
 - `GET /v1/jobs/{job_id}` - Get job status (🚧 in progress)
 - `GET /v1/jobs` - List user's jobs (🚧 in progress)
+- `POST /v1/keys/rotate` - Rotate API key
+
+**Security:**
+- TLS 1.2+ encryption on public internet (CloudFront → Client)
+- HTTP on AWS internal network (LoadBalancer → CloudFront)
+- Protects against man-in-the-middle attacks
+- No custom domain required
 
 ### PostgreSQL (Primary-Replica)
 

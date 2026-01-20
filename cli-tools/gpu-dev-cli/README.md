@@ -36,7 +36,20 @@ pip install -e .
 
 ### Initial Setup
 
+**Option 1: Setup Wizard (Recommended)**
 ```bash
+gpu-dev setup
+```
+
+Interactive wizard that configures:
+- API service URL (HTTPS CloudFront endpoint)
+- GitHub username (for SSH keys)
+
+**Option 2: Manual Configuration**
+```bash
+# Set API URL (get from terraform output)
+gpu-dev config set api_url https://d1234567890abc.cloudfront.net
+
 # Set your GitHub username (required for SSH key authentication)
 gpu-dev config set github_user your-github-username
 
@@ -45,6 +58,12 @@ gpu-dev config show
 ```
 
 Configuration is stored at `~/.config/gpu-dev/config.json`.
+
+**Get API URL from infrastructure:**
+```bash
+cd terraform-gpu-devservers
+tofu output api_service_url
+```
 
 ### SSH Config Integration
 
@@ -70,15 +89,65 @@ The CLI uses your AWS credentials. Configure via:
 - IAM roles (for EC2/Lambda)
 - SSO: `aws sso login --profile your-profile`
 
+**Recommended:** Use AWS profile named `gpu-dev` for automatic detection:
+```bash
+aws configure --profile gpu-dev
+# or
+aws sso login --profile gpu-dev
+```
+
+### Setting Environment Defaults (For Admins)
+
+After deploying infrastructure, you can set default API URLs for test/prod environments in `gpu_dev_cli/config.py`:
+
+```python
+ENVIRONMENTS = {
+    "test": {
+        "region": "us-west-1",
+        "workspace": "default",
+        "description": "Test environment",
+        "api_url": "https://d1234test.cloudfront.net",  # Update this
+    },
+    "prod": {
+        "region": "us-east-2",
+        "workspace": "prod",
+        "description": "Production environment",
+        "api_url": "https://d5678prod.cloudfront.net",  # Update this
+    },
+}
+```
+
+**Get URLs:**
+```bash
+# Test environment
+cd terraform-gpu-devservers
+tofu output api_service_url
+
+# Prod environment (if using workspaces)
+tofu workspace select prod
+tofu output api_service_url
+```
+
+**Benefits:**
+- Users don't need to configure API URL manually
+- Environment switching (`gpu-dev config environment test`) includes API URL
+- Simplifies team onboarding
+
 ---
 
 ## Quick Start
 
 ```bash
+# First time setup (run once)
+gpu-dev setup
+
+# Authenticate with API
+gpu-dev login
+
 # Interactive reservation (guided setup)
 gpu-dev reserve
 
-# Reserve 4 H100 GPUs for 8 hours
+# Or reserve directly
 gpu-dev reserve --gpu-type h100 --gpus 4 --hours 8
 
 # Check your reservations

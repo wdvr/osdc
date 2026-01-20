@@ -151,11 +151,30 @@
 └──────────────────────────────────────────┘
 ```
 
+**⚠️ IMPORTANT - This is a Complete Replacement, Not a Migration:**
+
+This represents a **second project built on top of the current infrastructure**, not an evolution of the existing system. Key points:
+
+- **No Backward Compatibility**: Old CLI will NOT work with new system
+- **Breaking Changes Allowed**: We can change anything without supporting legacy
+- **Complete Rewrite**: Different architecture, different patterns
+- **Not a Migration**: This is a replacement, users must upgrade completely
+
+**Old Architecture (being replaced):**
+```
+CLI → SQS → Lambda → DynamoDB → K8s
+```
+
+**New Architecture (replacement):**
+```
+CLI → API → PostgreSQL + PGMQ → K8s Job Processor Pod → K8s
+```
+
 **Status:**
 - ✅ PostgreSQL + PGMQ deployed
 - ✅ API Service deployed with AWS IAM authentication
-- 🚧 CLI integration with API (in progress)
-- 🚧 K8s Job Processor Pod (in progress - replacing Lambda)
+- ✅ CLI updated to use API (NO SQS/DynamoDB fallback)
+- 🚧 K8s Job Processor Pod (in progress - Lambda temporarily processes queue)
 
 ## 🚀 Quick Start Commands
 
@@ -169,28 +188,28 @@ tofu apply
 
 ### Get API Service URL
 
-**Method 1: OpenTofu Output**
+**Method 1: OpenTofu Output (Recommended - HTTPS via CloudFront)**
 ```bash
 tofu output api_service_url
+# Output: https://d1234567890abc.cloudfront.net
+```
+
+**Method 2: Direct LoadBalancer (HTTP only - for debugging)**
+```bash
+tofu output api_service_loadbalancer_url
 # Output: http://a1234567890.us-east-1.elb.amazonaws.com
 ```
 
-**Method 2: kubectl**
+**Method 3: kubectl (LoadBalancer only)**
 ```bash
 kubectl get svc -n gpu-controlplane api-service-public \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 
-**Method 3: Wait and Watch**
-```bash
-# Watch LoadBalancer get created (2-3 minutes):
-kubectl get svc -n gpu-controlplane api-service-public -w
-```
-
 ### Test API Service
 
 ```bash
-# Get URL
+# Get HTTPS URL via CloudFront (recommended)
 URL=$(tofu output -raw api_service_url)
 
 # Health check
@@ -202,6 +221,15 @@ curl $URL/ | jq .
 # View Swagger docs
 echo "Open: $URL/docs"
 ```
+
+**SSL/TLS Security:**
+- ✅ CloudFront provides HTTPS with AWS-managed SSL certificate (free)
+- ✅ TLS 1.2+ encryption for all client traffic
+- ✅ No custom domain required
+- ✅ Automatic certificate management and renewal
+- ✅ Protects against man-in-the-middle attacks
+
+Always use the CloudFront URL (`tofu output api_service_url`) for production to ensure encrypted traffic.
 
 ## 📁 Project Structure
 
@@ -544,6 +572,7 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 - EKS cluster with GPU/CPU nodes
 - PostgreSQL primary-replica with PGMQ extension
 - API service with AWS IAM authentication
+- **CloudFront HTTPS endpoint** (AWS-managed SSL, no domain required)
 - Public endpoint via Classic LoadBalancer
 - Job submission endpoint (`POST /v1/jobs/submit`)
 - API key management (creation, rotation, expiration)
@@ -556,7 +585,6 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 - **CLI Integration**: Update CLI to use API endpoints instead of direct AWS services
 - **Job Processor Pod**: K8s deployment that polls PGMQ and manages dev server lifecycle
 - **PostgreSQL Schema**: Reservations and disks tables (currently in DynamoDB)
-- HTTPS/TLS (requires ACM certificate)
 
 **📋 Future Enhancements:**
 - Rate limiting
