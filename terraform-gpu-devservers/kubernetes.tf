@@ -27,30 +27,6 @@ resource "kubernetes_config_map" "aws_auth" {
           "system:bootstrappers",
           "system:nodes"
         ]
-      },
-      # Lambda reservation processor role
-      {
-        rolearn  = aws_iam_role.reservation_processor_role.arn
-        username = "lambda-reservation-processor"
-        groups = [
-          "system:masters" # Full access needed for pod/service creation
-        ]
-      },
-      # Lambda reservation expiry role
-      {
-        rolearn  = aws_iam_role.reservation_expiry_role.arn
-        username = "lambda-reservation-expiry"
-        groups = [
-          "system:masters" # Full access needed for pod cleanup
-        ]
-      },
-      # Lambda availability updater role
-      {
-        rolearn  = aws_iam_role.availability_updater_role.arn
-        username = "lambda-availability-updater"
-        groups = [
-          "system:masters" # Full access needed for node/pod queries
-        ]
       }
     ])
   }
