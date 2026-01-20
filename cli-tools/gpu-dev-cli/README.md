@@ -86,7 +86,7 @@ When enabled, this adds `Include ~/.gpu-dev/*-sshconfig` to:
 The CLI uses your AWS credentials. Configure via:
 - `aws configure` command
 - Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
-- IAM roles (for EC2/Lambda)
+- IAM roles (for EC2 instances)
 - SSO: `aws sso login --profile your-profile`
 
 **Recommended:** Use AWS profile named `gpu-dev` for automatic detection:
@@ -644,16 +644,21 @@ Warnings appear as files in your home directory and via `wall` messages.
 ### System Components
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────────┐
-│  GPU Dev    │────▶│  SQS Queue   │────▶│  Lambda Processor   │
-│    CLI      │     │              │     │                     │
-└─────────────┘     └──────────────┘     └──────────┬──────────┘
-       │                                            │
-       │                                            ▼
-       │            ┌──────────────┐     ┌─────────────────────┐
-       └───────────▶│  DynamoDB    │◀────│    EKS Cluster      │
-                    │ Reservations │     │   (GPU Nodes)       │
-                    └──────────────┘     └─────────────────────┘
+┌─────────────┐  HTTPS  ┌────────────────┐     ┌─────────────────────┐
+│  GPU Dev    │────────▶│  API Service   │────▶│  PostgreSQL + PGMQ  │
+│    CLI      │         │  (FastAPI)     │     │                     │
+└─────────────┘         └────────────────┘     └──────────┬──────────┘
+                                                           │
+                                                           │ Polls Queue
+                       ┌──────────────────────────────────┘
+                       ▼
+            ┌──────────────────┐         ┌─────────────────────┐
+            │  Job Processor   │────────▶│    EKS Cluster      │
+            │  Pod (K8s)       │         │   (GPU Nodes)       │
+            │                  │         │                     │
+            │  - Polls PGMQ    │         │  - Creates Pods     │
+            │  - Creates Pods  │         │  - SSH Access       │
+            └──────────────────┘         └─────────────────────┘
 ```
 
 ### Infrastructure
