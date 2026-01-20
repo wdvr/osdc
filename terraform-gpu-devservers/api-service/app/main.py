@@ -15,7 +15,7 @@ from typing import Any
 import aioboto3
 import asyncpg
 from botocore.exceptions import ClientError
-from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
+from fastapi import FastAPI, HTTPException, Query, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -142,7 +142,102 @@ async def lifespan(app: FastAPI):
             ON api_users(username)
         """)
 
-        # Create disks table if not exists
+        # Create reservations table if not exists (MUST be before disks due to FK)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS reservations (
+                reservation_id VARCHAR(255) PRIMARY KEY,
+                user_id VARCHAR(255) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                gpu_type VARCHAR(50),
+                gpu_count INTEGER,
+                instance_type VARCHAR(100),
+                duration_hours FLOAT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                launched_at TIMESTAMP WITH TIME ZONE,
+                expires_at TIMESTAMP WITH TIME ZONE,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                name VARCHAR(255),
+                github_user VARCHAR(255),
+                pod_name VARCHAR(255),
+                namespace VARCHAR(100) DEFAULT 'default',
+                node_ip VARCHAR(50),
+                node_port INTEGER,
+                ssh_command TEXT,
+                jupyter_enabled BOOLEAN DEFAULT FALSE,
+                jupyter_url TEXT,
+                jupyter_port INTEGER,
+                jupyter_token VARCHAR(255),
+                jupyter_error TEXT,
+                ebs_volume_id VARCHAR(255),
+                disk_name VARCHAR(255),
+                failure_reason TEXT,
+                current_detailed_status TEXT,
+                status_history JSONB DEFAULT '[]'::jsonb,
+                pod_logs TEXT,
+                warning TEXT,
+                secondary_users JSONB DEFAULT '[]'::jsonb,
+                is_multinode BOOLEAN DEFAULT FALSE,
+                master_reservation_id VARCHAR(255),
+                node_index INTEGER,
+                total_nodes INTEGER,
+                cli_version VARCHAR(50)
+            )
+        """)
+
+        # Create indexes for reservations table
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reservations_user_id
+            ON reservations(user_id)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reservations_user_status
+            ON reservations(user_id, status)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reservations_status
+            ON reservations(status)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reservations_gpu_type_status
+            ON reservations(gpu_type, status)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reservations_created_at
+            ON reservations(created_at DESC)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reservations_expires_at
+            ON reservations(expires_at)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reservations_master_id
+            ON reservations(master_reservation_id)
+            WHERE master_reservation_id IS NOT NULL
+        """)
+
+        # Create trigger function for reservations updated_at
+        await conn.execute("""
+            CREATE OR REPLACE FUNCTION update_reservations_updated_at()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.updated_at = NOW();
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+        """)
+
+        # Create trigger for reservations
+        await conn.execute("""
+            DROP TRIGGER IF EXISTS trigger_reservations_updated_at ON reservations
+        """)
+        await conn.execute("""
+            CREATE TRIGGER trigger_reservations_updated_at
+            BEFORE UPDATE ON reservations
+            FOR EACH ROW
+            EXECUTE FUNCTION update_reservations_updated_at()
+        """)
+
+        # Create disks table if not exists (AFTER reservations due to FK)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS disks (
                 disk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -152,7 +247,7 @@ async def lifespan(app: FastAPI):
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 last_used TIMESTAMP WITH TIME ZONE,
                 in_use BOOLEAN DEFAULT FALSE,
-                reservation_id UUID REFERENCES reservations(job_id) ON DELETE SET NULL,
+                reservation_id VARCHAR(255) REFERENCES reservations(reservation_id) ON DELETE SET NULL,
                 is_backing_up BOOLEAN DEFAULT FALSE,
                 is_deleted BOOLEAN DEFAULT FALSE,
                 delete_date DATE,
@@ -163,6 +258,7 @@ async def lifespan(app: FastAPI):
                 operation_id UUID,
                 operation_status TEXT,
                 operation_error TEXT,
+                latest_snapshot_content_s3 TEXT,
                 last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 UNIQUE(user_id, disk_name)
             )
@@ -849,14 +945,10 @@ async def health_check() -> dict[str, Any]:
     }
 
 
-# Dependency for authenticated endpoints
-verify_user = Depends(verify_api_key)
-
-
 @app.post("/v1/jobs/submit", response_model=JobSubmissionResponse)
 async def submit_job(
     job: JobSubmissionRequest,
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> JobSubmissionResponse:
     """
     Submit a new GPU job to the queue
@@ -870,8 +962,8 @@ async def submit_job(
             job_id = str(uuid.uuid4())
             message = {
                 "job_id": job_id,
-                "user_id": user["user_id"],
-                "username": user["username"],
+                "user_id": user_info["user_id"],
+                "username": user_info["username"],
                 "image": job.image,
                 "instance_type": job.instance_type,
                 "duration_hours": job.duration_hours,
@@ -909,7 +1001,7 @@ async def submit_job(
 @app.get("/v1/jobs/{job_id}", response_model=JobDetail)
 async def get_job_status(
     job_id: str,
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> JobDetail:
     """
     Get detailed information about a specific job/reservation
@@ -954,7 +1046,7 @@ async def get_job_status(
                 )
             
             # Check authorization - user can only see their own jobs
-            if row["user_id"] != user["username"] and row["user_id"] != user["user_id"]:
+            if row["user_id"] != user_info["username"] and row["user_id"] != user_info["user_id"]:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You can only view your own jobs"
@@ -998,7 +1090,7 @@ async def get_job_status(
 
 @app.get("/v1/jobs", response_model=JobListResponse)
 async def list_jobs(
-    user: dict[str, Any] = verify_user,
+    user_info: dict[str, Any] = Security(verify_api_key),
     status_filter: str | None = Query(None, alias="status", description="Filter by status (comma-separated)"),
     limit: int = Query(50, ge=1, le=500, description="Maximum number of jobs to return"),
     offset: int = Query(0, ge=0, description="Number of jobs to skip")
@@ -1013,7 +1105,7 @@ async def list_jobs(
         async with db_pool.acquire() as conn:
             # Build query with optional status filter
             query_conditions = ["user_id = $1"]
-            query_params: list[Any] = [user["username"]]
+            query_params: list[Any] = [user_info["username"]]
             param_index = 2
             
             if status_filter:
@@ -1110,7 +1202,7 @@ async def list_jobs(
 @app.post("/v1/jobs/{job_id}/cancel", response_model=JobActionResponse)
 async def cancel_job(
     job_id: str,
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> JobActionResponse:
     """
     Cancel a running or queued job
@@ -1124,8 +1216,8 @@ async def cancel_job(
                 "action": "cancel",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user["user_id"],
-                "username": user["username"],
+                "user_id": user_info["user_id"],
+                "username": user_info["username"],
                 "requested_at": datetime.now(UTC).isoformat(),
             }
             
@@ -1153,7 +1245,7 @@ async def cancel_job(
 async def extend_job(
     job_id: str,
     request: ExtendJobRequest,
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> JobActionResponse:
     """
     Extend the duration of a running job
@@ -1167,8 +1259,8 @@ async def extend_job(
                 "action": "extend",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user["user_id"],
-                "username": user["username"],
+                "user_id": user_info["user_id"],
+                "username": user_info["username"],
                 "extension_hours": request.extension_hours,
                 "requested_at": datetime.now(UTC).isoformat(),
             }
@@ -1199,7 +1291,7 @@ async def extend_job(
 @app.post("/v1/jobs/{job_id}/jupyter/enable", response_model=JobActionResponse)
 async def enable_jupyter(
     job_id: str,
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> JobActionResponse:
     """
     Enable Jupyter Lab for a running job
@@ -1213,8 +1305,8 @@ async def enable_jupyter(
                 "action": "enable_jupyter",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user["user_id"],
-                "username": user["username"],
+                "user_id": user_info["user_id"],
+                "username": user_info["username"],
                 "requested_at": datetime.now(UTC).isoformat(),
             }
             
@@ -1241,7 +1333,7 @@ async def enable_jupyter(
 @app.post("/v1/jobs/{job_id}/jupyter/disable", response_model=JobActionResponse)
 async def disable_jupyter(
     job_id: str,
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> JobActionResponse:
     """
     Disable Jupyter Lab for a running job
@@ -1255,8 +1347,8 @@ async def disable_jupyter(
                 "action": "disable_jupyter",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user["user_id"],
-                "username": user["username"],
+                "user_id": user_info["user_id"],
+                "username": user_info["username"],
                 "requested_at": datetime.now(UTC).isoformat(),
             }
             
@@ -1284,7 +1376,7 @@ async def disable_jupyter(
 async def add_user_to_job(
     job_id: str,
     request: AddUserRequest,
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> JobActionResponse:
     """
     Add a user's SSH keys to a running job
@@ -1299,8 +1391,8 @@ async def add_user_to_job(
                 "action": "add_user",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user["user_id"],
-                "username": user["username"],
+                "user_id": user_info["user_id"],
+                "username": user_info["username"],
                 "github_username": request.github_username,
                 "requested_at": datetime.now(UTC).isoformat(),
             }
@@ -1334,7 +1426,7 @@ async def add_user_to_job(
 
 @app.get("/v1/gpu/availability", response_model=GPUAvailabilityResponse)
 async def get_gpu_availability(
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> GPUAvailabilityResponse:
     """
     Get current GPU availability across all GPU types
@@ -1421,7 +1513,7 @@ async def get_gpu_availability(
 
 @app.get("/v1/cluster/status", response_model=ClusterStatusResponse)
 async def get_cluster_status(
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> ClusterStatusResponse:
     """
     Get overall cluster status and statistics
@@ -1534,7 +1626,7 @@ async def get_cluster_status(
 
 @app.post("/v1/keys/rotate", response_model=APIKeyResponse)
 async def rotate_api_key(
-    user: dict[str, Any] = verify_user
+    user_info: dict[str, Any] = Security(verify_api_key)
 ) -> APIKeyResponse:
     """
     Generate a new API key for the authenticated user
@@ -1547,16 +1639,16 @@ async def rotate_api_key(
             # Generate new key with TTL
             api_key, key_prefix, expires_at = await create_api_key_for_user(
                 conn,
-                user["user_id"],
-                user["username"],
+                user_info["user_id"],
+                user_info["username"],
                 "Manually rotated key"
             )
 
             return APIKeyResponse(
                 api_key=api_key,
                 key_prefix=key_prefix,
-                user_id=user["user_id"],
-                username=user["username"],
+                user_id=user_info["user_id"],
+                username=user_info["username"],
                 expires_at=expires_at
             )
     except Exception as e:
