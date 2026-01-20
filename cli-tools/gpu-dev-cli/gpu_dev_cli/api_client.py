@@ -497,7 +497,7 @@ class APIClient:
         data = {"disk_name": disk_name}
         if size_gb:
             data["size_gb"] = size_gb
-        return self._make_request("POST", "/v1/disks", json_data=data)
+        return self._make_request("POST", "/v1/disks", data=data)
 
     def delete_disk(self, disk_name: str):
         """Delete a persistent disk (soft delete with 30-day retention).
@@ -618,7 +618,7 @@ class APIClient:
             }
         """
         return self._make_request("POST", f"/v1/disks/{disk_name}/rename", 
-                                   json_data={"new_name": new_name})
+                                   data={"new_name": new_name})
 
     def get_disk_operation_status(self, disk_name: str, operation_id: str):
         """Poll the status of a disk operation (create/delete).

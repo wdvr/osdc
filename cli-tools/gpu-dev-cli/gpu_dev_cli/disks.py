@@ -46,37 +46,37 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
         api_client = APIClient(config)
         response = api_client.list_disks()
         
-    disks = []
+        disks = []
         for disk_item in response.get('disks', []):
             # Parse datetime strings from API
-        created_at_str = disk_item.get('created_at')
-        last_used_str = disk_item.get('last_used')
+            created_at_str = disk_item.get('created_at')
+            last_used_str = disk_item.get('last_used')
 
             created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00')) if created_at_str else None
             last_used = datetime.fromisoformat(last_used_str.replace('Z', '+00:00')) if last_used_str else None
 
             # Parse delete_date if present (it's a date string, not datetime)
-        delete_date = disk_item.get('delete_date')
+            delete_date = disk_item.get('delete_date')
 
-        disks.append({
+            disks.append({
                 'name': disk_item.get('disk_name'),
                 'size_gb': disk_item.get('size_gb', 0),
                 'disk_size': None,  # Legacy field, not in API response
-            'created_at': created_at,
-            'last_used': last_used,
+                'created_at': created_at,
+                'last_used': last_used,
                 'snapshot_count': disk_item.get('snapshot_count', 0),
                 'pending_snapshot_count': 0,  # Not tracked in new system
                 'in_use': disk_item.get('in_use', False),
                 'is_backing_up': disk_item.get('is_backing_up', False),
                 'reservation_id': disk_item.get('reservation_id'),
                 'is_deleted': disk_item.get('is_deleted', False),
-            'delete_date': delete_date,
-        })
+                'delete_date': delete_date,
+            })
 
-    # Sort by last_used (most recent first)
-    disks.sort(key=lambda d: d['last_used'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        # Sort by last_used (most recent first)
+        disks.sort(key=lambda d: d['last_used'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
-    return disks
+        return disks
         
     except Exception as e:
         print(f"Error listing disks: {e}")
