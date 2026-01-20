@@ -241,6 +241,10 @@ resource "kubernetes_deployment" "api_service" {
         labels = {
           app = "api-service"
         }
+        annotations = {
+          # Force pod replacement when API service code changes
+          "api-service/content-hash" = local.api_service_hash
+        }
       }
 
       spec {
