@@ -56,6 +56,8 @@ class Config:
         self.disks_table = f"{self.prefix}-disks"
         self.availability_table = f"{self.prefix}-gpu-availability"
         self.cluster_name = f"{self.prefix}-cluster"
+        # Legacy: SQS queue for disk operations (still used)
+        self.queue_name = f"{self.prefix}-queue"
 
         # Determine AWS session (with profile support)
         self.session = self._create_aws_session()
@@ -110,6 +112,17 @@ class Config:
             raise RuntimeError(
                 f"Cannot get AWS caller identity. Check AWS credentials: {e}"
             )
+
+    def get_queue_url(self) -> str:
+        """Get SQS queue URL for disk operations (legacy).
+        
+        NOTE: This is only used by the persistent disk management system
+        which still uses the legacy SQS infrastructure.
+        All job/reservation operations now use the API service.
+        """
+        sqs_client = self.session.client('sqs', region_name=self.aws_region)
+        response = sqs_client.get_queue_url(QueueName=self.queue_name)
+        return response['QueueUrl']
 
     def _load_config(self) -> Dict[str, Any]:
         """Load unified config from ~/.config/gpu-dev/config.json
