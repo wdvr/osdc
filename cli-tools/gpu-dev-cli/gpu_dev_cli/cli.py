@@ -365,7 +365,7 @@ def _validate_ssh_key_or_exit(config: Config, live: Live) -> bool:
         if validation_result["ssh_user"] and validation_result["configured_user"]:
             rprint("\n[yellow]💡 Fix by updating your config:[/yellow]")
             rprint(
-                "   [cyan]gpu-dev config set github_user {validation_result['ssh_user']}[/cyan]"
+                f"   [cyan]gpu-dev config set github_user {validation_result['ssh_user']}[/cyan]"
             )
         elif not validation_result["configured_user"]:
             rprint("\n[yellow]💡 Fix by configuring your GitHub username:[/yellow]")

@@ -66,28 +66,18 @@ def validate_ssh_key_matches_github_user(config: Config, live=None) -> Dict[str,
                 live.stop()
 
             # Run SSH without BatchMode to allow password prompts
-            # Use stderr redirection to a pipe but keep stdin/stdout for interactive prompts
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode='w+', delete=False) as stderr_file:
-                result = subprocess.run(
-                    ["ssh", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", "git@github.com"],
-                    stdin=None,  # Use terminal stdin for password prompt
-                    stdout=subprocess.PIPE,
-                    stderr=stderr_file,
-                    text=True,
-                    timeout=30,
-                )
+            # Use stderr PIPE to capture output while keeping stdin for interactive prompts
+            result = subprocess.run(
+                ["ssh", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", "git@github.com"],
+                stdin=None,  # Use terminal stdin for password prompt
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+            )
 
-                # Read stderr output
-                stderr_file.seek(0)
-                ssh_output = stderr_file.read()
-
-            # Clean up temp file
-            import os
-            try:
-                os.unlink(stderr_file.name)
-            except:
-                pass
+            # Read stderr output from subprocess
+            ssh_output = result.stderr
 
             # Restart the spinner
             if live:

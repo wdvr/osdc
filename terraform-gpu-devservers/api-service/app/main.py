@@ -312,15 +312,16 @@ async def lifespan(app: FastAPI):
         """)
 
         # Create PGMQ queues if not exists
-        # (queue names are validated at startup)
+        # Queue names are validated at startup (alphanumeric + underscore only)
+        # PGMQ functions require queue name as a string parameter, not an identifier
         try:
-            await conn.execute(f"SELECT pgmq.create('{QUEUE_NAME}')")
+            await conn.execute("SELECT pgmq.create($1)", QUEUE_NAME)
         except asyncpg.exceptions.DuplicateObjectError:
             # Queue already exists, that's fine
             pass
         
         try:
-            await conn.execute(f"SELECT pgmq.create('{DISK_QUEUE_NAME}')")
+            await conn.execute("SELECT pgmq.create($1)", DISK_QUEUE_NAME)
         except asyncpg.exceptions.DuplicateObjectError:
             # Queue already exists, that's fine
             pass
