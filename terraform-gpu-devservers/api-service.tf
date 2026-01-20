@@ -416,17 +416,19 @@ resource "kubernetes_service" "api_service_public" {
   }
 }
 
-# Output the API service URL
-output "api_service_url" {
-  description = "Public URL for the API service (LoadBalancer DNS)"
+# Note: Main api_service_url output is now in cloudfront.tf
+# This output kept for direct ELB access (debugging/testing only)
+
+output "api_service_url_loadbalancer" {
+  description = "Direct LoadBalancer URL (HTTP only - use CloudFront for HTTPS)"
   value       = try(
     "http://${kubernetes_service.api_service_public.status[0].load_balancer[0].ingress[0].hostname}",
-    "Service not yet provisioned - run 'terraform apply' again or check kubectl get svc -n ${kubernetes_namespace.controlplane.metadata[0].name} api-service-public"
+    "Service not yet provisioned - run 'tofu apply' again or check kubectl get svc -n ${kubernetes_namespace.controlplane.metadata[0].name} api-service-public"
   )
 }
 
 output "api_service_https_ready" {
-  description = "Whether HTTPS is configured (requires ACM certificate)"
-  value       = false  # Set to true after adding SSL certificate annotations
+  description = "Whether HTTPS is configured via CloudFront"
+  value       = true  # CloudFront provides HTTPS with AWS-managed certificate
 }
 

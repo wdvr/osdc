@@ -8,13 +8,10 @@ from rich.spinner import Spinner
 
 
 def authenticate_user(config: Config) -> Dict[str, Any]:
-    """Authenticate using AWS credentials - if you can call AWS, you're authorized"""
+    """Authenticate using AWS credentials"""
     try:
         # Test AWS access by getting caller identity
         identity = config.get_user_identity()
-
-        # Test specific resource access by trying to get queue URL
-        config.get_queue_url()
 
         # Extract user info from AWS ARN
         arn = identity["arn"]

@@ -16,11 +16,13 @@ class Config:
             "region": "us-west-1",
             "workspace": "default",
             "description": "Test environment",
+            "api_url": None,  # Set after CloudFront deployment
         },
         "prod": {
             "region": "us-east-2",
             "workspace": "prod",
             "description": "Production environment",
+            "api_url": None,  # Set after CloudFront deployment
         },
     }
     DEFAULT_ENVIRONMENT = "prod"
@@ -49,8 +51,7 @@ class Config:
         # Resource naming convention - no config needed!
         self.prefix = "pytorch-gpu-dev"
 
-        # Construct ARNs from convention
-        self.queue_name = f"{self.prefix}-reservation-queue"
+        # Construct resource names from convention
         self.reservations_table = f"{self.prefix}-reservations"
         self.disks_table = f"{self.prefix}-disks"
         self.availability_table = f"{self.prefix}-gpu-availability"
@@ -61,7 +62,6 @@ class Config:
 
         # AWS clients
         self._sts_client = None
-        self._sqs_client = None
         self._dynamodb = None
 
     def _create_aws_session(self):
@@ -83,28 +83,12 @@ class Config:
         return self._sts_client
 
     @property
-    def sqs_client(self):
-        if self._sqs_client is None:
-            self._sqs_client = self.session.client("sqs", region_name=self.aws_region)
-        return self._sqs_client
-
-    @property
     def dynamodb(self):
         if self._dynamodb is None:
             self._dynamodb = self.session.resource(
                 "dynamodb", region_name=self.aws_region
             )
         return self._dynamodb
-
-    def get_queue_url(self) -> str:
-        """Get SQS queue URL by name"""
-        try:
-            response = self.sqs_client.get_queue_url(QueueName=self.queue_name)
-            return response["QueueUrl"]
-        except Exception as e:
-            raise RuntimeError(
-                f"Cannot access SQS queue {self.queue_name}. Check AWS permissions: {e}"
-            )
 
     def get_user_identity(self) -> Dict[str, Any]:
         """Get current AWS user identity"""

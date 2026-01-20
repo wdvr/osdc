@@ -26,12 +26,20 @@ REST API service for GPU development job submission with AWS IAM-based authentic
 ┌─────────────┐
 │  CLI Client │ (AWS credentials)
 └──────┬──────┘
-       │ 
-       ↓ POST /v1/auth/aws-login (AWS creds)
+       │ HTTPS (TLS 1.2+)
+       ↓ POST /v1/auth/aws-login
 ┌─────────────────────────────────┐
-│  Classic LoadBalancer           │ (Internet-facing, HTTP)
+│  CloudFront Distribution        │ (*.cloudfront.net)
+│  - AWS-managed SSL certificate  │
+│  - HTTPS termination            │
+│  - No caching (TTL=0)           │
 └──────┬──────────────────────────┘
-       │ 
+       │ HTTP (AWS internal network)
+       ↓
+┌─────────────────────────────────┐
+│  Classic LoadBalancer           │ (Internet-facing)
+└──────┬──────────────────────────┘
+       │
        ↓
 ┌─────────────────────────────────┐
 │  API Service (K8s Deployment)   │
@@ -40,7 +48,7 @@ REST API service for GPU development job submission with AWS IAM-based authentic
 │  - Issues API keys (2h TTL)     │
 │  - Accepts job submissions      │
 └──────┬──────────────────────────┘
-       │ 
+       │
        ↓
 ┌─────────────────────────────────┐
 │  PostgreSQL + PGMQ              │
@@ -49,7 +57,7 @@ REST API service for GPU development job submission with AWS IAM-based authentic
 │  - reservations (job state)     │
 │  - gpu_reservations (queue)     │
 └──────┬──────────────────────────┘
-       │ 
+       │
        ↓ (polls queue)
 ┌─────────────────────────────────┐
 │  Job Processor Pod (🚧)         │
@@ -60,14 +68,20 @@ REST API service for GPU development job submission with AWS IAM-based authentic
 ```
 
 **Data Flow:**
-1. User → API: AWS credentials
-2. API → AWS STS: Verify credentials
-3. API → PostgreSQL: Store user + API key (hashed)
-4. API → User: Return API key
-5. User → API: Submit job with API key
-6. API → PGMQ: Push job message
-7. Job Processor → PGMQ: Poll and consume jobs
-8. Job Processor → K8s: Create dev server pods
+1. User → CloudFront: HTTPS request with AWS credentials
+2. CloudFront → LoadBalancer → API: Forward request (HTTP)
+3. API → AWS STS: Verify credentials
+4. API → PostgreSQL: Store user + API key (hashed)
+5. API → User: Return API key (via CloudFront HTTPS)
+6. User → API: Submit job with API key (via CloudFront HTTPS)
+7. API → PGMQ: Push job message
+8. Job Processor → PGMQ: Poll and consume jobs
+9. Job Processor → K8s: Create dev server pods
+
+**Security Layers:**
+- **Public Internet**: HTTPS with TLS 1.2+ (CloudFront SSL)
+- **AWS Internal**: HTTP (LoadBalancer → API Service)
+- **Database**: Encrypted at rest and in transit (PostgreSQL SSL)
 
 ## 🔐 Authentication Flow
 
@@ -607,29 +621,37 @@ kubectl wait --for=condition=available \
 
 ### Get the API URL
 
-**Method 1: OpenTofu Output (Easiest)**
+**Method 1: OpenTofu Output (Recommended - HTTPS)**
 ```bash
-# Get the full URL:
+# Get the CloudFront HTTPS URL:
 tofu output api_service_url
+# Output: https://d1234567890abc.cloudfront.net
 
-# Or just the hostname:
+# Or just the URL:
 tofu output -raw api_service_url
 ```
 
-**Method 2: kubectl**
+**Method 2: Direct LoadBalancer (HTTP only - debugging)**
+```bash
+# Get direct LoadBalancer URL (no SSL):
+tofu output api_service_loadbalancer_url
+# Output: http://a1234567890abc.us-east-1.elb.amazonaws.com
+```
+
+**Method 3: kubectl (LoadBalancer only)**
 ```bash
 # Watch LoadBalancer get created (takes 2-3 min):
 kubectl get svc -n gpu-controlplane api-service-public -w
 
-# Get the URL:
-echo "http://$(kubectl get svc -n gpu-controlplane api-service-public \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+# Get the LoadBalancer hostname:
+kubectl get svc -n gpu-controlplane api-service-public \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 
-**Output example:**
-```
-http://a1234567890abc-123456789.us-east-1.elb.amazonaws.com
-```
+**⚠️ Always use the CloudFront URL for production:**
+- CloudFront provides HTTPS with AWS-managed SSL certificate
+- Protects against man-in-the-middle attacks
+- No custom domain required
 
 ### Test the Deployment
 
