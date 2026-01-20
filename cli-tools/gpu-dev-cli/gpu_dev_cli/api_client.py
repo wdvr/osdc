@@ -286,7 +286,7 @@ class APIClient:
         Submit a GPU job to the queue
 
         Args:
-            job_data: Job parameters (same structure as SQS message)
+            job_data: Job parameters
 
         Returns:
             Response with job_id, status, message
@@ -295,32 +295,44 @@ class APIClient:
 
     def get_job_status(self, job_id: str) -> Dict[str, Any]:
         """
-        Get job/reservation status
+        Get job/reservation details
 
         Args:
             job_id: Job ID (reservation_id)
 
         Returns:
-            Job status information
-
-        Note:
-            This endpoint is still under development in the API.
-            For now, continue using DynamoDB for status checks.
+            Complete job details including status, connection info, etc.
         """
         return self._make_request("GET", f"/v1/jobs/{job_id}")
 
-    def list_jobs(self) -> Dict[str, Any]:
+    def list_jobs(
+        self,
+        status_filter: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> Dict[str, Any]:
         """
-        List user's jobs
+        List user's jobs with filtering
+
+        Args:
+            status_filter: Comma-separated statuses to filter by
+                          (e.g., "active,pending")
+            limit: Maximum number of jobs to return (1-500)
+            offset: Number of jobs to skip for pagination
 
         Returns:
-            List of jobs
-
-        Note:
-            This endpoint is still under development in the API.
-            For now, continue using DynamoDB for listing.
+            {
+                "jobs": [job_details...],
+                "total": total_count,
+                "limit": limit,
+                "offset": offset
+            }
         """
-        return self._make_request("GET", "/v1/jobs")
+        params = {"limit": limit, "offset": offset}
+        if status_filter:
+            params["status"] = status_filter
+
+        return self._make_request("GET", "/v1/jobs", params=params)
 
     def rotate_api_key(self) -> Dict[str, Any]:
         """
@@ -353,4 +365,113 @@ class APIClient:
             return response.json()
         except Exception as e:
             raise RuntimeError(f"Health check failed: {e}")
+
+    def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """
+        Cancel a job/reservation
+        
+        Args:
+            job_id: Job ID (reservation_id)
+            
+        Returns:
+            Action response with status
+        """
+        return self._make_request("POST", f"/v1/jobs/{job_id}/cancel")
+
+    def extend_job(self, job_id: str, extension_hours: int) -> Dict[str, Any]:
+        """
+        Extend job duration
+        
+        Args:
+            job_id: Job ID (reservation_id)
+            extension_hours: Number of hours to extend
+            
+        Returns:
+            Action response with status
+        """
+        data = {"extension_hours": extension_hours}
+        return self._make_request("POST", f"/v1/jobs/{job_id}/extend", data=data)
+
+    def enable_jupyter(self, job_id: str) -> Dict[str, Any]:
+        """
+        Enable Jupyter Lab for a job
+        
+        Args:
+            job_id: Job ID (reservation_id)
+            
+        Returns:
+            Action response with status
+        """
+        return self._make_request("POST", f"/v1/jobs/{job_id}/jupyter/enable")
+
+    def disable_jupyter(self, job_id: str) -> Dict[str, Any]:
+        """
+        Disable Jupyter Lab for a job
+        
+        Args:
+            job_id: Job ID (reservation_id)
+            
+        Returns:
+            Action response with status
+        """
+        return self._make_request("POST", f"/v1/jobs/{job_id}/jupyter/disable")
+
+    def add_user(self, job_id: str, github_username: str) -> Dict[str, Any]:
+        """
+        Add a user to a job (fetch GitHub SSH keys)
+        
+        Args:
+            job_id: Job ID (reservation_id)
+            github_username: GitHub username for SSH key retrieval
+            
+        Returns:
+            Action response with status
+        """
+        data = {"github_username": github_username}
+        return self._make_request("POST", f"/v1/jobs/{job_id}/users", data=data)
+
+    def get_gpu_availability(self) -> Dict[str, Any]:
+        """
+        Get current GPU availability for all GPU types
+        
+        Returns:
+            {
+                "availability": {
+                    "h100": {
+                        "gpu_type": "h100",
+                        "total": 16,
+                        "available": 8,
+                        "in_use": 8,
+                        "queued": 4,
+                        "max_per_node": 8
+                    },
+                    ...
+                },
+                "timestamp": "2026-01-20T18:30:00Z"
+            }
+        """
+        return self._make_request("GET", "/v1/gpu/availability")
+
+    def get_cluster_status(self) -> Dict[str, Any]:
+        """
+        Get overall cluster status and statistics
+        
+        Returns:
+            {
+                "total_gpus": 64,
+                "available_gpus": 32,
+                "in_use_gpus": 24,
+                "queued_gpus": 8,
+                "active_reservations": 5,
+                "preparing_reservations": 1,
+                "queued_reservations": 2,
+                "pending_reservations": 0,
+                "by_gpu_type": {
+                    "h100": GPUTypeAvailability,
+                    ...
+                },
+                "timestamp": "2026-01-20T18:30:00Z"
+            }
+        """
+        return self._make_request("GET", "/v1/cluster/status")
 
