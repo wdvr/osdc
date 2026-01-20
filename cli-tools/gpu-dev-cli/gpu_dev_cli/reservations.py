@@ -580,7 +580,7 @@ class ReservationManager:
             # If no name provided, let Lambda generate (processed_name stays None)
 
             # Create initial reservation record for polling
-            # Convert float to Decimal for DynamoDB compatibility
+            # Convert float to Decimal for numeric precision
             duration_decimal = Decimal(str(duration_hours))
 
             initial_reservation = {
@@ -602,8 +602,8 @@ class ReservationManager:
             if github_user:
                 initial_reservation["github_user"] = github_user
 
-            # Send processing request to SQS queue (Lambda will create the initial record)
-            # Use float for SQS message (JSON serializable)
+            # Prepare job submission request for API
+            # Use float for JSON serializable message
             message = {
                 "reservation_id": reservation_id,
                 "user_id": user_id,
@@ -934,31 +934,8 @@ class ReservationManager:
         """Extend an active reservation by the specified number of hours"""
         try:
             # Capture current expiration BEFORE sending extension request to avoid race condition
-            response = self.reservations_table.query(
-                IndexName="UserIndex",
-                KeyConditionExpression="user_id = :user_id",
-                ExpressionAttributeValues={":user_id": user_id},
-            )
-            all_reservations = response.get("Items", [])
-
-            # Handle pagination for UserIndex query
-            while "LastEvaluatedKey" in response:
-                response = self.reservations_table.query(
-                    IndexName="UserIndex",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
-                )
-                all_reservations.extend(response.get("Items", []))
-
-            matching_reservations = [
-                res for res in all_reservations
-                if res.get("reservation_id", "").startswith(reservation_id)
-            ]
-
-            initial_expires_at = None
-            if matching_reservations:
-                initial_expires_at = matching_reservations[0].get("expires_at", "")
+            job = self.api_client.get_job_status(reservation_id)
+            initial_expires_at = job.get("expires_at", "") if job else None
 
             # Send extend request via API
             # Job processor will handle the expiration timestamp update and pod updates
@@ -1479,10 +1456,8 @@ class ReservationManager:
 
                         for i, res_id in enumerate(reservation_ids):
                             try:
-                                response = self.reservations_table.get_item(
-                                    Key={"reservation_id": res_id})
-                                if "Item" in response:
-                                    reservation = response["Item"]
+                                reservation = self.api_client.get_job_status(res_id)
+                                if reservation:
                                     all_reservations.append(reservation)
 
                                     status = reservation.get(
@@ -2066,11 +2041,9 @@ class ReservationManager:
                 success_count = 0
                 for res_id in reservation_ids:
                     try:
-                        response = self.reservations_table.get_item(
-                            Key={"reservation_id": res_id})
-                        if "Item" in response:
-                            user_id = response["Item"].get(
-                                "user_id", "unknown")
+                        job = self.api_client.get_job_status(res_id)
+                        if job:
+                            user_id = job.get("user_id", "unknown")
                             if self.cancel_reservation(res_id, user_id):
                                 success_count += 1
                     except Exception as e:
