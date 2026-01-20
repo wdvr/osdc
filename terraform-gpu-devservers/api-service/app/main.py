@@ -15,7 +15,7 @@ from typing import Any
 import aioboto3
 import asyncpg
 from botocore.exceptions import ClientError
-from fastapi import Depends, FastAPI, HTTPException, Security, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -207,6 +207,182 @@ class JobSubmissionResponse(BaseModel):
         ..., description="Human-readable message"
     )
     estimated_start_time: str | None = None
+
+
+class JobActionResponse(BaseModel):
+    """Response model for job actions (cancel, extend, etc.)"""
+    job_id: str = Field(..., description="Job/Reservation ID")
+    action: str = Field(..., description="Action performed")
+    status: str = Field(..., description="Action status")
+    message: str = Field(..., description="Human-readable message")
+
+
+class ExtendJobRequest(BaseModel):
+    """Request model for extending job duration"""
+    extension_hours: int = Field(
+        ..., ge=1, le=72, description="Hours to extend (1-72)"
+    )
+
+
+class AddUserRequest(BaseModel):
+    """Request model for adding user to job"""
+    github_username: str = Field(
+        ..., description="GitHub username for SSH key retrieval"
+    )
+
+
+class JobDetail(BaseModel):
+    """Detailed information about a job/reservation"""
+    job_id: str = Field(..., description="Job ID (reservation_id)")
+    reservation_id: str = Field(..., description="Reservation ID (same as job_id)")
+    user_id: str = Field(..., description="User email/ID")
+    status: str = Field(..., description="Job status")
+    gpu_type: str | None = Field(None, description="GPU type (h100, a100, etc.)")
+    gpu_count: int | None = Field(None, description="Number of GPUs")
+    instance_type: str = Field(..., description="EC2 instance type")
+    duration_hours: float = Field(..., description="Reservation duration in hours")
+    created_at: str = Field(..., description="Creation timestamp (ISO 8601)")
+    expires_at: str | None = Field(None, description="Expiration timestamp (ISO 8601)")
+    name: str | None = Field(None, description="User-provided name")
+    pod_name: str | None = Field(None, description="Kubernetes pod name")
+    node_ip: str | None = Field(None, description="Node IP address")
+    node_port: int | None = Field(None, description="NodePort for SSH")
+    ssh_command: str | None = Field(None, description="SSH command to connect")
+    jupyter_enabled: bool = Field(False, description="Whether Jupyter Lab is enabled")
+    jupyter_url: str | None = Field(None, description="Jupyter Lab URL")
+    jupyter_token: str | None = Field(None, description="Jupyter Lab token")
+    github_user: str | None = Field(None, description="GitHub username for SSH keys")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_id": "abc-123-def-456",
+                "reservation_id": "abc-123-def-456",
+                "user_id": "john@example.com",
+                "status": "active",
+                "gpu_type": "h100",
+                "gpu_count": 4,
+                "instance_type": "p5.48xlarge",
+                "duration_hours": 2.0,
+                "created_at": "2026-01-20T18:00:00Z",
+                "expires_at": "2026-01-20T20:00:00Z",
+                "name": "training-run",
+                "pod_name": "gpu-dev-abc123",
+                "node_ip": "10.0.1.42",
+                "node_port": 30123,
+                "ssh_command": "ssh gpu-dev-abc123",
+                "jupyter_enabled": True,
+                "jupyter_url": "https://...",
+                "jupyter_token": "token123",
+                "github_user": "johndoe"
+            }
+        }
+
+
+class JobListResponse(BaseModel):
+    """Response for listing jobs"""
+    jobs: list[JobDetail] = Field(..., description="List of jobs")
+    total: int = Field(..., description="Total number of jobs matching filters")
+    limit: int = Field(..., description="Limit used for this query")
+    offset: int = Field(..., description="Offset used for this query")
+
+
+class GPUTypeAvailability(BaseModel):
+    """Availability info for a specific GPU type"""
+    gpu_type: str = Field(..., description="GPU type (h100, a100, etc.)")
+    total: int = Field(..., description="Total GPUs of this type in cluster")
+    available: int = Field(..., description="GPUs currently available")
+    in_use: int = Field(..., description="GPUs currently in use")
+    queued: int = Field(
+        ..., description="GPUs requested by queued reservations"
+    )
+    max_per_node: int = Field(
+        ..., description="Maximum GPUs per node for this type"
+    )
+
+
+class GPUAvailabilityResponse(BaseModel):
+    """Response for GPU availability query"""
+    availability: dict[str, GPUTypeAvailability] = Field(
+        ..., description="Availability by GPU type"
+    )
+    timestamp: datetime = Field(..., description="When availability was computed")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "availability": {
+                    "h100": {
+                        "gpu_type": "h100",
+                        "total": 16,
+                        "available": 8,
+                        "in_use": 8,
+                        "queued": 4,
+                        "max_per_node": 8
+                    },
+                    "a100": {
+                        "gpu_type": "a100",
+                        "total": 16,
+                        "available": 12,
+                        "in_use": 4,
+                        "queued": 0,
+                        "max_per_node": 8
+                    }
+                },
+                "timestamp": "2026-01-20T18:30:00Z"
+            }
+        }
+
+
+class ClusterStatusResponse(BaseModel):
+    """Response for cluster status query"""
+    total_gpus: int = Field(..., description="Total GPUs in cluster")
+    available_gpus: int = Field(..., description="GPUs currently available")
+    in_use_gpus: int = Field(..., description="GPUs currently in use")
+    queued_gpus: int = Field(
+        ..., description="GPUs requested by queued reservations"
+    )
+    active_reservations: int = Field(
+        ..., description="Number of active reservations"
+    )
+    preparing_reservations: int = Field(
+        ..., description="Number of preparing reservations"
+    )
+    queued_reservations: int = Field(
+        ..., description="Number of queued reservations"
+    )
+    pending_reservations: int = Field(
+        ..., description="Number of pending reservations"
+    )
+    by_gpu_type: dict[str, GPUTypeAvailability] = Field(
+        ..., description="Breakdown by GPU type"
+    )
+    timestamp: datetime = Field(..., description="When status was computed")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "total_gpus": 64,
+                "available_gpus": 32,
+                "in_use_gpus": 24,
+                "queued_gpus": 8,
+                "active_reservations": 5,
+                "preparing_reservations": 1,
+                "queued_reservations": 2,
+                "pending_reservations": 0,
+                "by_gpu_type": {
+                    "h100": {
+                        "gpu_type": "h100",
+                        "total": 16,
+                        "available": 8,
+                        "in_use": 8,
+                        "queued": 4,
+                        "max_per_node": 8
+                    }
+                },
+                "timestamp": "2026-01-20T18:30:00Z"
+            }
+        }
 
 
 class APIKeyResponse(BaseModel):
@@ -591,32 +767,626 @@ async def submit_job(
         ) from e
 
 
-@app.get("/v1/jobs/{job_id}")
+@app.get("/v1/jobs/{job_id}", response_model=JobDetail)
 async def get_job_status(
     job_id: str,
     user: dict[str, Any] = verify_user
-) -> dict[str, str]:
-    """Get status of a specific job"""
-    # TODO: Implement job status tracking
-    # For now, return a placeholder
-    return {
-        "job_id": job_id,
-        "status": "queued",
-        "message": "Job status tracking not yet implemented"
-    }
+) -> JobDetail:
+    """
+    Get detailed information about a specific job/reservation
+    
+    Returns comprehensive job details including status, connection info,
+    and resource allocation.
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # Query reservations table from DynamoDB structure
+            # Note: This assumes the Job Processor updates a reservations table in PostgreSQL
+            query = """
+                SELECT 
+                    reservation_id,
+                    user_id,
+                    status,
+                    gpu_type,
+                    gpu_count,
+                    instance_type,
+                    duration_hours,
+                    created_at,
+                    expires_at,
+                    name,
+                    pod_name,
+                    node_ip,
+                    node_port,
+                    jupyter_enabled,
+                    jupyter_url,
+                    jupyter_token,
+                    github_user
+                FROM reservations
+                WHERE reservation_id = $1
+                LIMIT 1
+            """
+            
+            row = await conn.fetchrow(query, job_id)
+            
+            if not row:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {job_id} not found"
+                )
+            
+            # Check authorization - user can only see their own jobs
+            if row["user_id"] != user["username"] and row["user_id"] != user["user_id"]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only view your own jobs"
+                )
+            
+            # Build SSH command if pod is active
+            ssh_command = None
+            if row["pod_name"] and row["status"] == "active":
+                ssh_command = f"ssh {row['pod_name']}"
+            
+            return JobDetail(
+                job_id=row["reservation_id"],
+                reservation_id=row["reservation_id"],
+                user_id=row["user_id"],
+                status=row["status"],
+                gpu_type=row.get("gpu_type"),
+                gpu_count=row.get("gpu_count"),
+                instance_type=row.get("instance_type", "unknown"),
+                duration_hours=float(row.get("duration_hours", 0)),
+                created_at=row["created_at"].isoformat() if row.get("created_at") else None,
+                expires_at=row["expires_at"].isoformat() if row.get("expires_at") else None,
+                name=row.get("name"),
+                pod_name=row.get("pod_name"),
+                node_ip=row.get("node_ip"),
+                node_port=row.get("node_port"),
+                ssh_command=ssh_command,
+                jupyter_enabled=row.get("jupyter_enabled", False),
+                jupyter_url=row.get("jupyter_url"),
+                jupyter_token=row.get("jupyter_token"),
+                github_user=row.get("github_user")
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve job details: {str(e)}"
+        ) from e
 
 
-@app.get("/v1/jobs")
+@app.get("/v1/jobs", response_model=JobListResponse)
 async def list_jobs(
     user: dict[str, Any] = verify_user,
-    limit: int = 10
-) -> dict[str, Any]:
-    """List jobs for the authenticated user"""
-    # TODO: Implement job listing from a jobs table
-    return {
-        "jobs": [],
-        "message": "Job listing not yet implemented"
-    }
+    status_filter: str | None = Query(None, alias="status", description="Filter by status (comma-separated)"),
+    limit: int = Query(50, ge=1, le=500, description="Maximum number of jobs to return"),
+    offset: int = Query(0, ge=0, description="Number of jobs to skip")
+) -> JobListResponse:
+    """
+    List jobs/reservations for the authenticated user
+    
+    Supports filtering by status and pagination.
+    Returns jobs sorted by creation time (newest first).
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # Build query with optional status filter
+            query_conditions = ["user_id = $1"]
+            query_params: list[Any] = [user["username"]]
+            param_index = 2
+            
+            if status_filter:
+                statuses = [s.strip() for s in status_filter.split(",")]
+                placeholders = ", ".join(f"${i}" for i in range(param_index, param_index + len(statuses)))
+                query_conditions.append(f"status IN ({placeholders})")
+                query_params.extend(statuses)
+                param_index += len(statuses)
+            
+            where_clause = " AND ".join(query_conditions)
+            
+            # Count total matching jobs
+            count_query = f"""
+                SELECT COUNT(*)
+                FROM reservations
+                WHERE {where_clause}
+            """
+            total = await conn.fetchval(count_query, *query_params)
+            
+            # Fetch paginated results
+            query = f"""
+                SELECT 
+                    reservation_id,
+                    user_id,
+                    status,
+                    gpu_type,
+                    gpu_count,
+                    instance_type,
+                    duration_hours,
+                    created_at,
+                    expires_at,
+                    name,
+                    pod_name,
+                    node_ip,
+                    node_port,
+                    jupyter_enabled,
+                    jupyter_url,
+                    jupyter_token,
+                    github_user
+                FROM reservations
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ${param_index}
+                OFFSET ${param_index + 1}
+            """
+            query_params.extend([limit, offset])
+            
+            rows = await conn.fetch(query, *query_params)
+            
+            # Convert rows to JobDetail objects
+            jobs = []
+            for row in rows:
+                # Build SSH command if pod is active
+                ssh_command = None
+                if row["pod_name"] and row["status"] == "active":
+                    ssh_command = f"ssh {row['pod_name']}"
+                
+                jobs.append(JobDetail(
+                    job_id=row["reservation_id"],
+                    reservation_id=row["reservation_id"],
+                    user_id=row["user_id"],
+                    status=row["status"],
+                    gpu_type=row.get("gpu_type"),
+                    gpu_count=row.get("gpu_count"),
+                    instance_type=row.get("instance_type", "unknown"),
+                    duration_hours=float(row.get("duration_hours", 0)),
+                    created_at=row["created_at"].isoformat() if row.get("created_at") else None,
+                    expires_at=row["expires_at"].isoformat() if row.get("expires_at") else None,
+                    name=row.get("name"),
+                    pod_name=row.get("pod_name"),
+                    node_ip=row.get("node_ip"),
+                    node_port=row.get("node_port"),
+                    ssh_command=ssh_command,
+                    jupyter_enabled=row.get("jupyter_enabled", False),
+                    jupyter_url=row.get("jupyter_url"),
+                    jupyter_token=row.get("jupyter_token"),
+                    github_user=row.get("github_user")
+                ))
+            
+            return JobListResponse(
+                jobs=jobs,
+                total=total or 0,
+                limit=limit,
+                offset=offset
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list jobs: {str(e)}"
+        ) from e
+
+
+@app.post("/v1/jobs/{job_id}/cancel", response_model=JobActionResponse)
+async def cancel_job(
+    job_id: str,
+    user: dict[str, Any] = verify_user
+) -> JobActionResponse:
+    """
+    Cancel a running or queued job
+    
+    Sends a cancellation action to PGMQ for the Job Processor to handle.
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # Create cancellation message
+            message = {
+                "action": "cancel",
+                "job_id": job_id,
+                "reservation_id": job_id,  # For backward compatibility
+                "user_id": user["user_id"],
+                "username": user["username"],
+                "requested_at": datetime.now(UTC).isoformat(),
+            }
+            
+            # Send to PGMQ
+            msg_id = await conn.fetchval(
+                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                json.dumps(message)
+            )
+            
+            return JobActionResponse(
+                job_id=job_id,
+                action="cancel",
+                status="requested",
+                message=f"Cancellation request submitted (message ID: {msg_id})"
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to submit cancellation request"
+        ) from e
+
+
+@app.post("/v1/jobs/{job_id}/extend", response_model=JobActionResponse)
+async def extend_job(
+    job_id: str,
+    request: ExtendJobRequest,
+    user: dict[str, Any] = verify_user
+) -> JobActionResponse:
+    """
+    Extend the duration of a running job
+    
+    Sends an extend action to PGMQ for the Job Processor to handle.
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # Create extend message
+            message = {
+                "action": "extend",
+                "job_id": job_id,
+                "reservation_id": job_id,  # For backward compatibility
+                "user_id": user["user_id"],
+                "username": user["username"],
+                "extension_hours": request.extension_hours,
+                "requested_at": datetime.now(UTC).isoformat(),
+            }
+            
+            # Send to PGMQ
+            msg_id = await conn.fetchval(
+                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                json.dumps(message)
+            )
+            
+            return JobActionResponse(
+                job_id=job_id,
+                action="extend",
+                status="requested",
+                message=(
+                    f"Extension request submitted for {request.extension_hours} hours "
+                    f"(message ID: {msg_id})"
+                )
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to submit extension request"
+        ) from e
+
+
+@app.post("/v1/jobs/{job_id}/jupyter/enable", response_model=JobActionResponse)
+async def enable_jupyter(
+    job_id: str,
+    user: dict[str, Any] = verify_user
+) -> JobActionResponse:
+    """
+    Enable Jupyter Lab for a running job
+    
+    Sends an enable_jupyter action to PGMQ for the Job Processor to handle.
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # Create enable jupyter message
+            message = {
+                "action": "enable_jupyter",
+                "job_id": job_id,
+                "reservation_id": job_id,  # For backward compatibility
+                "user_id": user["user_id"],
+                "username": user["username"],
+                "requested_at": datetime.now(UTC).isoformat(),
+            }
+            
+            # Send to PGMQ
+            msg_id = await conn.fetchval(
+                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                json.dumps(message)
+            )
+            
+            return JobActionResponse(
+                job_id=job_id,
+                action="enable_jupyter",
+                status="requested",
+                message=f"Jupyter enable request submitted (message ID: {msg_id})"
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to submit Jupyter enable request"
+        ) from e
+
+
+@app.post("/v1/jobs/{job_id}/jupyter/disable", response_model=JobActionResponse)
+async def disable_jupyter(
+    job_id: str,
+    user: dict[str, Any] = verify_user
+) -> JobActionResponse:
+    """
+    Disable Jupyter Lab for a running job
+    
+    Sends a disable_jupyter action to PGMQ for the Job Processor to handle.
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # Create disable jupyter message
+            message = {
+                "action": "disable_jupyter",
+                "job_id": job_id,
+                "reservation_id": job_id,  # For backward compatibility
+                "user_id": user["user_id"],
+                "username": user["username"],
+                "requested_at": datetime.now(UTC).isoformat(),
+            }
+            
+            # Send to PGMQ
+            msg_id = await conn.fetchval(
+                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                json.dumps(message)
+            )
+            
+            return JobActionResponse(
+                job_id=job_id,
+                action="disable_jupyter",
+                status="requested",
+                message=f"Jupyter disable request submitted (message ID: {msg_id})"
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to submit Jupyter disable request"
+        ) from e
+
+
+@app.post("/v1/jobs/{job_id}/users", response_model=JobActionResponse)
+async def add_user_to_job(
+    job_id: str,
+    request: AddUserRequest,
+    user: dict[str, Any] = verify_user
+) -> JobActionResponse:
+    """
+    Add a user's SSH keys to a running job
+    
+    Fetches SSH keys from GitHub and adds them to the job's authorized_keys.
+    Sends an add_user action to PGMQ for the Job Processor to handle.
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # Create add user message
+            message = {
+                "action": "add_user",
+                "job_id": job_id,
+                "reservation_id": job_id,  # For backward compatibility
+                "user_id": user["user_id"],
+                "username": user["username"],
+                "github_username": request.github_username,
+                "requested_at": datetime.now(UTC).isoformat(),
+            }
+            
+            # Send to PGMQ
+            msg_id = await conn.fetchval(
+                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                json.dumps(message)
+            )
+            
+            return JobActionResponse(
+                job_id=job_id,
+                action="add_user",
+                status="requested",
+                message=(
+                    f"Add user request submitted for GitHub user "
+                    f"'{request.github_username}' (message ID: {msg_id})"
+                )
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to submit add user request"
+        ) from e
+
+
+# ============================================================================
+# GPU Availability
+# ============================================================================
+
+@app.get("/v1/gpu/availability", response_model=GPUAvailabilityResponse)
+async def get_gpu_availability(
+    user: dict[str, Any] = verify_user
+) -> GPUAvailabilityResponse:
+    """
+    Get current GPU availability across all GPU types
+    
+    Returns the total, available, in-use, and queued GPU counts for each
+    GPU type in the cluster. This helps users decide which GPU type to
+    reserve based on current availability.
+    
+    Calculations:
+    - total: Known cluster capacity per GPU type (from config)
+    - in_use: Sum of gpu_count for active/preparing reservations
+    - queued: Sum of gpu_count for queued/pending reservations
+    - available: total - in_use
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # GPU configuration - matches Terraform and Lambda configs
+            # This should ideally come from a config table or environment
+            GPU_CONFIG = {
+                "h100": {"total": 16, "max_per_node": 8},
+                "h200": {"total": 16, "max_per_node": 8},
+                "b200": {"total": 16, "max_per_node": 8},
+                "a100": {"total": 16, "max_per_node": 8},
+                "a10g": {"total": 4, "max_per_node": 4},
+                "t4": {"total": 8, "max_per_node": 4},
+                "t4-small": {"total": 1, "max_per_node": 1},
+                "l4": {"total": 4, "max_per_node": 4},
+            }
+            
+            # Query active/preparing reservations (GPU in use)
+            in_use_query = """
+                SELECT 
+                    gpu_type,
+                    COALESCE(SUM(gpu_count), 0) as count
+                FROM reservations
+                WHERE status IN ('active', 'preparing')
+                AND gpu_type IS NOT NULL
+                GROUP BY gpu_type
+            """
+            in_use_rows = await conn.fetch(in_use_query)
+            in_use_map = {row["gpu_type"]: int(row["count"]) for row in in_use_rows}
+            
+            # Query queued/pending reservations
+            queued_query = """
+                SELECT 
+                    gpu_type,
+                    COALESCE(SUM(gpu_count), 0) as count
+                FROM reservations
+                WHERE status IN ('queued', 'pending')
+                AND gpu_type IS NOT NULL
+                GROUP BY gpu_type
+            """
+            queued_rows = await conn.fetch(queued_query)
+            queued_map = {row["gpu_type"]: int(row["count"]) for row in queued_rows}
+            
+            # Build availability response
+            availability = {}
+            for gpu_type, config in GPU_CONFIG.items():
+                total = config["total"]
+                in_use = in_use_map.get(gpu_type, 0)
+                queued = queued_map.get(gpu_type, 0)
+                available = max(0, total - in_use)  # Can't be negative
+                
+                availability[gpu_type] = GPUTypeAvailability(
+                    gpu_type=gpu_type,
+                    total=total,
+                    available=available,
+                    in_use=in_use,
+                    queued=queued,
+                    max_per_node=config["max_per_node"]
+                )
+            
+            return GPUAvailabilityResponse(
+                availability=availability,
+                timestamp=datetime.now(UTC)
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get GPU availability: {str(e)}"
+        ) from e
+
+
+@app.get("/v1/cluster/status", response_model=ClusterStatusResponse)
+async def get_cluster_status(
+    user: dict[str, Any] = verify_user
+) -> ClusterStatusResponse:
+    """
+    Get overall cluster status and statistics
+    
+    Returns aggregate statistics across the entire GPU cluster including
+    total capacity, current utilization, queue depth, and breakdown by
+    GPU type.
+    
+    This is useful for admins and monitoring dashboards to understand
+    overall cluster health and utilization.
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # GPU configuration (same as availability endpoint)
+            GPU_CONFIG = {
+                "h100": {"total": 16, "max_per_node": 8},
+                "h200": {"total": 16, "max_per_node": 8},
+                "b200": {"total": 16, "max_per_node": 8},
+                "a100": {"total": 16, "max_per_node": 8},
+                "a10g": {"total": 4, "max_per_node": 4},
+                "t4": {"total": 8, "max_per_node": 4},
+                "t4-small": {"total": 1, "max_per_node": 1},
+                "l4": {"total": 4, "max_per_node": 4},
+            }
+            
+            # Count reservations by status
+            status_query = """
+                SELECT 
+                    status,
+                    COUNT(*) as count
+                FROM reservations
+                WHERE status IN ('active', 'preparing', 'queued', 'pending')
+                GROUP BY status
+            """
+            status_rows = await conn.fetch(status_query)
+            status_counts = {row["status"]: int(row["count"]) for row in status_rows}
+            
+            # Query GPU usage by type and status
+            in_use_query = """
+                SELECT 
+                    gpu_type,
+                    COALESCE(SUM(gpu_count), 0) as count
+                FROM reservations
+                WHERE status IN ('active', 'preparing')
+                AND gpu_type IS NOT NULL
+                GROUP BY gpu_type
+            """
+            in_use_rows = await conn.fetch(in_use_query)
+            in_use_map = {row["gpu_type"]: int(row["count"]) for row in in_use_rows}
+            
+            # Query queued/pending GPUs by type
+            queued_query = """
+                SELECT 
+                    gpu_type,
+                    COALESCE(SUM(gpu_count), 0) as count
+                FROM reservations
+                WHERE status IN ('queued', 'pending')
+                AND gpu_type IS NOT NULL
+                GROUP BY gpu_type
+            """
+            queued_rows = await conn.fetch(queued_query)
+            queued_map = {row["gpu_type"]: int(row["count"]) for row in queued_rows}
+            
+            # Calculate cluster-wide totals
+            total_gpus = sum(config["total"] for config in GPU_CONFIG.values())
+            in_use_gpus = sum(in_use_map.values())
+            queued_gpus = sum(queued_map.values())
+            available_gpus = max(0, total_gpus - in_use_gpus)
+            
+            # Build per-GPU-type breakdown
+            by_gpu_type = {}
+            for gpu_type, config in GPU_CONFIG.items():
+                total = config["total"]
+                in_use = in_use_map.get(gpu_type, 0)
+                queued = queued_map.get(gpu_type, 0)
+                available = max(0, total - in_use)
+                
+                by_gpu_type[gpu_type] = GPUTypeAvailability(
+                    gpu_type=gpu_type,
+                    total=total,
+                    available=available,
+                    in_use=in_use,
+                    queued=queued,
+                    max_per_node=config["max_per_node"]
+                )
+            
+            return ClusterStatusResponse(
+                total_gpus=total_gpus,
+                available_gpus=available_gpus,
+                in_use_gpus=in_use_gpus,
+                queued_gpus=queued_gpus,
+                active_reservations=status_counts.get("active", 0),
+                preparing_reservations=status_counts.get("preparing", 0),
+                queued_reservations=status_counts.get("queued", 0),
+                pending_reservations=status_counts.get("pending", 0),
+                by_gpu_type=by_gpu_type,
+                timestamp=datetime.now(UTC)
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get cluster status: {str(e)}"
+        ) from e
 
 
 # ============================================================================

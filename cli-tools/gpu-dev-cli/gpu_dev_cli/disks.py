@@ -233,9 +233,12 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
 
 def create_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
     """
-    Create a new disk by sending request to SQS queue.
-    Lambda will create the disk entry in DynamoDB.
+    Create a new disk by sending request to SQS queue (legacy).
+    Lambda will create the disk entry in DynamoDB (legacy).
     Returns operation_id on success, None on failure.
+    
+    NOTE: This function still uses the legacy SQS/DynamoDB infrastructure
+    and will need migration to the API service in the future.
     """
     import json
     import uuid
@@ -340,9 +343,12 @@ def list_disk_content(disk_name: str, user_id: str, config: Config) -> Optional[
 
 def delete_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
     """
-    Soft delete a disk by sending delete request to SQS queue.
-    Lambda will handle marking in DynamoDB and tagging snapshots.
+    Soft delete a disk by sending delete request to SQS queue (legacy).
+    Lambda will handle marking in DynamoDB and tagging snapshots (legacy).
     Returns operation_id on success, None on failure.
+    
+    NOTE: This function still uses the legacy SQS/DynamoDB infrastructure
+    and will need migration to the API service in the future.
     """
     import json
     import uuid
@@ -403,7 +409,10 @@ def poll_disk_operation(
     timeout_seconds: int = 60
 ) -> Tuple[bool, str]:
     """
-    Poll DynamoDB for disk operation completion.
+    Poll DynamoDB for disk operation completion (legacy).
+    
+    NOTE: This function still uses the legacy DynamoDB infrastructure
+    and will need migration to the API service in the future.
 
     Args:
         operation_type: 'create' or 'delete'

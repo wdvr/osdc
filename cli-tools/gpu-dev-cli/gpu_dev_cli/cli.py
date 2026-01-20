@@ -1027,9 +1027,9 @@ def reserve(
                                 dockerfile_dir, dockerfile_name)
                             tar.add(dockerfile_path, arcname='Dockerfile')
 
-                    # Check compressed size limit (SQS has 1 MiB limit, base64 adds ~33% overhead)
+                    # Check compressed size limit (API has message size limits, base64 adds ~33% overhead)
                     compressed_size = os.path.getsize(temp_tar.name)
-                    # ~700KB to allow for base64 overhead and other message fields
+                    # ~700KB to allow for base64 overhead and other request fields
                     max_tar_size = 700 * 1024
                     if compressed_size > max_tar_size:
                         os.unlink(temp_tar.name)
@@ -1037,7 +1037,7 @@ def reserve(
                             f"[red]❌ Build context too large: {compressed_size} bytes (max ~700KB compressed)[/red]")
                         return
 
-                    # Base64 encode the tar.gz for SQS message
+                    # Base64 encode the tar.gz for API request
                     import base64
                     with open(temp_tar.name, 'rb') as f:
                         build_context_data = base64.b64encode(
@@ -3744,7 +3744,7 @@ def disk_create(disk_name: str):
         return
 
     try:
-        # Send create request to SQS
+        # Send create request
         operation_id = create_disk(disk_name, user_id, config)
         if not operation_id:
             return
@@ -3855,7 +3855,7 @@ def disk_delete(disk_name: str, yes: bool):
             return
 
     try:
-        # Send delete request to SQS
+        # Send delete request
         operation_id = delete_disk(disk_name, user_id, config)
         if not operation_id:
             return
