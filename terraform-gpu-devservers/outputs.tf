@@ -25,32 +25,13 @@ output "eks_cluster_arn" {
   value       = aws_eks_cluster.gpu_dev_cluster.arn
 }
 
-output "reservation_queue_url" {
-  description = "URL of the SQS reservation queue"
-  value       = aws_sqs_queue.gpu_reservation_queue.id
-}
+# Removed SQS and DynamoDB outputs - now using API service with PGMQ and PostgreSQL
+# - reservation_queue_url / reservation_queue_arn (replaced by PGMQ)
+# - reservations_table_name (replaced by PostgreSQL reservations table)
+# - disks_table_name (replaced by PostgreSQL disks table)
+# - servers_table_name (now using K8s API for GPU tracking)
 
-output "reservation_queue_arn" {
-  description = "ARN of the SQS reservation queue"
-  value       = aws_sqs_queue.gpu_reservation_queue.arn
-}
-
-output "reservations_table_name" {
-  description = "Name of the DynamoDB reservations table"
-  value       = aws_dynamodb_table.gpu_reservations.name
-}
-
-output "disks_table_name" {
-  description = "Name of the DynamoDB disks table (for IAM policies)"
-  value       = aws_dynamodb_table.disks.name
-}
-
-# Removed servers_table_name output - now using K8s API for GPU tracking
-
-output "reservation_processor_function_name" {
-  description = "Name of the Lambda reservation processor function"
-  value       = aws_lambda_function.reservation_processor.function_name
-}
+# Removed reservation_processor_function_name output - Lambda replaced by job processor pod
 
 output "placement_group_names" {
   description = "Names of the cluster placement groups by GPU type"
@@ -70,13 +51,13 @@ output "supported_gpu_types" {
 
 # CLI configuration outputs
 output "cli_config" {
-  description = "Configuration for CLI tools"
+  description = "Configuration for CLI tools (now uses API service)"
   value = {
     region              = local.current_config.aws_region
-    queue_url           = aws_sqs_queue.gpu_reservation_queue.id
-    reservations_table  = aws_dynamodb_table.gpu_reservations.name
     cluster_name        = aws_eks_cluster.gpu_dev_cluster.name
     supported_gpu_types = local.current_config.supported_gpu_types
+    # API service URL should be set via environment variable or config file
+    # queue_url and reservations_table removed - CLI now uses API service
   }
   sensitive = false
 }

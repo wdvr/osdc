@@ -475,3 +475,92 @@ class APIClient:
         """
         return self._make_request("GET", "/v1/cluster/status")
 
+    def create_disk(self, disk_name: str, size_gb: int = None):
+        """Create a new persistent disk.
+        
+        Args:
+            disk_name: Name of the disk to create
+            size_gb: Optional disk size in GB
+            
+        Returns:
+            dict with operation_id, disk_name, action, message, requested_at
+            
+        Example:
+            {
+                "operation_id": "abc-123",
+                "disk_name": "my-disk",
+                "action": "create",
+                "message": "Disk creation request queued successfully",
+                "requested_at": "2026-01-20T18:00:00Z"
+            }
+        """
+        data = {"disk_name": disk_name}
+        if size_gb:
+            data["size_gb"] = size_gb
+        return self._make_request("POST", "/v1/disks", json_data=data)
+
+    def delete_disk(self, disk_name: str):
+        """Delete a persistent disk (soft delete with 30-day retention).
+        
+        Args:
+            disk_name: Name of the disk to delete
+            
+        Returns:
+            dict with operation_id, disk_name, action, message, requested_at
+            
+        Example:
+            {
+                "operation_id": "abc-123",
+                "disk_name": "my-disk",
+                "action": "delete",
+                "message": "Disk deletion request queued successfully. Will be deleted on 2026-02-19",
+                "requested_at": "2026-01-20T18:00:00Z"
+            }
+        """
+        return self._make_request("DELETE", f"/v1/disks/{disk_name}")
+
+    def list_disks(self):
+        """List all persistent disks for the current user.
+        
+        Returns:
+            dict with disks (list) and total (int)
+            
+        Example:
+            {
+                "disks": [
+                    {
+                        "disk_name": "my-disk",
+                        "user_id": "user@example.com",
+                        "size_gb": 100,
+                        "created_at": "2026-01-15T10:00:00Z",
+                        "in_use": False,
+                        "snapshot_count": 5
+                    }
+                ],
+                "total": 1
+            }
+        """
+        return self._make_request("GET", "/v1/disks")
+
+    def get_disk_info(self, disk_name: str):
+        """Get information about a specific disk.
+        
+        Args:
+            disk_name: Name of the disk
+            
+        Returns:
+            dict with disk information
+            
+        Example:
+            {
+                "disk_name": "my-disk",
+                "user_id": "user@example.com",
+                "size_gb": 100,
+                "created_at": "2026-01-15T10:00:00Z",
+                "in_use": False,
+                "reservation_id": None,
+                "snapshot_count": 5
+            }
+        """
+        return self._make_request("GET", f"/v1/disks/{disk_name}")
+

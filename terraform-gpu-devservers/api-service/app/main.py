@@ -37,6 +37,7 @@ else:
     )
 API_KEY_LENGTH = 64
 QUEUE_NAME = os.getenv("QUEUE_NAME", "gpu_reservations")
+DISK_QUEUE_NAME = os.getenv("DISK_QUEUE_NAME", "disk_operations")
 
 # Parse and validate API_KEY_TTL_HOURS with error handling
 try:
@@ -56,10 +57,15 @@ ALLOWED_AWS_ROLE = os.getenv(
 )
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 
-# Validate queue name (alphanumeric and underscore only)
+# Validate queue names (alphanumeric and underscore only)
 if not re.match(r'^[a-zA-Z0-9_]+$', QUEUE_NAME):
     raise ValueError(
         f"Invalid queue name: {QUEUE_NAME}. "
+        f"Must contain only alphanumeric characters and underscores."
+    )
+if not re.match(r'^[a-zA-Z0-9_]+$', DISK_QUEUE_NAME):
+    raise ValueError(
+        f"Invalid disk queue name: {DISK_QUEUE_NAME}. "
         f"Must contain only alphanumeric characters and underscores."
     )
 
@@ -136,10 +142,89 @@ async def lifespan(app: FastAPI):
             ON api_users(username)
         """)
 
-        # Create PGMQ queue if not exists
-        # (queue name is validated at startup)
+        # Create disks table if not exists
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS disks (
+                disk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                disk_name TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                size_gb INTEGER,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                last_used TIMESTAMP WITH TIME ZONE,
+                in_use BOOLEAN DEFAULT FALSE,
+                reservation_id UUID REFERENCES reservations(job_id) ON DELETE SET NULL,
+                is_backing_up BOOLEAN DEFAULT FALSE,
+                is_deleted BOOLEAN DEFAULT FALSE,
+                delete_date DATE,
+                snapshot_count INTEGER DEFAULT 0,
+                pending_snapshot_count INTEGER DEFAULT 0,
+                ebs_volume_id TEXT,
+                last_snapshot_at TIMESTAMP WITH TIME ZONE,
+                operation_id UUID,
+                operation_status TEXT,
+                operation_error TEXT,
+                last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                UNIQUE(user_id, disk_name)
+            )
+        """)
+
+        # Create indexes for disks table
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_disks_user_id ON disks (user_id)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_disks_in_use
+            ON disks (in_use) WHERE in_use = true
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_disks_is_deleted
+            ON disks (is_deleted) WHERE is_deleted = true
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_disks_operation_id
+            ON disks (operation_id) WHERE operation_id IS NOT NULL
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_disks_reservation_id
+            ON disks (reservation_id) WHERE reservation_id IS NOT NULL
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_disks_delete_date
+            ON disks (delete_date) WHERE delete_date IS NOT NULL
+        """)
+
+        # Create trigger function for disks table
+        await conn.execute("""
+            CREATE OR REPLACE FUNCTION update_disks_last_updated_column()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.last_updated = NOW();
+                RETURN NEW;
+            END;
+            $$ language 'plpgsql'
+        """)
+
+        # Create trigger for disks table
+        await conn.execute("""
+            DROP TRIGGER IF EXISTS update_disks_last_updated ON disks
+        """)
+        await conn.execute("""
+            CREATE TRIGGER update_disks_last_updated
+            BEFORE UPDATE ON disks
+            FOR EACH ROW
+            EXECUTE FUNCTION update_disks_last_updated_column()
+        """)
+
+        # Create PGMQ queues if not exists
+        # (queue names are validated at startup)
         try:
             await conn.execute(f"SELECT pgmq.create('{QUEUE_NAME}')")
+        except asyncpg.exceptions.DuplicateObjectError:
+            # Queue already exists, that's fine
+            pass
+        
+        try:
+            await conn.execute(f"SELECT pgmq.create('{DISK_QUEUE_NAME}')")
         except asyncpg.exceptions.DuplicateObjectError:
             # Queue already exists, that's fine
             pass
@@ -229,6 +314,46 @@ class AddUserRequest(BaseModel):
     github_username: str = Field(
         ..., description="GitHub username for SSH key retrieval"
     )
+
+
+class DiskCreateRequest(BaseModel):
+    """Request model for creating a disk"""
+    disk_name: str = Field(..., description="Name of the disk to create")
+    size_gb: int | None = Field(None, description="Disk size in GB (optional, uses default if not specified)")
+
+
+class DiskDeleteRequest(BaseModel):
+    """Request model for deleting a disk"""
+    disk_name: str = Field(..., description="Name of the disk to delete")
+
+
+class DiskOperationResponse(BaseModel):
+    """Response for disk create/delete operations"""
+    operation_id: str = Field(..., description="Operation ID for tracking")
+    disk_name: str = Field(..., description="Name of the disk")
+    action: str = Field(..., description="Action performed (create/delete)")
+    message: str = Field(..., description="Status message")
+    requested_at: str = Field(..., description="Request timestamp (ISO 8601)")
+
+
+class DiskInfo(BaseModel):
+    """Information about a disk"""
+    disk_name: str = Field(..., description="Name of the disk")
+    user_id: str = Field(..., description="Owner user ID")
+    size_gb: int | None = Field(None, description="Disk size in GB")
+    created_at: str | None = Field(None, description="Creation timestamp")
+    last_used: str | None = Field(None, description="Last used timestamp")
+    in_use: bool = Field(False, description="Whether disk is currently in use")
+    reservation_id: str | None = Field(None, description="Current reservation ID if in use")
+    is_backing_up: bool = Field(False, description="Whether disk is being backed up")
+    is_deleted: bool = Field(False, description="Whether disk is marked for deletion")
+    snapshot_count: int = Field(0, description="Number of snapshots")
+
+
+class DiskListResponse(BaseModel):
+    """Response for listing disks"""
+    disks: list[DiskInfo] = Field(..., description="List of disks")
+    total: int = Field(..., description="Total number of disks")
 
 
 class JobDetail(BaseModel):
@@ -1521,6 +1646,270 @@ async def aws_login(request: AWSLoginRequest) -> AWSLoginResponse:
         ) from e
 
 
+@app.post("/v1/disks", response_model=DiskOperationResponse)
+async def create_disk(
+    request: DiskCreateRequest,
+    user_info: dict[str, Any] = Security(verify_api_key)
+) -> DiskOperationResponse:
+    """Create a new persistent disk
+    
+    This endpoint queues a disk creation request to be processed by the job processor.
+    The actual disk creation happens asynchronously.
+    """
+    username = user_info["username"]
+    operation_id = str(uuid.uuid4())
+    requested_at = datetime.now(UTC)
+    
+    # Validate disk name (alphanumeric + hyphens + underscores)
+    if not re.match(r'^[a-zA-Z0-9_-]+$', request.disk_name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Disk name must contain only letters, numbers, hyphens, and underscores"
+        )
+    
+    # Queue disk creation message to PGMQ
+    message = {
+        "action": "create_disk",
+        "operation_id": operation_id,
+        "user_id": username,
+        "disk_name": request.disk_name,
+        "size_gb": request.size_gb,
+        "requested_at": requested_at.isoformat()
+    }
+    
+    try:
+        async with db_pool.acquire() as conn:
+            # Send message to PGMQ
+            await conn.execute(
+                f"SELECT pgmq.send('{DISK_QUEUE_NAME}', $1::jsonb)",
+                json.dumps(message)
+            )
+        
+        return DiskOperationResponse(
+            operation_id=operation_id,
+            disk_name=request.disk_name,
+            action="create",
+            message=f"Disk creation request queued successfully",
+            requested_at=requested_at.isoformat()
+        )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to queue disk creation: {str(e)}"
+        ) from e
+
+
+@app.delete("/v1/disks/{disk_name}", response_model=DiskOperationResponse)
+async def delete_disk(
+    disk_name: str,
+    user_info: dict[str, Any] = Security(verify_api_key)
+) -> DiskOperationResponse:
+    """Delete a persistent disk (soft delete with 30-day retention)
+    
+    This endpoint queues a disk deletion request to be processed by the job processor.
+    The disk will be marked for deletion and removed after 30 days.
+    """
+    username = user_info["username"]
+    operation_id = str(uuid.uuid4())
+    requested_at = datetime.now(UTC)
+    
+    # Calculate deletion date (30 days from now)
+    delete_date = requested_at + timedelta(days=30)
+    delete_date_str = delete_date.strftime('%Y-%m-%d')
+    
+    # Queue disk deletion message to PGMQ
+    message = {
+        "action": "delete_disk",
+        "operation_id": operation_id,
+        "user_id": username,
+        "disk_name": disk_name,
+        "delete_date": delete_date_str,
+        "requested_at": requested_at.isoformat()
+    }
+    
+    try:
+        async with db_pool.acquire() as conn:
+            # Send message to PGMQ
+            await conn.execute(
+                f"SELECT pgmq.send('{DISK_QUEUE_NAME}', $1::jsonb)",
+                json.dumps(message)
+            )
+        
+        return DiskOperationResponse(
+            operation_id=operation_id,
+            disk_name=disk_name,
+            action="delete",
+            message=f"Disk deletion request queued successfully. Will be deleted on {delete_date_str}",
+            requested_at=requested_at.isoformat()
+        )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to queue disk deletion: {str(e)}"
+        ) from e
+
+
+@app.get("/v1/disks", response_model=DiskListResponse)
+async def list_disks(
+    user_info: dict[str, Any] = Security(verify_api_key)
+) -> DiskListResponse:
+    """List all persistent disks for the current user
+    
+    Returns disk information from PostgreSQL.
+    Excludes deleted disks by default.
+    """
+    username = user_info["username"]
+    
+    try:
+        async with db_pool.acquire() as conn:
+            # Query disks for this user (exclude deleted by default)
+            rows = await conn.fetch("""
+                SELECT 
+                    disk_name, user_id, size_gb, created_at, last_used,
+                    in_use, reservation_id, is_backing_up, is_deleted,
+                    delete_date, snapshot_count, pending_snapshot_count,
+                    ebs_volume_id, last_snapshot_at
+                FROM disks
+                WHERE user_id = $1 AND is_deleted = false
+                ORDER BY created_at DESC
+            """, username)
+            
+            # Convert to DiskInfo objects
+            disks = []
+            for row in rows:
+                disk = DiskInfo(
+                    disk_name=row['disk_name'],
+                    user_id=row['user_id'],
+                    size_gb=row['size_gb'],
+                    created_at=row['created_at'].isoformat() if row['created_at'] else None,
+                    last_used=row['last_used'].isoformat() if row['last_used'] else None,
+                    in_use=row['in_use'],
+                    reservation_id=str(row['reservation_id']) if row['reservation_id'] else None,
+                    is_backing_up=row['is_backing_up'],
+                    is_deleted=row['is_deleted'],
+                    snapshot_count=row['snapshot_count']
+                )
+                disks.append(disk)
+            
+            return DiskListResponse(
+                disks=disks,
+                total=len(disks)
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list disks: {str(e)}"
+        ) from e
+
+
+@app.get("/v1/disks/{disk_name}", response_model=DiskInfo)
+async def get_disk_info(
+    disk_name: str,
+    user_info: dict[str, Any] = Security(verify_api_key)
+) -> DiskInfo:
+    """Get information about a specific disk
+    
+    Returns detailed disk information from PostgreSQL.
+    """
+    username = user_info["username"]
+    
+    try:
+        async with db_pool.acquire() as conn:
+            # Query specific disk
+            row = await conn.fetchrow("""
+                SELECT 
+                    disk_name, user_id, size_gb, created_at, last_used,
+                    in_use, reservation_id, is_backing_up, is_deleted,
+                    delete_date, snapshot_count, pending_snapshot_count,
+                    ebs_volume_id, last_snapshot_at
+                FROM disks
+                WHERE user_id = $1 AND disk_name = $2
+            """, username, disk_name)
+            
+            if not row:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Disk '{disk_name}' not found"
+                )
+            
+            return DiskInfo(
+                disk_name=row['disk_name'],
+                user_id=row['user_id'],
+                size_gb=row['size_gb'],
+                created_at=row['created_at'].isoformat() if row['created_at'] else None,
+                last_used=row['last_used'].isoformat() if row['last_used'] else None,
+                in_use=row['in_use'],
+                reservation_id=str(row['reservation_id']) if row['reservation_id'] else None,
+                is_backing_up=row['is_backing_up'],
+                is_deleted=row['is_deleted'],
+                snapshot_count=row['snapshot_count']
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get disk info: {str(e)}"
+        ) from e
+
+
+@app.get("/v1/disks/{disk_name}/operations/{operation_id}")
+async def get_disk_operation_status(
+    disk_name: str,
+    operation_id: str,
+    user_info: dict[str, Any] = Security(verify_api_key)
+) -> dict[str, Any]:
+    """Poll the status of a disk operation (create/delete)
+    
+    Returns operation status and details from PostgreSQL.
+    Used by CLI to poll for operation completion.
+    """
+    username = user_info["username"]
+    
+    try:
+        async with db_pool.acquire() as conn:
+            # Query disk with matching operation_id
+            row = await conn.fetchrow("""
+                SELECT 
+                    disk_name, user_id, operation_id, operation_status,
+                    operation_error, created_at, last_updated,
+                    is_deleted, delete_date
+                FROM disks
+                WHERE user_id = $1 AND disk_name = $2 AND operation_id::text = $3
+            """, username, disk_name, operation_id)
+            
+            if not row:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Operation '{operation_id}' not found for disk '{disk_name}'"
+                )
+            
+            # Return operation status
+            return {
+                "operation_id": operation_id,
+                "disk_name": row['disk_name'],
+                "status": row['operation_status'] or "unknown",
+                "error": row['operation_error'],
+                "is_deleted": row['is_deleted'],
+                "delete_date": row['delete_date'].isoformat() if row['delete_date'] else None,
+                "created_at": row['created_at'].isoformat() if row['created_at'] else None,
+                "last_updated": row['last_updated'].isoformat() if row['last_updated'] else None,
+                "completed": row['operation_status'] in ['completed', 'failed']
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get operation status: {str(e)}"
+        ) from e
+
+
 @app.get("/")
 async def root() -> dict[str, Any]:
     """Root endpoint with API information"""
@@ -1534,6 +1923,13 @@ async def root() -> dict[str, Any]:
             "description": (
                 "Use AWS credentials to obtain an API key"
             )
+        },
+        "endpoints": {
+            "jobs": "/v1/jobs",
+            "disks": "/v1/disks",
+            "disk_operations": "/v1/disks/{disk_name}/operations/{operation_id}",
+            "gpu_availability": "/v1/gpu/availability",
+            "cluster_status": "/v1/cluster/status"
         }
     }
 
