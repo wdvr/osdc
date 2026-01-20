@@ -160,21 +160,16 @@ This represents a **second project built on top of the current infrastructure**,
 - **Complete Rewrite**: Different architecture, different patterns
 - **Not a Migration**: This is a replacement, users must upgrade completely
 
-**Old Architecture (being replaced):**
-```
-CLI → SQS → Lambda → DynamoDB → K8s
-```
-
-**New Architecture (replacement):**
+**System Architecture:**
 ```
 CLI → API → PostgreSQL + PGMQ → K8s Job Processor Pod → K8s
 ```
 
 **Status:**
-- ✅ PostgreSQL + PGMQ deployed
-- ✅ API Service deployed with AWS IAM authentication
-- ✅ CLI updated to use API (NO SQS/DynamoDB fallback)
-- 🚧 K8s Job Processor Pod (in progress - Lambda temporarily processes queue)
+- ✅ PostgreSQL + PGMQ deployed and operational
+- ✅ API Service deployed with AWS IAM authentication and CloudFront HTTPS
+- ✅ CLI uses API exclusively
+- ✅ K8s Job Processor Pod operational
 
 ## 🚀 Quick Start Commands
 
@@ -311,7 +306,7 @@ CREATE INDEX idx_api_keys_expires_at ON api_keys(expires_at)
 9. **CLI** saves key locally (`~/.gpu-dev/credentials`)
 10. **CLI** uses key for subsequent API calls
 
-**Note:** CLI currently uses direct SQS/DynamoDB access. API integration is in progress.
+**Note:** CLI uses the API exclusively for all operations. API keys are automatically refreshed when expired.
 
 ### Example Authentication Request
 
@@ -460,7 +455,7 @@ Require `Authorization: Bearer <api-key>` header:
 5. **CLI** polls API for status updates until pod is ready
 6. **User** connects via SSH to dev server pod
 
-**Note:** Job Processor Pod is currently being developed. Lambda functions are handling job processing temporarily.
+**Note:** Job Processor Pod runs continuously in the gpu-controlplane namespace, polling PGMQ and managing GPU dev server pods.
 
 ## 🐛 Troubleshooting
 
@@ -584,7 +579,7 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 **🚧 In Progress:**
 - **CLI Integration**: Update CLI to use API endpoints instead of direct AWS services
 - **Job Processor Pod**: K8s deployment that polls PGMQ and manages dev server lifecycle
-- **PostgreSQL Schema**: Reservations and disks tables (currently in DynamoDB)
+- **PostgreSQL Schema**: Reservations and disks tables with full CRUD operations
 
 **📋 Future Enhancements:**
 - Rate limiting

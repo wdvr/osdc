@@ -16,9 +16,9 @@ REST API service for GPU development job submission with AWS IAM-based authentic
 **Status:**
 - ✅ API deployed and operational
 - ✅ Authentication working
-- ✅ Job submission endpoint functional
-- 🚧 CLI integration in progress
-- 🚧 Job status endpoints in progress
+- ✅ All job management endpoints functional
+- ✅ CLI fully integrated
+- ✅ Job Processor Pod operational
 
 ## 🏗️ Architecture
 
@@ -60,7 +60,7 @@ REST API service for GPU development job submission with AWS IAM-based authentic
        │
        ↓ (polls queue)
 ┌─────────────────────────────────┐
-│  Job Processor Pod (🚧)         │
+│  Job Processor Pod              │
 │  - Polls PGMQ continuously      │
 │  - Creates K8s dev server pods  │
 │  - Manages lifecycle            │
@@ -173,11 +173,11 @@ $ gpu-dev submit --image my-model:v2 --instance p5.48xlarge
 
 ### Complete Workflow
 
-1. **User Login** (🚧 CLI integration in progress)
+1. **User Login**
    - User runs `gpu-dev login`
    - CLI sends AWS credentials to `POST /v1/auth/aws-login`
    - API validates with AWS STS and returns time-limited API key (2 hours)
-   - CLI stores API key locally
+   - CLI stores API key locally (auto-refreshes when expired)
 
 2. **Job Submission**
    - User runs `gpu-dev reserve --gpus 2 --hours 4`
@@ -185,9 +185,9 @@ $ gpu-dev submit --image my-model:v2 --instance p5.48xlarge
    - API validates key and pushes job to PGMQ queue
    - Returns job ID to CLI
 
-3. **Job Processing** (🚧 K8s pod in development)
+3. **Job Processing**
    - Job Processor Pod polls PGMQ continuously
-   - Pulls job message and checks GPU availability
+   - Pulls job message and checks GPU availability via K8s API
    - Creates K8s dev server pod with requested GPUs
    - Updates reservation state in PostgreSQL
 
@@ -738,13 +738,13 @@ pytest tests/
 
 ## 📋 CLI Integration
 
-See `CLI_INTEGRATION.md` for complete guide on integrating with the `gpu-dev` CLI tool.
+The `gpu-dev` CLI tool is fully integrated with the API.
 
-**Summary:**
-1. Add AWS authentication module to CLI
-2. Implement automatic token refresh
-3. Replace SQS calls with API calls
-4. No user-facing changes (seamless migration)
+**Features:**
+1. AWS authentication module with automatic token refresh
+2. All operations use API endpoints exclusively
+3. No direct AWS service calls (no SQS/DynamoDB)
+4. Seamless user experience with auto-reauthentication
 
 ## 🐛 Troubleshooting
 
@@ -865,32 +865,40 @@ API pod needs:
 **Endpoints:**
 - `POST /v1/auth/aws-login` - AWS authentication
 - `POST /v1/jobs/submit` - Submit GPU reservation job
-- `GET /v1/jobs/{job_id}` - Get job status (🚧 in progress)
-- `GET /v1/jobs` - List jobs (🚧 in progress)
+- `GET /v1/jobs/{job_id}` - Get job status
+- `GET /v1/jobs` - List jobs
+- `POST /v1/jobs/{job_id}/cancel` - Cancel job
+- `POST /v1/jobs/{job_id}/extend` - Extend job duration
+- `POST /v1/jobs/{job_id}/jupyter/enable` - Enable Jupyter
+- `POST /v1/jobs/{job_id}/users` - Add SSH users
+- `GET /v1/gpu/availability` - GPU availability
+- `GET /v1/cluster/status` - Cluster status
+- `POST /v1/disks` - Create disk
+- `GET /v1/disks` - List disks
 - `POST /v1/keys/rotate` - Rotate API key
 
 ### CLI Integration
-**Status**: 🚧 In progress
+**Status**: ✅ Operational
 
-- CLI will call API endpoints instead of direct AWS services
-- Authentication: `gpu-dev login` (AWS creds → API key)
-- Job submission: Uses API key for all requests
-- No backward compatibility with legacy SQS/DynamoDB approach
+- CLI uses API endpoints exclusively for all operations
+- Authentication: `gpu-dev login` with automatic key refresh
+- Job submission: API key used for all requests
+- Complete feature parity with all CLI commands
 
 ### Job Processor Pod
-**Status**: 🚧 In development
+**Status**: ✅ Operational
 
-- Polls PGMQ `gpu_reservations` queue continuously
-- Creates/manages K8s dev server pods
+- Polls PGMQ `gpu_reservations` and `disk_operations` queues continuously
+- Creates/manages K8s dev server pods and persistent disks
 - Updates reservation state in PostgreSQL
-- Replaces Lambda functions with long-running pod
+- Long-running pod in gpu-controlplane namespace
 
-**Why Pulling Model:**
-- No cold starts (always warm)
+**Benefits of Pulling Model:**
+- No cold starts (always warm and ready)
 - Direct K8s API access (same cluster)
 - Simpler debugging (standard K8s logs)
-- Lower cost (vs per-invocation Lambda)
-- Better observability
+- Lower operational cost
+- Better observability and monitoring
 
 ## 📚 Additional Documentation
 

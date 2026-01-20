@@ -19,7 +19,7 @@ python generate_stats.py
 
 This will:
 
-1. Fetch all reservation data from DynamoDB
+1. Fetch all reservation data from PostgreSQL
 2. Generate statistics including:
    - Total number of reservations ever
    - Number of unique users
@@ -42,9 +42,31 @@ All output is saved to `admin/output/`:
 
 ## Configuration
 
-Set these environment variables if needed:
+Set these environment variables:
 
-- `AWS_REGION` - AWS region (default: us-east-2)
-- `RESERVATIONS_TABLE` - DynamoDB table name (default: pytorch-gpu-dev-reservations)
+- `POSTGRES_HOST` - PostgreSQL hostname (default: postgres-primary.gpu-controlplane.svc.cluster.local)
+- `POSTGRES_PORT` - PostgreSQL port (default: 5432)
+- `POSTGRES_USER` - PostgreSQL username (default: gpudev)
+- `POSTGRES_PASSWORD` - PostgreSQL password (required)
+- `POSTGRES_DB` - PostgreSQL database name (default: gpudev)
 
-Your AWS credentials must have read access to the DynamoDB reservations table.
+### Connecting to the Database
+
+**Option 1: Port forward (recommended for local development)**
+```bash
+# Forward PostgreSQL port
+kubectl port-forward -n gpu-controlplane svc/postgres-primary 5432:5432
+
+# Get password
+export POSTGRES_PASSWORD=$(kubectl get secret -n gpu-controlplane postgres-credentials \
+  -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)
+
+# Run analytics
+python generate_stats.py
+```
+
+**Option 2: Database URL**
+```bash
+export DATABASE_URL="postgresql://gpudev:PASSWORD@postgres-primary.gpu-controlplane.svc.cluster.local:5432/gpudev"
+python generate_stats.py
+```
