@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS disks (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     last_used TIMESTAMP WITH TIME ZONE,
     in_use BOOLEAN DEFAULT FALSE,
-    reservation_id UUID REFERENCES reservations(job_id) ON DELETE SET NULL,
+    reservation_id VARCHAR(255) REFERENCES reservations(reservation_id) ON DELETE SET NULL,
     is_backing_up BOOLEAN DEFAULT FALSE,
     is_deleted BOOLEAN DEFAULT FALSE,
     delete_date DATE,  -- Date when disk will be permanently deleted (30 days after soft delete)
