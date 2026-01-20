@@ -233,15 +233,11 @@ def list_disks(user_id: str, config: Config) -> List[Dict]:
 
 def create_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
     """
-    Create a new disk by sending request to SQS queue (legacy).
-    Lambda will create the disk entry in DynamoDB (legacy).
+    Create a new disk by sending request to API service.
+    Job processor will create the disk entry in DynamoDB.
     Returns operation_id on success, None on failure.
-    
-    NOTE: This function still uses the legacy SQS/DynamoDB infrastructure
-    and will need migration to the API service in the future.
     """
-    import json
-    import uuid
+    from .api_client import APIClient
 
     # Check if disk already exists
     existing_disks = list_disks(user_id, config)
@@ -254,29 +250,11 @@ def create_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
         print(f"Error: Disk name must contain only letters, numbers, hyphens, and underscores")
         return None
 
-    # Generate operation ID for tracking
-    operation_id = str(uuid.uuid4())
-
-    # Send create request to SQS queue
+    # Send create request via API
     try:
-        sqs_client = config.session.client('sqs', region_name=config.aws_region)
-        queue_url = config.get_queue_url()
-
-        # Create disk creation message
-        message = {
-            'action': 'create_disk',
-            'operation_id': operation_id,
-            'user_id': user_id,
-            'disk_name': disk_name,
-            'requested_at': datetime.now(timezone.utc).isoformat()
-        }
-
-        sqs_client.send_message(
-            QueueUrl=queue_url,
-            MessageBody=json.dumps(message)
-        )
-
-        return operation_id
+        api_client = APIClient(config)
+        response = api_client.create_disk(disk_name=disk_name)
+        return response.get('operation_id')
 
     except Exception as e:
         print(f"Error sending create request: {e}")
@@ -343,15 +321,11 @@ def list_disk_content(disk_name: str, user_id: str, config: Config) -> Optional[
 
 def delete_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
     """
-    Soft delete a disk by sending delete request to SQS queue (legacy).
-    Lambda will handle marking in DynamoDB and tagging snapshots (legacy).
+    Soft delete a disk by sending delete request to API service.
+    Job processor will handle marking in DynamoDB and tagging snapshots.
     Returns operation_id on success, None on failure.
-    
-    NOTE: This function still uses the legacy SQS/DynamoDB infrastructure
-    and will need migration to the API service in the future.
     """
-    import json
-    import uuid
+    from .api_client import APIClient
 
     # Check if disk exists
     disks = list_disks(user_id, config)
@@ -367,34 +341,11 @@ def delete_disk(disk_name: str, user_id: str, config: Config) -> Optional[str]:
         print(f"Reservation ID: {disk['reservation_id']}")
         return None
 
-    # Calculate deletion date (30 days from now)
-    delete_date = datetime.now(timezone.utc) + timedelta(days=30)
-    delete_date_str = delete_date.strftime('%Y-%m-%d')
-
-    # Generate operation ID for tracking
-    operation_id = str(uuid.uuid4())
-
-    # Send delete request to SQS queue
+    # Send delete request via API
     try:
-        sqs_client = config.session.client('sqs', region_name=config.aws_region)
-        queue_url = config.get_queue_url()
-
-        # Create disk deletion message
-        message = {
-            'action': 'delete_disk',
-            'operation_id': operation_id,
-            'user_id': user_id,
-            'disk_name': disk_name,
-            'delete_date': delete_date_str,
-            'requested_at': datetime.now(timezone.utc).isoformat()
-        }
-
-        sqs_client.send_message(
-            QueueUrl=queue_url,
-            MessageBody=json.dumps(message)
-        )
-
-        return operation_id
+        api_client = APIClient(config)
+        response = api_client.delete_disk(disk_name=disk_name)
+        return response.get('operation_id')
 
     except Exception as e:
         print(f"Error sending delete request: {e}")
