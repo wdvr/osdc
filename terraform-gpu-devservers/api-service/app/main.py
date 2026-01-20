@@ -356,6 +356,20 @@ class DiskListResponse(BaseModel):
     total: int = Field(..., description="Total number of disks")
 
 
+class DiskRenameRequest(BaseModel):
+    """Request model for renaming a disk"""
+    new_name: str = Field(..., description="New name for the disk")
+
+
+class DiskContentResponse(BaseModel):
+    """Response for disk content listing"""
+    disk_name: str = Field(..., description="Name of the disk")
+    content: str | None = Field(None, description="Snapshot contents (ls -R output)")
+    s3_path: str | None = Field(None, description="S3 path where contents are stored")
+    snapshot_date: str | None = Field(None, description="When the snapshot was taken")
+    message: str | None = Field(None, description="Status message if content unavailable")
+
+
 class JobDetail(BaseModel):
     """Detailed information about a job/reservation"""
     job_id: str = Field(..., description="Job ID (reservation_id)")
@@ -1910,6 +1924,246 @@ async def get_disk_operation_status(
         ) from e
 
 
+@app.get("/v1/disks/{disk_name}/content", response_model=DiskContentResponse)
+async def get_disk_content(
+    disk_name: str,
+    user_info: dict[str, Any] = Security(verify_api_key)
+) -> DiskContentResponse:
+    """Get the contents of a disk's latest snapshot
+    
+    Returns the ls -R output stored in S3 when the last snapshot was taken.
+    This allows users to view disk contents without mounting the volume.
+    
+    Requires authentication via API key.
+    """
+    username = user_info["username"]
+    
+    try:
+        async with db_pool.acquire() as conn:
+            # Get disk info including S3 path
+            row = await conn.fetchrow("""
+                SELECT 
+                    disk_name, latest_snapshot_content_s3, 
+                    last_snapshot_at, is_deleted
+                FROM disks
+                WHERE user_id = $1 AND disk_name = $2
+            """, username, disk_name)
+            
+            if not row:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Disk '{disk_name}' not found"
+                )
+            
+            # Check if disk is deleted
+            if row['is_deleted']:
+                raise HTTPException(
+                    status_code=status.HTTP_410_GONE,
+                    detail=f"Disk '{disk_name}' is marked for deletion"
+                )
+            
+            s3_path = row['latest_snapshot_content_s3']
+            
+            # If no S3 path, return empty content with message
+            if not s3_path:
+                return DiskContentResponse(
+                    disk_name=disk_name,
+                    content=None,
+                    s3_path=None,
+                    snapshot_date=None,
+                    message="No snapshot contents available. This may be a newly created disk or a disk created before content tracking was enabled."
+                )
+            
+            # Parse S3 path (s3://bucket/key)
+            if not s3_path.startswith('s3://'):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Invalid S3 path format in database"
+                )
+            
+            path_parts = s3_path[5:].split('/', 1)
+            if len(path_parts) != 2:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Invalid S3 path format in database"
+                )
+            
+            bucket_name, s3_key = path_parts
+            
+            # Fetch contents from S3 using aioboto3
+            session = aioboto3.Session()
+            async with session.client('s3', region_name=AWS_REGION) as s3:
+                try:
+                    response = await s3.get_object(Bucket=bucket_name, Key=s3_key)
+                    async with response['Body'] as stream:
+                        contents = await stream.read()
+                        content_str = contents.decode('utf-8')
+                    
+                    return DiskContentResponse(
+                        disk_name=disk_name,
+                        content=content_str,
+                        s3_path=s3_path,
+                        snapshot_date=row['last_snapshot_at'].isoformat() if row['last_snapshot_at'] else None,
+                        message=None
+                    )
+                
+                except s3.exceptions.NoSuchKey:
+                    return DiskContentResponse(
+                        disk_name=disk_name,
+                        content=None,
+                        s3_path=s3_path,
+                        snapshot_date=row['last_snapshot_at'].isoformat() if row['last_snapshot_at'] else None,
+                        message="Contents file not found in S3"
+                    )
+                except Exception as s3_error:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Failed to fetch contents from S3: {str(s3_error)}"
+                    ) from s3_error
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get disk content: {str(e)}"
+        ) from e
+
+
+@app.post("/v1/disks/{disk_name}/rename")
+async def rename_disk(
+    disk_name: str,
+    request: DiskRenameRequest,
+    user_info: dict[str, Any] = Security(verify_api_key)
+) -> dict[str, Any]:
+    """Rename a persistent disk
+    
+    Updates the disk name in PostgreSQL and tags on all associated EBS snapshots.
+    The disk must not be in use during the rename operation.
+    
+    Requires authentication via API key.
+    """
+    username = user_info["username"]
+    new_name = request.new_name
+    
+    # Validate new disk name (alphanumeric + hyphens + underscores)
+    if not re.match(r'^[a-zA-Z0-9_-]+$', new_name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Disk name must contain only letters, numbers, hyphens, and underscores"
+        )
+    
+    try:
+        async with db_pool.acquire() as conn:
+            # Check if old disk exists
+            old_disk = await conn.fetchrow("""
+                SELECT disk_name, in_use, reservation_id, ebs_volume_id, is_deleted
+                FROM disks
+                WHERE user_id = $1 AND disk_name = $2
+            """, username, disk_name)
+            
+            if not old_disk:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Disk '{disk_name}' not found"
+                )
+            
+            # Check if disk is deleted
+            if old_disk['is_deleted']:
+                raise HTTPException(
+                    status_code=status.HTTP_410_GONE,
+                    detail=f"Cannot rename disk '{disk_name}' - it is marked for deletion"
+                )
+            
+            # Check if disk is in use
+            if old_disk['in_use']:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Cannot rename disk '{disk_name}' - it is currently in use by reservation {old_disk['reservation_id']}"
+                )
+            
+            # Check if new name already exists
+            existing_disk = await conn.fetchrow("""
+                SELECT disk_name FROM disks
+                WHERE user_id = $1 AND disk_name = $2
+            """, username, new_name)
+            
+            if existing_disk:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Disk '{new_name}' already exists"
+                )
+            
+            # Update disk name in PostgreSQL
+            await conn.execute("""
+                UPDATE disks
+                SET disk_name = $1, last_updated = NOW()
+                WHERE user_id = $2 AND disk_name = $3
+            """, new_name, username, disk_name)
+            
+            # Update EBS snapshot tags using aioboto3
+            session = aioboto3.Session()
+            async with session.client('ec2', region_name=AWS_REGION) as ec2:
+                # Find all snapshots for this disk
+                response = await ec2.describe_snapshots(
+                    OwnerIds=["self"],
+                    Filters=[
+                        {"Name": "tag:gpu-dev-user", "Values": [username]},
+                        {"Name": "tag:disk_name", "Values": [disk_name]},
+                    ]
+                )
+                
+                snapshots = response.get('Snapshots', [])
+                
+                if not snapshots:
+                    # No snapshots to update - this is OK for new disks
+                    return {
+                        "message": f"Disk renamed from '{disk_name}' to '{new_name}' (no snapshots found)",
+                        "old_name": disk_name,
+                        "new_name": new_name,
+                        "snapshots_updated": 0
+                    }
+                
+                # Update disk_name tag on each snapshot
+                renamed_count = 0
+                errors = []
+                for snapshot in snapshots:
+                    snapshot_id = snapshot['SnapshotId']
+                    try:
+                        await ec2.create_tags(
+                            Resources=[snapshot_id],
+                            Tags=[{"Key": "disk_name", "Value": new_name}]
+                        )
+                        renamed_count += 1
+                    except Exception as tag_error:
+                        errors.append(f"{snapshot_id}: {str(tag_error)}")
+                
+                if errors:
+                    # Partial success - some snapshots updated
+                    return {
+                        "message": f"Disk renamed from '{disk_name}' to '{new_name}' ({renamed_count}/{len(snapshots)} snapshots updated)",
+                        "old_name": disk_name,
+                        "new_name": new_name,
+                        "snapshots_updated": renamed_count,
+                        "errors": errors
+                    }
+                
+                return {
+                    "message": f"Disk renamed from '{disk_name}' to '{new_name}' ({renamed_count} snapshots updated)",
+                    "old_name": disk_name,
+                    "new_name": new_name,
+                    "snapshots_updated": renamed_count
+                }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to rename disk: {str(e)}"
+        ) from e
+
+
 @app.get("/")
 async def root() -> dict[str, Any]:
     """Root endpoint with API information"""
@@ -1928,6 +2182,8 @@ async def root() -> dict[str, Any]:
             "jobs": "/v1/jobs",
             "disks": "/v1/disks",
             "disk_operations": "/v1/disks/{disk_name}/operations/{operation_id}",
+            "disk_content": "/v1/disks/{disk_name}/content",
+            "disk_rename": "/v1/disks/{disk_name}/rename",
             "gpu_availability": "/v1/gpu/availability",
             "cluster_status": "/v1/cluster/status"
         }
