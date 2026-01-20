@@ -1,23 +1,20 @@
 """Minimal reservation management for GPU Dev CLI"""
 
-import json
 import os
-import select
 import signal
-import sys
 import time
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional, List, Dict, Any, Union
 
-from botocore.exceptions import ClientError
 from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
 
 from .config import Config
 from .name_generator import sanitize_name
+from .api_client import APIClient
 from . import __version__
 
 console = Console()
@@ -388,12 +385,14 @@ def get_ssh_config_path(reservation_id: str, name: Optional[str] = None) -> str:
 
 
 class ReservationManager:
-    """Minimal GPU reservations manager - AWS-only"""
+    """GPU reservations manager using API service"""
 
     def __init__(self, config: Config):
         self.config = config
         self.reservations_table = config.dynamodb.Table(
             config.reservations_table)
+        # Initialize API client for job submission
+        self.api_client = APIClient(config)
 
     def create_reservation(
         self,
@@ -487,11 +486,9 @@ class ReservationManager:
             if node_labels:
                 message["node_labels"] = node_labels
 
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
-
+            # Submit job via API
+            self.api_client.submit_job(message)
+            # API returns job_id which should match our reservation_id
             return reservation_id
 
         except Exception as e:
@@ -593,11 +590,8 @@ class ReservationManager:
                 if node_labels:
                     message["node_labels"] = node_labels
 
-                # Send to SQS queue
-                queue_url = self.config.get_queue_url()
-                self.config.sqs_client.send_message(
-                    QueueUrl=queue_url, MessageBody=json.dumps(message)
-                )
+                # Submit job via API
+                self.api_client.submit_job(message)
 
             return reservation_ids
 
@@ -673,10 +667,8 @@ class ReservationManager:
                 "version": get_version(),
             }
 
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Submit via API
+            self.api_client.submit_job(message)
 
             console.print(
                 f"[yellow]⏳ Cancellation request submitted for reservation {reservation_id[:8]}...[/yellow]"
@@ -769,8 +761,8 @@ class ReservationManager:
     def enable_jupyter(self, reservation_id: str, user_id: str) -> bool:
         """Enable Jupyter Lab for an active reservation"""
         try:
-            # Send message to Lambda to start Jupyter service in pod
-            # Lambda will handle both the pod changes and DynamoDB updates
+            # Send message to start Jupyter service in pod
+            # Job processor will handle both the pod changes and database updates
             message = {
                 "action": "enable_jupyter",
                 "reservation_id": reservation_id,
@@ -778,10 +770,8 @@ class ReservationManager:
                 "version": get_version(),
             }
 
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Submit via API
+            self.api_client.submit_job(message)
 
             console.print(
                 f"[yellow]⏳ Jupyter enable request submitted for reservation {reservation_id[:8]}...[/yellow]"
@@ -801,8 +791,8 @@ class ReservationManager:
     def disable_jupyter(self, reservation_id: str, user_id: str) -> bool:
         """Disable Jupyter Lab for an active reservation"""
         try:
-            # Send message to Lambda to stop Jupyter service in pod
-            # Lambda will handle both the pod changes and DynamoDB updates
+            # Send message to stop Jupyter service in pod
+            # Job processor will handle both the pod changes and database updates
             message = {
                 "action": "disable_jupyter",
                 "reservation_id": reservation_id,
@@ -810,10 +800,8 @@ class ReservationManager:
                 "version": get_version(),
             }
 
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Submit via API
+            self.api_client.submit_job(message)
 
             console.print(
                 f"[yellow]⏳ Jupyter disable request submitted for reservation {reservation_id[:8]}...[/yellow]"
@@ -843,8 +831,8 @@ class ReservationManager:
                 )
                 return False
 
-            # Send message to Lambda to add user SSH keys to pod
-            # Lambda will handle fetching GitHub keys and updating the pod
+            # Send message to add user SSH keys to pod
+            # Job processor will handle fetching GitHub keys and updating the pod
             message = {
                 "action": "add_user",
                 "reservation_id": reservation_id,
@@ -853,10 +841,8 @@ class ReservationManager:
                 "version": get_version(),
             }
 
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Submit via API
+            self.api_client.submit_job(message)
 
             console.print(
                 f"[yellow]⏳ Adding user {github_username} to reservation {reservation_id[:8]}...[/yellow]"
@@ -903,8 +889,8 @@ class ReservationManager:
             if matching_reservations:
                 initial_expires_at = matching_reservations[0].get("expires_at", "")
 
-            # Send message to Lambda to extend reservation
-            # Lambda will handle both the expiration timestamp update and any necessary pod updates
+            # Send message to extend reservation
+            # Job processor will handle both the expiration timestamp update and any necessary pod updates
             message = {
                 "action": "extend_reservation",
                 "reservation_id": reservation_id,
@@ -912,10 +898,8 @@ class ReservationManager:
                 "version": get_version(),
             }
 
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Submit via API
+            self.api_client.submit_job(message)
 
             console.print(
                 f"[yellow]⏳ Extension request submitted for reservation {reservation_id[:8]}...[/yellow]"
