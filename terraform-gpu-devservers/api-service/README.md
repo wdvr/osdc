@@ -154,8 +154,15 @@ $ gpu-dev submit --image my-model:v2 --instance p5.48xlarge
 | Endpoint | Method | Status | Description |
 |----------|--------|--------|-------------|
 | `/v1/jobs/submit` | POST | ✅ | Submit GPU job to PGMQ queue |
-| `/v1/jobs/{job_id}` | GET | 🚧 | Get job status (in progress) |
-| `/v1/jobs` | GET | 🚧 | List user's jobs (in progress) |
+| `/v1/jobs/{job_id}/cancel` | POST | ✅ | Cancel a running or queued job |
+| `/v1/jobs/{job_id}/extend` | POST | ✅ | Extend job duration |
+| `/v1/jobs/{job_id}/jupyter/enable` | POST | ✅ | Enable Jupyter Lab for a job |
+| `/v1/jobs/{job_id}/jupyter/disable` | POST | ✅ | Disable Jupyter Lab for a job |
+| `/v1/jobs/{job_id}/users` | POST | ✅ | Add user SSH keys to a job |
+| `/v1/jobs/{job_id}` | GET | ✅ | Get job details (status, connection info, etc.) |
+| `/v1/jobs` | GET | ✅ | List user's jobs with filtering and pagination |
+| `/v1/gpu/availability` | GET | ✅ | Get current GPU availability by type |
+| `/v1/cluster/status` | GET | ✅ | Get overall cluster status and statistics |
 | `/v1/keys/rotate` | POST | ✅ | Generate new API key |
 
 **Legend:**

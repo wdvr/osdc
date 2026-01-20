@@ -84,6 +84,13 @@ class Config:
 
     @property
     def dynamodb(self):
+        """
+        DynamoDB resource for legacy disk operations.
+        
+        NOTE: This is only used by the persistent disk management system
+        which still uses the legacy SQS/DynamoDB infrastructure.
+        All job/reservation operations now use the API service.
+        """
         if self._dynamodb is None:
             self._dynamodb = self.session.resource(
                 "dynamodb", region_name=self.aws_region
