@@ -564,3 +564,84 @@ class APIClient:
         """
         return self._make_request("GET", f"/v1/disks/{disk_name}")
 
+    def get_disk_content(self, disk_name: str):
+        """Get the contents of a disk's latest snapshot.
+        
+        Returns the ls -R output stored when the last snapshot was taken.
+        This allows viewing disk contents without mounting the volume.
+        
+        Args:
+            disk_name: Name of the disk
+            
+        Returns:
+            dict with content information
+            
+        Example:
+            {
+                "disk_name": "my-disk",
+                "content": "/home/user:\ntotal 12\n...",
+                "s3_path": "s3://bucket/path/to/content.txt",
+                "snapshot_date": "2026-01-20T10:00:00Z",
+                "message": None
+            }
+            
+        Or if no content available:
+            {
+                "disk_name": "my-disk",
+                "content": None,
+                "s3_path": None,
+                "snapshot_date": None,
+                "message": "No snapshot contents available..."
+            }
+        """
+        return self._make_request("GET", f"/v1/disks/{disk_name}/content")
+
+    def rename_disk(self, disk_name: str, new_name: str):
+        """Rename a persistent disk.
+        
+        Updates the disk name in PostgreSQL and tags on all associated EBS snapshots.
+        The disk must not be in use during the rename operation.
+        
+        Args:
+            disk_name: Current name of the disk
+            new_name: New name for the disk
+            
+        Returns:
+            dict with rename results
+            
+        Example:
+            {
+                "message": "Disk renamed from 'old-name' to 'new-name' (3 snapshots updated)",
+                "old_name": "old-name",
+                "new_name": "new-name",
+                "snapshots_updated": 3
+            }
+        """
+        return self._make_request("POST", f"/v1/disks/{disk_name}/rename", 
+                                   json_data={"new_name": new_name})
+
+    def get_disk_operation_status(self, disk_name: str, operation_id: str):
+        """Poll the status of a disk operation (create/delete).
+        
+        Args:
+            disk_name: Name of the disk
+            operation_id: Operation ID returned from create/delete
+            
+        Returns:
+            dict with operation status
+            
+        Example:
+            {
+                "operation_id": "abc-123",
+                "disk_name": "my-disk",
+                "status": "completed",
+                "error": None,
+                "is_deleted": False,
+                "delete_date": None,
+                "created_at": "2026-01-20T10:00:00Z",
+                "last_updated": "2026-01-20T10:01:00Z",
+                "completed": True
+            }
+        """
+        return self._make_request("GET", f"/v1/disks/{disk_name}/operations/{operation_id}")
+
