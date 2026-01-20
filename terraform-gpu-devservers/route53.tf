@@ -141,19 +141,6 @@ resource "aws_iam_policy" "route53_policy" {
   policy      = data.aws_iam_policy_document.route53_policy[0].json
 }
 
-# Attach Route53 policy to existing Lambda execution roles
-resource "aws_iam_role_policy_attachment" "reservation_processor_route53" {
-  count      = local.effective_domain_name != "" ? 1 : 0
-  role       = aws_iam_role.reservation_processor_role.name
-  policy_arn = aws_iam_policy.route53_policy[0].arn
-}
-
-resource "aws_iam_role_policy_attachment" "reservation_expiry_route53" {
-  count      = local.effective_domain_name != "" ? 1 : 0
-  role       = aws_iam_role.reservation_expiry_role.name
-  policy_arn = aws_iam_policy.route53_policy[0].arn
-}
-
 # Output the hosted zone ID and NS records for external DNS setup (only when domain is configured)
 output "devservers_hosted_zone_id" {
   description = "The hosted zone ID for the domain"

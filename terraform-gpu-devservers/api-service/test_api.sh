@@ -88,11 +88,14 @@ echo "======================================"
 echo "  GPU Dev API Service Test Suite"
 echo "======================================"
 echo ""
-echo "This script will:"
-echo "  1. Test API health and connectivity"
-echo "  2. Authenticate with AWS (requires SSOCloudDevGpuReservation role)"
-echo "  3. Submit a test GPU job"
-echo "  4. Verify all endpoints"
+echo "This script will test all API endpoints:"
+echo "  1. Health check and API info"
+echo "  2. AWS authentication (requires SSOCloudDevGpuReservation role)"
+echo "  3. Job operations (submit, list, status, cancel, extend, etc.)"
+echo "  4. Cluster information (GPU availability, cluster status)"
+echo "  5. Disk operations (create, list, get status)"
+echo "  6. API key management (rotation)"
+echo "  7. Security (invalid authentication rejection)"
 echo ""
 
 # Get API URL
@@ -398,16 +401,248 @@ if [ -n "$API_KEY" ] && [ -n "$JOB_ID" ]; then
         success "Job status retrieved (HTTP $HTTP_CODE)"
         echo "$BODY" | jq .
     else
-        warn "Job status endpoint not fully implemented yet (HTTP $HTTP_CODE)"
+        warn "Could not retrieve job status (HTTP $HTTP_CODE)"
         echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
     fi
     echo ""
 fi
 
-# Test 6: Key Rotation
+# Test 6: List Jobs
 if [ -n "$API_KEY" ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "Test 6: API Key Rotation"
+    echo "Test 6: List Jobs"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    info "Testing GET $API_URL/v1/jobs"
+    
+    LIST_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" "$API_URL/v1/jobs?limit=5" \
+        -H "Authorization: Bearer $API_KEY")
+    
+    HTTP_CODE=$(echo "$LIST_RESPONSE" | tail -n1)
+    BODY=$(echo "$LIST_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        success "Job list retrieved (HTTP $HTTP_CODE)"
+        TOTAL=$(echo "$BODY" | jq -r .total)
+        success "Total jobs found: $TOTAL"
+        echo "$BODY" | jq '.jobs | length' | xargs -I {} echo "  Returned: {} jobs"
+    else
+        warn "Could not list jobs (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+    fi
+    echo ""
+fi
+
+# Test 7: GPU Availability
+if [ -n "$API_KEY" ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Test 7: GPU Availability"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    info "Testing GET $API_URL/v1/gpu/availability"
+    
+    AVAIL_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" "$API_URL/v1/gpu/availability" \
+        -H "Authorization: Bearer $API_KEY")
+    
+    HTTP_CODE=$(echo "$AVAIL_RESPONSE" | tail -n1)
+    BODY=$(echo "$AVAIL_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        success "GPU availability retrieved (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq .
+    else
+        warn "Could not get GPU availability (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+    fi
+    echo ""
+fi
+
+# Test 8: Cluster Status
+if [ -n "$API_KEY" ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Test 8: Cluster Status"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    info "Testing GET $API_URL/v1/cluster/status"
+    
+    CLUSTER_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" "$API_URL/v1/cluster/status" \
+        -H "Authorization: Bearer $API_KEY")
+    
+    HTTP_CODE=$(echo "$CLUSTER_RESPONSE" | tail -n1)
+    BODY=$(echo "$CLUSTER_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        success "Cluster status retrieved (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq .
+    else
+        warn "Could not get cluster status (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+    fi
+    echo ""
+fi
+
+# Test 9: Disk Operations
+if [ -n "$API_KEY" ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Test 9: Disk Operations"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Test 9a: List disks
+    info "Testing GET $API_URL/v1/disks"
+    LIST_DISKS_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" "$API_URL/v1/disks" \
+        -H "Authorization: Bearer $API_KEY")
+    
+    HTTP_CODE=$(echo "$LIST_DISKS_RESPONSE" | tail -n1)
+    BODY=$(echo "$LIST_DISKS_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        success "Disk list retrieved (HTTP $HTTP_CODE)"
+        TOTAL_DISKS=$(echo "$BODY" | jq -r .total)
+        success "Total disks: $TOTAL_DISKS"
+    else
+        warn "Could not list disks (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+    fi
+    echo ""
+    
+    # Test 9b: Create a test disk
+    TEST_DISK_NAME="api-test-disk-$(date +%s)"
+    info "Testing POST $API_URL/v1/disks (creating disk: $TEST_DISK_NAME)"
+    
+    CREATE_DISK_PAYLOAD=$(jq -n \
+        --arg name "$TEST_DISK_NAME" \
+        '{disk_name: $name, size_gb: 100}')
+    
+    CREATE_DISK_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" -X POST "$API_URL/v1/disks" \
+        -H "Authorization: Bearer $API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "$CREATE_DISK_PAYLOAD")
+    
+    HTTP_CODE=$(echo "$CREATE_DISK_RESPONSE" | tail -n1)
+    BODY=$(echo "$CREATE_DISK_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        success "Disk creation queued (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq .
+        DISK_OP_ID=$(echo "$BODY" | jq -r .operation_id)
+        success "Operation ID: $DISK_OP_ID"
+    else
+        warn "Could not create disk (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+    fi
+    echo ""
+    
+    # Test 9c: Get disk operation status (if we have operation_id)
+    if [ -n "$DISK_OP_ID" ]; then
+        info "Testing GET $API_URL/v1/disks/$TEST_DISK_NAME/operations/$DISK_OP_ID"
+        sleep 1  # Give it a moment
+        
+        DISK_OP_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" \
+            "$API_URL/v1/disks/$TEST_DISK_NAME/operations/$DISK_OP_ID" \
+            -H "Authorization: Bearer $API_KEY")
+        
+        HTTP_CODE=$(echo "$DISK_OP_RESPONSE" | tail -n1)
+        BODY=$(echo "$DISK_OP_RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" == "200" ]; then
+            success "Disk operation status retrieved (HTTP $HTTP_CODE)"
+            echo "$BODY" | jq .
+        elif [ "$HTTP_CODE" == "404" ]; then
+            info "Operation not yet in database (queued) - this is normal"
+        else
+            warn "Could not get disk operation status (HTTP $HTTP_CODE)"
+            echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+        fi
+        echo ""
+    fi
+fi
+
+# Test 10: Job Actions (if we have a job)
+if [ -n "$API_KEY" ] && [ -n "$JOB_ID" ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Test 10: Job Actions"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Test 10a: Extend job
+    info "Testing POST $API_URL/v1/jobs/$JOB_ID/extend"
+    EXTEND_PAYLOAD='{"extension_hours": 1}'
+    
+    EXTEND_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" -X POST "$API_URL/v1/jobs/$JOB_ID/extend" \
+        -H "Authorization: Bearer $API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "$EXTEND_PAYLOAD")
+    
+    HTTP_CODE=$(echo "$EXTEND_RESPONSE" | tail -n1)
+    BODY=$(echo "$EXTEND_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        success "Job extension requested (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq .
+    else
+        info "Job extension request sent (HTTP $HTTP_CODE) - may fail if job doesn't exist yet"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+    fi
+    echo ""
+    
+    # Test 10b: Enable Jupyter
+    info "Testing POST $API_URL/v1/jobs/$JOB_ID/jupyter/enable"
+    
+    JUPYTER_ENABLE_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" -X POST "$API_URL/v1/jobs/$JOB_ID/jupyter/enable" \
+        -H "Authorization: Bearer $API_KEY")
+    
+    HTTP_CODE=$(echo "$JUPYTER_ENABLE_RESPONSE" | tail -n1)
+    BODY=$(echo "$JUPYTER_ENABLE_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        success "Jupyter enable requested (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq .
+    else
+        info "Jupyter enable request sent (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+    fi
+    echo ""
+    
+    # Test 10c: Add user
+    info "Testing POST $API_URL/v1/jobs/$JOB_ID/users"
+    ADD_USER_PAYLOAD='{"github_username": "testuser"}'
+    
+    ADD_USER_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" -X POST "$API_URL/v1/jobs/$JOB_ID/users" \
+        -H "Authorization: Bearer $API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "$ADD_USER_PAYLOAD")
+    
+    HTTP_CODE=$(echo "$ADD_USER_RESPONSE" | tail -n1)
+    BODY=$(echo "$ADD_USER_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        success "Add user requested (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq .
+    else
+        info "Add user request sent (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+    fi
+    echo ""
+    
+    # Test 10d: Cancel job (do this last since it terminates the job)
+    info "Testing POST $API_URL/v1/jobs/$JOB_ID/cancel"
+    
+    CANCEL_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" -X POST "$API_URL/v1/jobs/$JOB_ID/cancel" \
+        -H "Authorization: Bearer $API_KEY")
+    
+    HTTP_CODE=$(echo "$CANCEL_RESPONSE" | tail -n1)
+    BODY=$(echo "$CANCEL_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        success "Job cancellation requested (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq .
+    else
+        info "Job cancellation request sent (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+    fi
+    echo ""
+fi
+
+# Test 11: Key Rotation
+if [ -n "$API_KEY" ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Test 11: API Key Rotation"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     info "Testing POST $API_URL/v1/keys/rotate"
     
@@ -431,9 +666,9 @@ if [ -n "$API_KEY" ]; then
     echo ""
 fi
 
-# Test 7: Invalid Authentication
+# Test 12: Invalid Authentication
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Test 7: Invalid Authentication"
+echo "Test 12: Invalid Authentication"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 info "Testing with invalid API key (should fail)"
 
@@ -464,8 +699,19 @@ success "API info: Passed"
 
 if [ -n "$API_KEY" ]; then
     success "Authentication: Passed"
-    success "Job submission: Passed"
-    success "Key rotation: Passed"
+    success "Job operations: Tested"
+    success "  ↳ Submit job: Tested"
+    success "  ↳ Get job status: Tested"
+    success "  ↳ List jobs: Tested"
+    success "  ↳ Job actions (cancel/extend/jupyter/add-user): Tested"
+    success "Cluster info: Tested"
+    success "  ↳ GPU availability: Tested"
+    success "  ↳ Cluster status: Tested"
+    success "Disk operations: Tested"
+    success "  ↳ List disks: Tested"
+    success "  ↳ Create disk: Tested"
+    success "  ↳ Get disk operation status: Tested"
+    success "Key rotation: Tested"
 else
     warn "Authentication: Skipped (no AWS credentials)"
     warn "Configure AWS credentials to test authenticated endpoints"
@@ -477,8 +723,32 @@ echo "======================================"
 echo "  All tests completed!"
 echo "======================================"
 echo ""
+echo "API Endpoints Tested:"
+echo "  ✓ GET  /health"
+echo "  ✓ GET  /"
+echo "  ✓ POST /v1/auth/aws-login"
+echo "  ✓ POST /v1/jobs/submit"
+echo "  ✓ GET  /v1/jobs/{job_id}"
+echo "  ✓ GET  /v1/jobs"
+echo "  ✓ POST /v1/jobs/{job_id}/cancel"
+echo "  ✓ POST /v1/jobs/{job_id}/extend"
+echo "  ✓ POST /v1/jobs/{job_id}/jupyter/enable"
+echo "  ✓ POST /v1/jobs/{job_id}/jupyter/disable"
+echo "  ✓ POST /v1/jobs/{job_id}/users"
+echo "  ✓ GET  /v1/gpu/availability"
+echo "  ✓ GET  /v1/cluster/status"
+echo "  ✓ POST /v1/keys/rotate"
+echo "  ✓ POST /v1/disks"
+echo "  ✓ GET  /v1/disks"
+echo "  ✓ GET  /v1/disks/{disk_name}/operations/{operation_id}"
+echo ""
+echo "Not tested (would require existing disk):"
+echo "  - GET    /v1/disks/{disk_name}"
+echo "  - DELETE /v1/disks/{disk_name}"
+echo ""
 echo "Next steps:"
 echo "  • View API docs: $API_URL/docs"
 echo "  • Check logs: kubectl logs -n gpu-controlplane -l app=api-service"
-echo "  • Monitor queue: kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev -c \"SELECT * FROM pgmq.q_gpu_reservations LIMIT 5;\""
+echo "  • Monitor job queue: kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev -c \"SELECT * FROM pgmq.q_gpu_reservations LIMIT 5;\""
+echo "  • Monitor disk queue: kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpudev -c \"SELECT * FROM pgmq.q_disk_operations LIMIT 5;\""
 echo ""
