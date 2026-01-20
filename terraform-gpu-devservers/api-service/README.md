@@ -875,6 +875,11 @@ API pod needs:
 - `GET /v1/cluster/status` - Cluster status
 - `POST /v1/disks` - Create disk
 - `GET /v1/disks` - List disks
+- `GET /v1/disks/{disk_name}` - Get disk info
+- `GET /v1/disks/{disk_name}/content` - Get disk snapshot content
+- `POST /v1/disks/{disk_name}/rename` - Rename disk
+- `DELETE /v1/disks/{disk_name}` - Delete disk (soft delete)
+- `GET /v1/disks/{disk_name}/operations/{operation_id}` - Poll disk operation status
 - `POST /v1/keys/rotate` - Rotate API key
 
 ### CLI Integration

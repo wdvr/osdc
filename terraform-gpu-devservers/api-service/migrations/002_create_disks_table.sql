@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS disks (
     operation_id UUID,  -- Current operation ID (for create/delete operations)
     operation_status TEXT,  -- pending, in_progress, completed, failed
     operation_error TEXT,  -- Error message if operation failed
+    latest_snapshot_content_s3 TEXT,  -- S3 path to latest snapshot content (ls -R output)
     last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(user_id, disk_name)
 );

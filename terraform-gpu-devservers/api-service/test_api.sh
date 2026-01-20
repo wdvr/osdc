@@ -93,7 +93,7 @@ echo "  1. Health check and API info"
 echo "  2. AWS authentication (requires SSOCloudDevGpuReservation role)"
 echo "  3. Job operations (submit, list, status, cancel, extend, etc.)"
 echo "  4. Cluster information (GPU availability, cluster status)"
-echo "  5. Disk operations (create, list, get status)"
+echo "  5. Disk operations (create, list, rename, get content, get status)"
 echo "  6. API key management (rotation)"
 echo "  7. Security (invalid authentication rejection)"
 echo ""
@@ -552,6 +552,94 @@ if [ -n "$API_KEY" ]; then
         fi
         echo ""
     fi
+    
+    # Test 9d: Get disk content (will likely return "no content" for new disk)
+    if [ -n "$TEST_DISK_NAME" ]; then
+        info "Testing GET $API_URL/v1/disks/$TEST_DISK_NAME/content"
+        sleep 1  # Give it a moment
+        
+        DISK_CONTENT_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" \
+            "$API_URL/v1/disks/$TEST_DISK_NAME/content" \
+            -H "Authorization: Bearer $API_KEY")
+        
+        HTTP_CODE=$(echo "$DISK_CONTENT_RESPONSE" | tail -n1)
+        BODY=$(echo "$DISK_CONTENT_RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" == "200" ]; then
+            success "Disk content retrieved (HTTP $HTTP_CODE)"
+            # Don't print full content as it may be large
+            MESSAGE=$(echo "$BODY" | jq -r .message 2>/dev/null || echo "")
+            if [ -n "$MESSAGE" ]; then
+                info "Message: $MESSAGE"
+            else
+                CONTENT_LENGTH=$(echo "$BODY" | jq -r '.content | length' 2>/dev/null || echo "0")
+                info "Content length: $CONTENT_LENGTH bytes"
+            fi
+        elif [ "$HTTP_CODE" == "404" ]; then
+            info "Disk not yet in database - this is normal for newly created disks"
+        else
+            warn "Could not get disk content (HTTP $HTTP_CODE)"
+            echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+        fi
+        echo ""
+    fi
+    
+    # Test 9e: Rename disk
+    if [ -n "$TEST_DISK_NAME" ]; then
+        NEW_DISK_NAME="${TEST_DISK_NAME}-renamed"
+        info "Testing POST $API_URL/v1/disks/$TEST_DISK_NAME/rename"
+        
+        RENAME_PAYLOAD=$(jq -n \
+            --arg new_name "$NEW_DISK_NAME" \
+            '{new_name: $new_name}')
+        
+        RENAME_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" -X POST \
+            "$API_URL/v1/disks/$TEST_DISK_NAME/rename" \
+            -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$RENAME_PAYLOAD")
+        
+        HTTP_CODE=$(echo "$RENAME_RESPONSE" | tail -n1)
+        BODY=$(echo "$RENAME_RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" == "200" ]; then
+            success "Disk renamed successfully (HTTP $HTTP_CODE)"
+            echo "$BODY" | jq .
+            # Update TEST_DISK_NAME to the new name for potential cleanup
+            TEST_DISK_NAME="$NEW_DISK_NAME"
+        elif [ "$HTTP_CODE" == "404" ]; then
+            info "Disk not yet in database - this is normal for newly created disks"
+        elif [ "$HTTP_CODE" == "409" ]; then
+            info "Disk is in use or name conflict - this is expected if disk is being processed"
+        else
+            warn "Could not rename disk (HTTP $HTTP_CODE)"
+            echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+        fi
+        echo ""
+    fi
+    
+    # Test 9f: Get specific disk info (after rename)
+    if [ -n "$TEST_DISK_NAME" ]; then
+        info "Testing GET $API_URL/v1/disks/$TEST_DISK_NAME"
+        
+        GET_DISK_RESPONSE=$(curl -s -m 30 -w "\n%{http_code}" \
+            "$API_URL/v1/disks/$TEST_DISK_NAME" \
+            -H "Authorization: Bearer $API_KEY")
+        
+        HTTP_CODE=$(echo "$GET_DISK_RESPONSE" | tail -n1)
+        BODY=$(echo "$GET_DISK_RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" == "200" ]; then
+            success "Disk info retrieved (HTTP $HTTP_CODE)"
+            echo "$BODY" | jq .
+        elif [ "$HTTP_CODE" == "404" ]; then
+            info "Disk not yet in database - this is normal for newly created disks"
+        else
+            warn "Could not get disk info (HTTP $HTTP_CODE)"
+            echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+        fi
+        echo ""
+    fi
 fi
 
 # Test 10: Job Actions (if we have a job)
@@ -711,6 +799,9 @@ if [ -n "$API_KEY" ]; then
     success "  ↳ List disks: Tested"
     success "  ↳ Create disk: Tested"
     success "  ↳ Get disk operation status: Tested"
+    success "  ↳ Get disk content: Tested"
+    success "  ↳ Rename disk: Tested"
+    success "  ↳ Get disk info: Tested"
     success "Key rotation: Tested"
 else
     warn "Authentication: Skipped (no AWS credentials)"
@@ -740,11 +831,13 @@ echo "  ✓ GET  /v1/cluster/status"
 echo "  ✓ POST /v1/keys/rotate"
 echo "  ✓ POST /v1/disks"
 echo "  ✓ GET  /v1/disks"
+echo "  ✓ GET  /v1/disks/{disk_name}"
 echo "  ✓ GET  /v1/disks/{disk_name}/operations/{operation_id}"
+echo "  ✓ GET  /v1/disks/{disk_name}/content"
+echo "  ✓ POST /v1/disks/{disk_name}/rename"
 echo ""
-echo "Not tested (would require existing disk):"
-echo "  - GET    /v1/disks/{disk_name}"
-echo "  - DELETE /v1/disks/{disk_name}"
+echo "Not tested (would require active disk with snapshots):"
+echo "  - DELETE /v1/disks/{disk_name}  (destructive operation)"
 echo ""
 echo "Next steps:"
 echo "  • View API docs: $API_URL/docs"
