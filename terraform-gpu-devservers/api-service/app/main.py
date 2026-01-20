@@ -1,6 +1,13 @@
 """
 GPU Dev API Service
 Provides REST API for job submission using PGMQ (Postgres Message Queue)
+
+Timezone Handling Policy:
+- All timestamps in the database use TIMESTAMP WITH TIME ZONE
+- All Python datetime objects are created with UTC timezone: datetime.now(UTC)
+- asyncpg automatically returns timezone-aware datetime objects for TIMESTAMP WITH TIME ZONE
+- The ensure_utc() helper function provides defensive timezone conversion for comparisons
+- All datetime comparisons use timezone-aware datetimes
 """
 import hashlib
 import json
@@ -14,12 +21,84 @@ from typing import Any
 
 import aioboto3
 import asyncpg
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from fastapi import FastAPI, HTTPException, Query, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+# ============================================================================
+# Timezone Handling Utilities
+# ============================================================================
+
+def ensure_utc(dt: datetime | None) -> datetime | None:
+    """
+    Ensure a datetime is timezone-aware and in UTC.
+    
+    This is a defensive function to handle cases where the database might
+    return naive datetimes (though asyncpg should return timezone-aware
+    datetimes for TIMESTAMP WITH TIME ZONE columns).
+    
+    Args:
+        dt: A datetime object (timezone-aware or naive) or None
+        
+    Returns:
+        A timezone-aware datetime in UTC, or None if input was None
+    """
+    if dt is None:
+        return None
+    
+    # If already timezone-aware, convert to UTC
+    if dt.tzinfo is not None:
+        return dt.astimezone(UTC)
+    
+    # If naive, assume it's already in UTC and make it aware
+    # This shouldn't happen with TIMESTAMP WITH TIME ZONE columns,
+    # but we handle it defensively
+    return dt.replace(tzinfo=UTC)
+
+
+# ============================================================================
+# AWS Client Configuration with Retries
+# ============================================================================
+
+# boto3 retry configuration using 'standard' retry mode (recommended)
+# See: https://boto3.amazonaws.com/v1/documentation/api/latest/guide/retries.html
+
+# For STS operations (authentication) - lower retries to fail fast
+AWS_STS_CONFIG = Config(
+    retries={
+        'mode': 'standard',
+        'max_attempts': 3  # Total of 3 attempts (1 initial + 2 retries)
+    },
+    connect_timeout=5,
+    read_timeout=10
+)
+
+# For S3 operations (reading disk contents) - more aggressive retries
+AWS_S3_CONFIG = Config(
+    retries={
+        'mode': 'standard',
+        'max_attempts': 5  # Total of 5 attempts (1 initial + 4 retries)
+    },
+    connect_timeout=10,
+    read_timeout=30
+)
+
+# For EC2 operations (snapshot tagging) - standard retries
+AWS_EC2_CONFIG = Config(
+    retries={
+        'mode': 'standard',
+        'max_attempts': 4  # Total of 4 attempts (1 initial + 3 retries)
+    },
+    connect_timeout=10,
+    read_timeout=30
+)
+
+
+# ============================================================================
 # Configuration from environment
+# ============================================================================
 # Build DATABASE_URL from components (or use pre-built URL)
 if os.getenv("DATABASE_URL"):
     DATABASE_URL = os.getenv("DATABASE_URL")
@@ -759,14 +838,15 @@ async def verify_aws_credentials(
     }
     """
     try:
-        # Create async STS client with provided credentials
+        # Create async STS client with provided credentials and retry configuration
         session = aioboto3.Session()
         async with session.client(
             'sts',
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
             aws_session_token=aws_session_token,
-            region_name=AWS_REGION
+            region_name=AWS_REGION,
+            config=AWS_STS_CONFIG
         ) as sts_client:
             # Verify credentials by calling GetCallerIdentity (async)
             identity = await sts_client.get_caller_identity()
@@ -873,8 +953,13 @@ async def verify_api_key(
                 detail="API key has been revoked"
             )
 
-        # Check expiration
-        if row['expires_at'] and row['expires_at'] < datetime.now(UTC):
+        # Check expiration (with defensive timezone handling)
+        # Note: asyncpg returns timezone-aware datetimes for TIMESTAMP WITH TIME ZONE,
+        # but we use ensure_utc() defensively to handle any edge cases
+        expires_at = ensure_utc(row['expires_at'])
+        current_time = datetime.now(UTC)
+        
+        if expires_at and expires_at < current_time:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="API key has expired"
@@ -963,7 +1048,7 @@ async def submit_job(
             job_id = str(uuid.uuid4())
             message = {
                 "job_id": job_id,
-                "user_id": user_info["user_id"],
+                "user_id": user_info["username"],  # Use username for consistency
                 "username": user_info["username"],
                 "image": job.image,
                 "instance_type": job.instance_type,
@@ -976,9 +1061,10 @@ async def submit_job(
                 "status": "queued"
             }
 
-            # Send to PGMQ
+            # Send to PGMQ (queue name is validated at startup)
             msg_id = await conn.fetchval(
-                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                "SELECT pgmq.send($1, $2)",
+                QUEUE_NAME,
                 json.dumps(message)
             )
 
@@ -1047,7 +1133,18 @@ async def get_job_status(
                 )
             
             # Check authorization - user can only see their own jobs
-            if row["user_id"] != user_info["username"] and row["user_id"] != user_info["user_id"]:
+            # Compare against username (primary) and numeric user_id (for backward compatibility)
+            # Convert row user_id to string for comparison since it's VARCHAR(255) in database
+            row_user_id_str = str(row["user_id"]) if row["user_id"] else ""
+            user_numeric_id_str = str(user_info["user_id"])
+            
+            # Allow access if either username OR numeric ID matches
+            is_authorized = (
+                row_user_id_str == user_info["username"] or 
+                row_user_id_str == user_numeric_id_str
+            )
+            
+            if not is_authorized:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You can only view your own jobs"
@@ -1217,14 +1314,15 @@ async def cancel_job(
                 "action": "cancel",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user_info["user_id"],
+                "user_id": user_info["username"],  # Use username for consistency
                 "username": user_info["username"],
                 "requested_at": datetime.now(UTC).isoformat(),
             }
             
-            # Send to PGMQ
+            # Send to PGMQ (queue name is validated at startup)
             msg_id = await conn.fetchval(
-                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                "SELECT pgmq.send($1, $2)",
+                QUEUE_NAME,
                 json.dumps(message)
             )
             
@@ -1260,15 +1358,16 @@ async def extend_job(
                 "action": "extend",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user_info["user_id"],
+                "user_id": user_info["username"],  # Use username for consistency
                 "username": user_info["username"],
                 "extension_hours": request.extension_hours,
                 "requested_at": datetime.now(UTC).isoformat(),
             }
             
-            # Send to PGMQ
+            # Send to PGMQ (queue name is validated at startup)
             msg_id = await conn.fetchval(
-                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                "SELECT pgmq.send($1, $2)",
+                QUEUE_NAME,
                 json.dumps(message)
             )
             
@@ -1306,14 +1405,15 @@ async def enable_jupyter(
                 "action": "enable_jupyter",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user_info["user_id"],
+                "user_id": user_info["username"],  # Use username for consistency
                 "username": user_info["username"],
                 "requested_at": datetime.now(UTC).isoformat(),
             }
             
-            # Send to PGMQ
+            # Send to PGMQ (queue name is validated at startup)
             msg_id = await conn.fetchval(
-                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                "SELECT pgmq.send($1, $2)",
+                QUEUE_NAME,
                 json.dumps(message)
             )
             
@@ -1348,14 +1448,15 @@ async def disable_jupyter(
                 "action": "disable_jupyter",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user_info["user_id"],
+                "user_id": user_info["username"],  # Use username for consistency
                 "username": user_info["username"],
                 "requested_at": datetime.now(UTC).isoformat(),
             }
             
-            # Send to PGMQ
+            # Send to PGMQ (queue name is validated at startup)
             msg_id = await conn.fetchval(
-                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                "SELECT pgmq.send($1, $2)",
+                QUEUE_NAME,
                 json.dumps(message)
             )
             
@@ -1392,15 +1493,16 @@ async def add_user_to_job(
                 "action": "add_user",
                 "job_id": job_id,
                 "reservation_id": job_id,  # For backward compatibility
-                "user_id": user_info["user_id"],
+                "user_id": user_info["username"],  # Use username for consistency
                 "username": user_info["username"],
                 "github_username": request.github_username,
                 "requested_at": datetime.now(UTC).isoformat(),
             }
             
-            # Send to PGMQ
+            # Send to PGMQ (queue name is validated at startup)
             msg_id = await conn.fetchval(
-                f"SELECT pgmq.send('{QUEUE_NAME}', $1)",
+                "SELECT pgmq.send($1, $2)",
+                QUEUE_NAME,
                 json.dumps(message)
             )
             
@@ -1696,37 +1798,20 @@ async def aws_login(request: AWSLoginRequest) -> AWSLoginResponse:
     try:
         async with db_pool.acquire() as conn:
             async with conn.transaction():
-                # 4. Create or get user (reliable upsert pattern)
-                # First, check if user exists
-                user_id = await conn.fetchval(
-                    "SELECT user_id FROM api_users "
-                    "WHERE username = $1",
-                    username
-                )
+                # 4. Create or get user using atomic upsert (race-condition safe)
+                # INSERT ... ON CONFLICT is atomic and handles concurrent requests correctly
+                # If username exists: updates is_active to true
+                # If username doesn't exist: creates new user
+                user_id = await conn.fetchval("""
+                    INSERT INTO api_users (username, is_active)
+                    VALUES ($1, true)
+                    ON CONFLICT (username) 
+                    DO UPDATE SET is_active = true
+                    RETURNING user_id
+                """, username)
 
-                if user_id is None:
-                    # User doesn't exist, create new user
-                    user_id = await conn.fetchval("""
-                        INSERT INTO api_users (username, is_active)
-                        VALUES ($1, true)
-                        RETURNING user_id
-                    """, username)
-                else:
-                    # User exists, ensure they're active
-                    await conn.execute("""
-                        UPDATE api_users SET is_active = true
-                        WHERE user_id = $1
-                    """, user_id)
-
-                # 5. Revoke old keys (optional)
-                # Keep old keys valid or revoke?
-                # For now, keep old keys valid until they expire
-                # await conn.execute("""
-                #     UPDATE api_keys SET is_active = false
-                #     WHERE user_id = $1 AND is_active = true
-                # """, user_id)
-
-                # 6. Create new API key with TTL
+                # 5. Create new API key with TTL
+                # Keys expire after API_KEY_TTL_HOURS, allowing multiple concurrent sessions
                 api_key, key_prefix, expires_at = (
                     await create_api_key_for_user(
                         conn,
@@ -1786,9 +1871,10 @@ async def create_disk(
     
     try:
         async with db_pool.acquire() as conn:
-            # Send message to PGMQ
+            # Send message to PGMQ (queue name is validated at startup)
             await conn.execute(
-                f"SELECT pgmq.send('{DISK_QUEUE_NAME}', $1::jsonb)",
+                "SELECT pgmq.send($1, $2::jsonb)",
+                DISK_QUEUE_NAME,
                 json.dumps(message)
             )
         
@@ -1837,9 +1923,10 @@ async def delete_disk(
     
     try:
         async with db_pool.acquire() as conn:
-            # Send message to PGMQ
+            # Send message to PGMQ (queue name is validated at startup)
             await conn.execute(
-                f"SELECT pgmq.send('{DISK_QUEUE_NAME}', $1::jsonb)",
+                "SELECT pgmq.send($1, $2::jsonb)",
+                DISK_QUEUE_NAME,
                 json.dumps(message)
             )
         
@@ -2083,9 +2170,9 @@ async def get_disk_content(
             
             bucket_name, s3_key = path_parts
             
-            # Fetch contents from S3 using aioboto3
+            # Fetch contents from S3 using aioboto3 with retry configuration
             session = aioboto3.Session()
-            async with session.client('s3', region_name=AWS_REGION) as s3:
+            async with session.client('s3', region_name=AWS_REGION, config=AWS_S3_CONFIG) as s3:
                 try:
                     response = await s3.get_object(Bucket=bucket_name, Key=s3_key)
                     async with response['Body'] as stream:
@@ -2194,9 +2281,9 @@ async def rename_disk(
                 WHERE user_id = $2 AND disk_name = $3
             """, new_name, username, disk_name)
             
-            # Update EBS snapshot tags using aioboto3
+            # Update EBS snapshot tags using aioboto3 with retry configuration
             session = aioboto3.Session()
-            async with session.client('ec2', region_name=AWS_REGION) as ec2:
+            async with session.client('ec2', region_name=AWS_REGION, config=AWS_EC2_CONFIG) as ec2:
                 # Find all snapshots for this disk
                 response = await ec2.describe_snapshots(
                     OwnerIds=["self"],
