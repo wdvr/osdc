@@ -933,10 +933,6 @@ class ReservationManager:
     def extend_reservation(self, reservation_id: str, user_id: str, extension_hours: float) -> bool:
         """Extend an active reservation by the specified number of hours"""
         try:
-            # Capture current expiration BEFORE sending extension request to avoid race condition
-            job = self.api_client.get_job_status(reservation_id)
-            initial_expires_at = job.get("expires_at", "") if job else None
-
             # Send extend request via API
             # Job processor will handle the expiration timestamp update and pod updates
             self.api_client.extend_job(reservation_id, int(extension_hours))
@@ -946,8 +942,10 @@ class ReservationManager:
             )
 
             # Poll for 3 minutes to show the outcome
+            # Pass None for initial_expires_at - polling function will capture it on first iteration
+            # This minimizes race condition window by capturing AFTER the extend request is sent
             return self._poll_extend_action_result(
-                reservation_id, user_id, extension_hours, timeout_minutes=3, initial_expires_at=initial_expires_at
+                reservation_id, user_id, extension_hours, timeout_minutes=3, initial_expires_at=None
             )
 
         except Exception as e:
@@ -1235,7 +1233,8 @@ class ReservationManager:
                 )
                 live.update(spinner)
 
-                # Use pre-captured initial_expires_at if provided (to avoid race condition)
+                # Use pre-captured initial_expires_at if provided, otherwise capture on first poll
+                # Capturing on first poll (after extend request is sent) minimizes race condition window
                 initial_expiration = initial_expires_at
 
                 while time.time() - start_time < timeout_seconds:
