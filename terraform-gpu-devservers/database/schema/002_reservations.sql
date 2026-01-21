@@ -38,7 +38,13 @@ CREATE TABLE IF NOT EXISTS reservations (
     master_reservation_id VARCHAR(255),
     node_index INTEGER,
     total_nodes INTEGER,
-    cli_version VARCHAR(50)
+    cli_version VARCHAR(50),
+    ebs_availability_zone VARCHAR(50),
+    domain_name VARCHAR(255),
+    fqdn VARCHAR(512),
+    alb_config JSONB,
+    preserve_entrypoint BOOLEAN DEFAULT false NOT NULL,
+    node_private_ip VARCHAR(50)
 );
 
 -- Create indexes for reservations table
@@ -63,6 +69,26 @@ CREATE INDEX IF NOT EXISTS idx_reservations_expires_at
 CREATE INDEX IF NOT EXISTS idx_reservations_master_id
     ON reservations(master_reservation_id)
     WHERE master_reservation_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_reservations_domain_name
+    ON reservations(domain_name)
+    WHERE domain_name IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_reservations_fqdn
+    ON reservations(fqdn)
+    WHERE fqdn IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_reservations_node_private_ip
+    ON reservations(node_private_ip)
+    WHERE node_private_ip IS NOT NULL;
+
+-- Add column comments for documentation
+COMMENT ON COLUMN reservations.ebs_availability_zone IS 'AWS availability zone where EBS volume is located';
+COMMENT ON COLUMN reservations.domain_name IS 'Subdomain assigned to this reservation (e.g., my-server)';
+COMMENT ON COLUMN reservations.fqdn IS 'Full qualified domain name (e.g., my-server.gpudev.example.com)';
+COMMENT ON COLUMN reservations.alb_config IS 'ALB/NLB configuration including target group and rule ARNs (JSON)';
+COMMENT ON COLUMN reservations.preserve_entrypoint IS 'Whether to preserve Docker image ENTRYPOINT (true) or override with SSH (false)';
+COMMENT ON COLUMN reservations.node_private_ip IS 'Private VPC IP address of the node (for SSH proxy routing)';
 
 -- Create trigger function for reservations updated_at
 CREATE OR REPLACE FUNCTION update_reservations_updated_at()

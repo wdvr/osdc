@@ -1032,7 +1032,8 @@ def find_reservation_by_prefix(reservation_id: str, user_id: str = None) -> dict
         # For prefix searches, use PostgreSQL LIKE
         from shared import get_db_cursor
         
-        with get_db_cursor(readonly=True) as cur:
+        # Don't use readonly=True as this may be called inside an existing transaction
+        with get_db_cursor() as cur:
             if user_id:
                 # More efficient - filter by user_id and prefix
                 cur.execute("""
@@ -2684,26 +2685,41 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
         # Create Kubernetes pod and services
         jupyter_enabled = request.get("jupyter_enabled", False)
-        node_port, jupyter_port = create_kubernetes_resources(
-            pod_name=pod_name,
-            gpu_count=gpu_count,
-            gpu_type=gpu_type,
-            github_public_key=github_public_key,
-            reservation_id=reservation_id,
-            jupyter_enabled=jupyter_enabled,
-            persistent_volume_id=persistent_volume_id,
-            user_id=user_id,
-            is_new_disk=is_new_disk,
-            recreate_env=recreate_env,
-            efs_filesystem_id=efs_filesystem_id,
-            is_multinode=is_multinode,
-            dockerfile_base64_data=dockerfile_base64_data,
-            dockerimage=dockerimage,
-            target_az=target_az,
-            preserve_entrypoint=preserve_entrypoint,
-            node_labels=node_labels,
-        )
-
+        try:
+            node_port, jupyter_port = create_kubernetes_resources(
+                pod_name=pod_name,
+                gpu_count=gpu_count,
+                gpu_type=gpu_type,
+                github_public_key=github_public_key,
+                reservation_id=reservation_id,
+                jupyter_enabled=jupyter_enabled,
+                persistent_volume_id=persistent_volume_id,
+                user_id=user_id,
+                is_new_disk=is_new_disk,
+                recreate_env=recreate_env,
+                efs_filesystem_id=efs_filesystem_id,
+                is_multinode=is_multinode,
+                dockerfile_base64_data=dockerfile_base64_data,
+                dockerimage=dockerimage,
+                target_az=target_az,
+                preserve_entrypoint=preserve_entrypoint,
+                node_labels=node_labels,
+            )
+        except TimeoutError as e:
+            # Pod creation timed out waiting for pod to be ready
+            # Let background monitoring thread continue - it will complete activation if pod becomes ready
+            logger.warning(
+                f"Main thread timed out waiting for pod {pod_name} to be ready: {e}")
+            logger.info(
+                f"Background monitoring will continue to track {reservation_id} and complete activation if pod becomes ready")
+            update_reservation_status(
+                reservation_id,
+                "preparing",
+                "Pod created but main thread timed out - monitoring will continue",
+            )
+            # Exit this reservation processing - monitoring thread will handle completion
+            return
+        
         # Update status: Pod created, waiting for container to start
         if is_multinode:
             update_multinode_pod_status(
@@ -4850,39 +4866,55 @@ def create_jupyter_service(k8s_client, pod_name: str, jupyter_port: int):
 
 def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 600):
     """Wait for pod to be ready - simplified since background monitoring handles status updates"""
-    try:
-        v1 = client.CoreV1Api(k8s_client)
-        start_time = time.time()
-        logger.info(f"Waiting for pod {pod_name} to be ready")
-
-        while time.time() - start_time < timeout_seconds:
-            try:
-                pod = v1.read_namespaced_pod(
-                    name=pod_name, namespace="gpu-dev")
-
-                # Check if pod is ready
-                if pod.status.conditions:
-                    for condition in pod.status.conditions:
-                        if condition.type == "Ready" and condition.status == "True":
-                            logger.info(f"Pod {pod_name} is ready")
-                            return
-
-                # Check for failed state
-                if pod.status.phase == "Failed":
-                    raise RuntimeError(f"Pod {pod_name} failed")
-
-            except Exception as e:
-                logger.warning(f"Error checking pod status: {str(e)}")
-
-            time.sleep(10)
-
-        raise TimeoutError(
-            f"Pod {pod_name} did not become ready within {timeout_seconds} seconds"
-        )
-
-    except Exception as e:
-        logger.error(f"Error waiting for pod ready: {str(e)}")
-        raise
+    v1 = client.CoreV1Api(k8s_client)
+    start_time = time.time()
+    logger.info(f"Waiting for pod {pod_name} to be ready (timeout: {timeout_seconds}s)")
+    
+    iteration = 0
+    while True:
+        elapsed = time.time() - start_time
+        
+        # Hard timeout check - ensure we never loop forever
+        if elapsed >= timeout_seconds:
+            error_msg = f"Pod {pod_name} did not become ready within {timeout_seconds} seconds (checked {iteration} times)"
+            logger.error(error_msg)
+            raise TimeoutError(error_msg)
+        
+        iteration += 1
+        logger.info(f"Pod ready check {iteration} (elapsed: {int(elapsed)}s / {timeout_seconds}s)")
+        
+        try:
+            pod = v1.read_namespaced_pod(name=pod_name, namespace="gpu-dev")
+            
+            # Check if pod is ready
+            if pod.status.conditions:
+                for condition in pod.status.conditions:
+                    if condition.type == "Ready" and condition.status == "True":
+                        logger.info(f"Pod {pod_name} is ready after {int(elapsed)}s ({iteration} checks)")
+                        return
+            
+            # Check for failed state
+            if pod.status.phase == "Failed":
+                error_msg = f"Pod {pod_name} entered Failed state"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+            
+            # Log current status for debugging
+            logger.info(f"Pod {pod_name} status: phase={pod.status.phase}, ready=False")
+            
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                logger.warning(f"Pod {pod_name} not found (404) - may be deleted")
+                raise RuntimeError(f"Pod {pod_name} was deleted")
+            logger.error(f"Kubernetes API error checking pod {pod_name}: {e.status} {e.reason}")
+            raise
+        except Exception as e:
+            # Don't catch all exceptions - let real errors propagate
+            logger.error(f"Unexpected error checking pod {pod_name}: {type(e).__name__}: {str(e)}")
+            raise
+        
+        # Sleep before next check
+        time.sleep(10)
 
 
 def get_node_public_ip() -> str:
@@ -5031,13 +5063,12 @@ def mark_disk_in_use(user_id: str, disk_name: str, in_use: bool, reservation_id:
         updates = {
             'in_use': in_use,
             'last_used': now,
-            'disk_size': 1024  # Default size if not set
         }
         
         if in_use and reservation_id:
-            updates['attached_to_reservation'] = reservation_id
+            updates['reservation_id'] = reservation_id  # Use reservation_id (matches schema)
         elif not in_use:
-            updates['attached_to_reservation'] = None  # Remove attachment
+            updates['reservation_id'] = None  # Clear reservation attachment
 
         update_disk(user_id, disk_name, updates)
         logger.info(f"Updated disk '{disk_name}' in_use={in_use} for user {user_id}")
@@ -5969,6 +6000,18 @@ def start_background_pod_monitoring(k8s_client, pod_name: str, reservation_id: s
                     logger.info(
                         f"Reservation {reservation_id} terminated, stopping monitoring")
                     break
+                
+                # Check if reservation is active and fully configured - stop monitoring
+                try:
+                    res = get_reservation(reservation_id)
+                    if res and res.get("status") == "active":
+                        # Active reservation doesn't need rapid monitoring anymore
+                        if res.get("ssh_command") or res.get("pod_name"):
+                            logger.info(
+                                f"Reservation {reservation_id} is active and configured, stopping rapid monitoring")
+                            break
+                except Exception as e:
+                    logger.warning(f"Could not check reservation status: {e}")
 
                 # Wait 1 second or until stop signal
                 if stop_event.wait(1):
@@ -6438,10 +6481,116 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                             logger.info(
                                 f"Transitioning {reservation_id} to active - SSH confirmed ready and connection info set")
                         else:
-                            high_level_status = "preparing"
-                            display_message = "✅ SSH ready, waiting for connection setup"
-                            logger.warning(
-                                f"Connection info not yet set for {reservation_id}, SSH is ready but main flow incomplete")
+                            # Check if we've been waiting too long (main thread may have timed out)
+                            created_at = res.get("created_at")
+                            waiting_too_long = False
+                            if created_at:
+                                try:
+                                    # created_at is a datetime object from PostgreSQL
+                                    from datetime import datetime, UTC
+                                    if isinstance(created_at, datetime):
+                                        # Already a datetime object
+                                        time_waiting = (datetime.now(UTC) - created_at).total_seconds()
+                                    else:
+                                        # Fallback: try parsing as timestamp
+                                        time_waiting = time.time() - float(created_at)
+                                    
+                                    # If we've been preparing for more than 15 minutes, main thread likely timed out
+                                    if time_waiting > 900:  # 15 minutes
+                                        waiting_too_long = True
+                                        logger.warning(
+                                            f"Reservation {reservation_id} has been preparing for {int(time_waiting)}s - main thread may have timed out")
+                                except Exception as e:
+                                    logger.warning(f"Error checking wait time: {e}")
+                            
+                            if waiting_too_long:
+                                # Recovery: Generate connection info from monitoring thread
+                                logger.info(
+                                    f"RECOVERY: Generating connection info for {reservation_id} from monitoring thread")
+                                try:
+                                    # Get pod details to generate connection info
+                                    from shared.k8s_client import get_k8s_client
+                                    k8s = get_k8s_client()
+                                    v1 = client.CoreV1Api(k8s)
+                                    
+                                    # Get pod to find node and ports
+                                    pod = v1.read_namespaced_pod(name=pod_name, namespace="gpu-dev")
+                                    
+                                    # Get SSH service to find node_port
+                                    ssh_service_name = f"{pod_name}-ssh"
+                                    service = v1.read_namespaced_service(name=ssh_service_name, namespace="gpu-dev")
+                                    node_port = None
+                                    jupyter_port = None
+                                    for port in service.spec.ports:
+                                        if port.name == "ssh":
+                                            node_port = port.node_port
+                                        elif port.name == "jupyter":
+                                            jupyter_port = port.node_port
+                                    
+                                    if node_port:
+                                        # Get node IPs
+                                        node_public_ip = get_pod_node_public_ip(pod_name)
+                                        node_private_ip = get_pod_node_private_ip(pod_name)
+                                        
+                                        # Check for domain name and DNS
+                                        domain_name = res.get("domain_name")
+                                        
+                                        # Generate SSH command
+                                        if domain_name:
+                                            from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
+                                            full_domain = f"{domain_name}.{DNS_DOMAIN}"
+                                            ssh_command = f"ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null dev@{full_domain}"
+                                        else:
+                                            ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
+                                        
+                                        # Generate Jupyter URL if enabled
+                                        jupyter_enabled = res.get("jupyter_enabled", False)
+                                        jupyter_url_base = None
+                                        if jupyter_enabled and jupyter_port:
+                                            if domain_name:
+                                                from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
+                                                full_domain = f"{domain_name}.{DNS_DOMAIN}"
+                                                jupyter_url_base = f"http://{full_domain}:{jupyter_port}"
+                                            else:
+                                                jupyter_url_base = f"http://{node_public_ip}:{jupyter_port}"
+                                        
+                                        # Update connection info
+                                        logger.info(f"RECOVERY: Setting connection info for {reservation_id}")
+                                        update_reservation_connection_info(
+                                            reservation_id=reservation_id,
+                                            ssh_command=ssh_command,
+                                            pod_name=pod_name,
+                                            node_port=node_port,
+                                            node_ip=node_public_ip,
+                                            node_private_ip=node_private_ip,
+                                            jupyter_port=jupyter_port,
+                                            jupyter_url_base=jupyter_url_base,
+                                            jupyter_enabled=jupyter_enabled,
+                                            k8s_client=k8s,
+                                            persistent_volume_id=res.get("persistent_volume_id"),
+                                            ebs_availability_zone=res.get("ebs_availability_zone"),
+                                            domain_name=domain_name,
+                                            alb_config=None,  # ALB setup would have already failed
+                                            preserve_entrypoint=False,
+                                        )
+                                        
+                                        high_level_status = "active"
+                                        display_message = "✅ Connection established (recovered)"
+                                        logger.info(
+                                            f"RECOVERY: Successfully activated {reservation_id} from monitoring thread")
+                                    else:
+                                        logger.error(f"RECOVERY: Could not find node_port for {pod_name}")
+                                        high_level_status = "preparing"
+                                        display_message = "✅ SSH ready, waiting for connection setup"
+                                except Exception as recovery_error:
+                                    logger.error(f"RECOVERY: Failed to generate connection info: {recovery_error}")
+                                    high_level_status = "preparing"
+                                    display_message = "✅ SSH ready, waiting for connection setup"
+                            else:
+                                high_level_status = "preparing"
+                                display_message = "✅ SSH ready, waiting for connection setup"
+                                logger.warning(
+                                    f"Connection info not yet set for {reservation_id}, SSH is ready but main flow incomplete")
                 except Exception as e:
                     logger.warning(
                         f"Could not check connection info for {reservation_id}: {e}")

@@ -310,7 +310,7 @@ resource "kubernetes_cluster_role" "reservation_processor" {
   # Pod access - for creating, managing, and monitoring reservation pods
   rule {
     api_groups = [""]
-    resources  = ["pods", "pods/log", "pods/status"]
+    resources  = ["pods", "pods/log", "pods/status", "pods/exec"]
     verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
   }
 
@@ -417,11 +417,18 @@ resource "kubernetes_deployment" "reservation_processor" {
     kubernetes_namespace.controlplane,
     kubernetes_stateful_set.postgres_primary,
     kubernetes_service.postgres_primary,
-    kubernetes_job.database_schema_migration,
+    kubernetes_job.database_schema_migration,  # Wait for schema (includes PGMQ queues)
+    kubernetes_deployment.api_service,         # Wait for API service to be ready
     null_resource.reservation_processor_build,
   ]
 
-  wait_for_rollout = false
+  # Wait for deployment to be ready before considering it complete
+  wait_for_rollout = true
+  
+  timeouts {
+    create = "10m"
+    update = "10m"
+  }
 
   metadata {
     name      = "reservation-processor"
