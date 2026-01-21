@@ -121,7 +121,7 @@ def get_reservation(reservation_id: str) -> Optional[Dict[str, Any]]:
         Reservation dictionary or None if not found
     """
     try:
-        with get_db_cursor(readonly=True) as cur:
+        with get_db_cursor() as cur:
             cur.execute("""
                 SELECT * FROM reservations
                 WHERE reservation_id = %s
@@ -239,7 +239,7 @@ def list_reservations_by_user(user_id: str, status: Optional[str] = None, limit:
         List of reservation dictionaries
     """
     try:
-        with get_db_cursor(readonly=True) as cur:
+        with get_db_cursor() as cur:
             if status:
                 cur.execute("""
                     SELECT * FROM reservations
@@ -275,7 +275,7 @@ def list_reservations_by_status(status: str, limit: int = 1000) -> List[Dict[str
         List of reservation dictionaries
     """
     try:
-        with get_db_cursor(readonly=True) as cur:
+        with get_db_cursor() as cur:
             cur.execute("""
                 SELECT * FROM reservations
                 WHERE status = %s
@@ -380,7 +380,7 @@ def list_multinode_reservations(master_reservation_id: str) -> List[Dict[str, An
         List of reservation dictionaries for all nodes
     """
     try:
-        with get_db_cursor(readonly=True) as cur:
+        with get_db_cursor() as cur:
             cur.execute("""
                 SELECT * FROM reservations
                 WHERE master_reservation_id = %s OR reservation_id = %s
@@ -406,7 +406,7 @@ def count_active_reservations_by_gpu_type(gpu_type: str) -> int:
         Number of active reservations
     """
     try:
-        with get_db_cursor(readonly=True) as cur:
+        with get_db_cursor() as cur:
             cur.execute("""
                 SELECT COUNT(*) as count
                 FROM reservations
@@ -433,7 +433,7 @@ def list_expired_reservations(limit: int = 100) -> List[Dict[str, Any]]:
         List of expired reservation dictionaries
     """
     try:
-        with get_db_cursor(readonly=True) as cur:
+        with get_db_cursor() as cur:
             cur.execute("""
                 SELECT * FROM reservations
                 WHERE expires_at IS NOT NULL

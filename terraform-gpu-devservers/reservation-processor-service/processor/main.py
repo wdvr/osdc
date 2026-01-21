@@ -44,7 +44,8 @@ def poll_messages(batch_size: int = 1) -> list:
         List of message dictionaries with 'msg_id', 'read_ct', 'enqueued_at', 'vt', 'message'
     """
     try:
-        with get_db_cursor(readonly=True) as cur:
+        # Note: Not using readonly=True because pgmq.read() modifies queue state (visibility timeout)
+        with get_db_cursor() as cur:
             # pgmq.read(queue_name, vt, limit) -> reads messages with visibility timeout
             cur.execute(
                 "SELECT * FROM pgmq.read(%s, %s, %s)",
@@ -131,10 +132,11 @@ def process_reservation_message(message: dict) -> bool:
         from processor import reservation_handler
         
         # Call handler with PGMQ message format
-        # The handler expects an event like Lambda would receive
+        # The handler expects an event like Lambda would receive from SQS
         # Create a Lambda-like event structure
         event = {
             'Records': [{
+                'eventSource': 'aws:sqs',  # Required by handler to process the record
                 'messageId': str(msg_id),
                 'body': json.dumps(msg_body),
                 'messageAttributes': {}

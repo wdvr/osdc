@@ -1855,8 +1855,9 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 if reservation_request.get("dockerimage"):
                     initial_record["dockerimage"] = reservation_request["dockerimage"]
 
-                # Store initial record
-                create_reservation(initial_record)
+                # Store initial record using shared database function
+                from shared.reservation_db import create_reservation as create_reservation_db
+                create_reservation_db(initial_record)
 
                 logger.info(
                     f"Created initial reservation record: {reservation_id}")
@@ -2253,7 +2254,9 @@ def create_reservation(request: dict[str, Any]) -> str:
         # Store processor version that processed this reservation
         reservation["lambda_version"] = PROCESSOR_VERSION
 
-        create_reservation(reservation)
+        # Use shared database function (not recursive call!)
+        from shared.reservation_db import create_reservation as create_reservation_db
+        create_reservation_db(reservation)
 
         logger.info(f"Created reservation record: {reservation_id}")
         return reservation_id
@@ -2898,7 +2901,10 @@ def update_reservation_status(reservation_id: str, status: str, detailed_status:
         if detailed_status:
             try:
                 append_status_history(
-                    reservation_id, current_time, detailed_status)
+                    reservation_id, {
+                        'timestamp': current_time,
+                        'message': detailed_status
+                    })
             except Exception as history_error:
                 logger.warning(
                     f"Could not append to status history: {history_error}")
@@ -2943,9 +2949,8 @@ def update_reservation_fields(reservation_id: str, **fields) -> None:
                 f"update_reservation_fields called with empty reservation_id={reservation_id} or fields={fields}")
             return
 
-        # Add last_updated timestamp
-        fields['last_updated'] = int(time.time())
-
+        # Note: PostgreSQL doesn't have last_updated column, it uses updated_at automatically
+        
         logger.debug(
             f"Updating reservation {reservation_id} with fields: {list(fields.keys())}")
         logger.debug(f"Values: {fields}")
@@ -5441,37 +5446,37 @@ def should_use_persistent_disk(user_id: str, current_reservation_id: str) -> boo
         #     IndexName="UserIndex",
         #     KeyConditionExpression="user_id = :user_id",
         #     FilterExpression="#status IN (:active, :preparing, :queued, :pending) AND reservation_id <> :current_id",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={
-                ":user_id": user_id,
-                ":current_id": current_reservation_id,
-                ":active": "active",
-                ":preparing": "preparing",
-                ":queued": "queued",
-                ":pending": "pending",
-            },
-        )
-
-        existing_reservations = response.get("Items", [])
-
-        # Check if any existing reservations actually have a persistent disk or have reserved one
-        reservations_with_persistent_disk = [
-            res for res in existing_reservations
-            if (res.get("ebs_volume_id") and res.get("ebs_volume_id").strip()) or res.get("ebs_volume_reserved") == True
-        ]
-
-        # If no other existing reservations have persistent disks, user gets persistent disk
-        if not reservations_with_persistent_disk:
-            logger.info(
-                f"User {user_id} has no other reservations with persistent disks - will use persistent disk")
-            return True
-        else:
-            persistent_res = reservations_with_persistent_disk[0]
-            persistent_res_id = persistent_res.get(
-                "reservation_id", "unknown")[:8]
-            logger.info(
-                f"User {user_id} has existing reservation {persistent_res_id} with persistent disk - no persistent disk for this reservation")
-            return False
+        #     ExpressionAttributeNames={"#status": "status"},
+        #     ExpressionAttributeValues={
+        #         ":user_id": user_id,
+        #         ":current_id": current_reservation_id,
+        #         ":active": "active",
+        #         ":preparing": "preparing",
+        #         ":queued": "queued",
+        #         ":pending": "pending",
+        #     },
+        # )
+        #
+        # existing_reservations = response.get("Items", [])
+        #
+        # # Check if any existing reservations actually have a persistent disk or have reserved one
+        # reservations_with_persistent_disk = [
+        #     res for res in existing_reservations
+        #     if (res.get("ebs_volume_id") and res.get("ebs_volume_id").strip()) or res.get("ebs_volume_reserved") == True
+        # ]
+        #
+        # # If no other existing reservations have persistent disks, user gets persistent disk
+        # if not reservations_with_persistent_disk:
+        #     logger.info(
+        #         f"User {user_id} has no other reservations with persistent disks - will use persistent disk")
+        #     return True
+        # else:
+        #     persistent_res = reservations_with_persistent_disk[0]
+        #     persistent_res_id = persistent_res.get(
+        #         "reservation_id", "unknown")[:8]
+        #     logger.info(
+        #         f"User {user_id} has existing reservation {persistent_res_id} with persistent disk - no persistent disk for this reservation")
+        #     return False
 
     except Exception as e:
         logger.error(
@@ -5770,10 +5775,6 @@ def calculate_queue_position_and_wait_time(
             # Filter by GPU type
             filtered = [r for r in status_reservations if r.get("gpu_type") == gpu_type]
             queued_reservations.extend(filtered)
-            
-        # Old DynamoDB code (disabled):
-        # response = reservations_table.query(...)
-            queued_reservations.extend(response.get("Items", []))
 
         # Sort queued reservations by creation time to determine position
         queued_reservations.sort(key=lambda x: x.get("created_at", ""))
@@ -5825,13 +5826,8 @@ def update_reservation_with_queue_info(
 ):
     """Update reservation with queue position and wait time information"""
     try:
-        update_reservation_fields(
-            reservation_id,
-            queue_position=queue_position if queue_position != "?" else None,
-            estimated_wait_minutes=estimated_wait_minutes if estimated_wait_minutes != "?" else None,
-            available_gpus=available_gpus,
-            last_queue_update=datetime.now(UTC).isoformat(),
-        )
+        # Note: queue_position, estimated_wait_minutes, available_gpus, last_queue_update
+        # columns don't exist in PostgreSQL schema - queue info is just logged
         logger.info(
             f"Updated reservation {reservation_id} with queue info: pos={queue_position}, wait={estimated_wait_minutes}min"
         )
@@ -7107,7 +7103,6 @@ def disable_jupyter_in_pod(
             current_timestamp = int(time.time())
             updates = {
                 "jupyter_enabled": False,
-                "last_updated": current_timestamp,
                 "jupyter_url": None,
                 "jupyter_token": None,
                 "jupyter_port": None
@@ -7727,7 +7722,6 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
             # Build updates dict
             updates = {
                 "expires_at": new_expires_at,
-                "last_updated": current_timestamp,
                 "extension_error": None,
                 "warnings_sent": None,
                 "last_warning_time": None
@@ -7794,7 +7788,10 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
                 # new_expires_at is already a string from isoformat(), use new_expiry datetime for formatting
                 extension_message = f"Extended by {extension_hours} hours (new expiry: {new_expiry.strftime('%Y-%m-%d %H:%M:%S')})"
                 append_status_history(
-                    full_reservation_id, current_time, extension_message)
+                    full_reservation_id, {
+                        'timestamp': current_time,
+                        'message': extension_message
+                    })
             except Exception as history_error:
                 logger.warning(
                     f"Could not add extension to status history: {history_error}")

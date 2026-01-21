@@ -22,7 +22,7 @@ from .k8s_resource_tracker import K8sGPUTracker
 from .alb_utils import (
     is_alb_enabled,
     create_jupyter_target_group,
-    create_listener_rule,
+    create_alb_listener_rule,
     store_alb_mapping,
     delete_alb_mapping
 )
@@ -92,7 +92,7 @@ __all__ = [
     # ALB
     "is_alb_enabled",
     "create_jupyter_target_group",
-    "create_listener_rule",
+    "create_alb_listener_rule",
     "store_alb_mapping",
     "delete_alb_mapping",
     # DNS
