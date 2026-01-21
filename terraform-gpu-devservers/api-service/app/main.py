@@ -390,6 +390,52 @@ async def lifespan(app: FastAPI):
             EXECUTE FUNCTION update_disks_last_updated_column()
         """)
 
+        # Create gpu_types table for centralized GPU configuration
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS gpu_types (
+                gpu_type VARCHAR(50) PRIMARY KEY,
+                instance_type VARCHAR(100) NOT NULL,
+                max_gpus INTEGER NOT NULL,
+                cpus INTEGER NOT NULL,
+                memory_gb INTEGER NOT NULL,
+                total_cluster_gpus INTEGER DEFAULT 0,
+                max_per_node INTEGER,
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                description TEXT
+            )
+        """)
+
+        # Create index for active GPU types
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_gpu_types_active
+            ON gpu_types(is_active)
+            WHERE is_active = true
+        """)
+
+        # Create trigger function for gpu_types table
+        await conn.execute("""
+            CREATE OR REPLACE FUNCTION update_gpu_types_updated_at_column()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.updated_at = NOW();
+                RETURN NEW;
+            END;
+            $$ language 'plpgsql'
+        """)
+
+        # Create trigger for gpu_types table
+        await conn.execute("""
+            DROP TRIGGER IF EXISTS update_gpu_types_updated_at ON gpu_types
+        """)
+        await conn.execute("""
+            CREATE TRIGGER update_gpu_types_updated_at
+            BEFORE UPDATE ON gpu_types
+            FOR EACH ROW
+            EXECUTE FUNCTION update_gpu_types_updated_at_column()
+        """)
+
         # Create PGMQ queues if not exists
         # Queue names are validated at startup (alphanumeric + underscore only)
         # PGMQ functions require queue name as a string parameter, not an identifier
@@ -1546,18 +1592,32 @@ async def get_gpu_availability(
     """
     try:
         async with db_pool.acquire() as conn:
-            # GPU configuration - matches Terraform and Lambda configs
-            # This should ideally come from a config table or environment
+            # Fetch GPU configuration from database
+            gpu_config_query = """
+                SELECT 
+                    gpu_type,
+                    total_cluster_gpus,
+                    max_per_node
+                FROM gpu_types
+                WHERE is_active = true
+            """
+            gpu_config_rows = await conn.fetch(gpu_config_query)
+            
+            # Build GPU_CONFIG dictionary from database
             GPU_CONFIG = {
-                "h100": {"total": 16, "max_per_node": 8},
-                "h200": {"total": 16, "max_per_node": 8},
-                "b200": {"total": 16, "max_per_node": 8},
-                "a100": {"total": 16, "max_per_node": 8},
-                "a10g": {"total": 4, "max_per_node": 4},
-                "t4": {"total": 8, "max_per_node": 4},
-                "t4-small": {"total": 1, "max_per_node": 1},
-                "l4": {"total": 4, "max_per_node": 4},
+                row["gpu_type"]: {
+                    "total": int(row["total_cluster_gpus"]),
+                    "max_per_node": int(row["max_per_node"] or 0)
+                }
+                for row in gpu_config_rows
             }
+            
+            # If no GPU config in database, return empty availability
+            if not GPU_CONFIG:
+                return GPUAvailabilityResponse(
+                    availability={},
+                    timestamp=datetime.now(UTC).isoformat()
+                )
             
             # Query active/preparing reservations (GPU in use)
             in_use_query = """
@@ -1630,16 +1690,24 @@ async def get_cluster_status(
     """
     try:
         async with db_pool.acquire() as conn:
-            # GPU configuration (same as availability endpoint)
+            # Fetch GPU configuration from database
+            gpu_config_query = """
+                SELECT 
+                    gpu_type,
+                    total_cluster_gpus,
+                    max_per_node
+                FROM gpu_types
+                WHERE is_active = true
+            """
+            gpu_config_rows = await conn.fetch(gpu_config_query)
+            
+            # Build GPU_CONFIG dictionary from database
             GPU_CONFIG = {
-                "h100": {"total": 16, "max_per_node": 8},
-                "h200": {"total": 16, "max_per_node": 8},
-                "b200": {"total": 16, "max_per_node": 8},
-                "a100": {"total": 16, "max_per_node": 8},
-                "a10g": {"total": 4, "max_per_node": 4},
-                "t4": {"total": 8, "max_per_node": 4},
-                "t4-small": {"total": 1, "max_per_node": 1},
-                "l4": {"total": 4, "max_per_node": 4},
+                row["gpu_type"]: {
+                    "total": int(row["total_cluster_gpus"]),
+                    "max_per_node": int(row["max_per_node"] or 0)
+                }
+                for row in gpu_config_rows
             }
             
             # Count reservations by status
