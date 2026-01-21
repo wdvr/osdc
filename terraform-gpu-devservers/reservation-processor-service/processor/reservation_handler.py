@@ -75,8 +75,7 @@ PRIMARY_AVAILABILITY_ZONE = os.environ["PRIMARY_AVAILABILITY_ZONE"]
 GPU_DEV_CONTAINER_IMAGE = os.environ.get(
     "GPU_DEV_CONTAINER_IMAGE", "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel")
 EFS_SECURITY_GROUP_ID = os.environ.get("EFS_SECURITY_GROUP_ID")
-EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(
-    ",") if os.environ.get("EFS_SUBNET_IDS") else []
+EFS_SUBNET_IDS = [s.strip() for s in os.environ.get("EFS_SUBNET_IDS", "").split(",") if s.strip()] if os.environ.get("EFS_SUBNET_IDS") else []
 CCACHE_SHARED_EFS_ID = os.environ.get("CCACHE_SHARED_EFS_ID")
 ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 
@@ -786,8 +785,13 @@ def create_or_find_user_efs(user_id: str) -> str:
                         f"Found existing EFS {fs_id} for user {user_id}")
 
                     # Ensure mount target exists
-                    ensure_efs_mount_target(fs_id)
-                    return fs_id
+                    try:
+                        ensure_efs_mount_target(fs_id)
+                        return fs_id
+                    except Exception as mount_error:
+                        # Mount target error - re-raise to fail properly
+                        logger.error(f"Failed to ensure mount targets for existing EFS {fs_id}: {mount_error}")
+                        raise  # Don't continue, don't create duplicate
 
             except Exception as tag_error:
                 error_str = str(tag_error)
@@ -1102,11 +1106,21 @@ def handler(event, context):
                 try:
                     message_body = json.loads(record["body"])
 
-                    # Skip version validation for disk operations (they don't affect reservations)
+                    # Skip version validation for:
+                    # - Disk operations (they don't affect reservations)
+                    # - All user actions on existing reservations (cancel, extend, add_user, jupyter)
                     action = message_body.get("action")
-                    skip_version_check = action in ["create_disk", "delete_disk"]
+                    skip_version_check = action in [
+                        "create_disk",
+                        "delete_disk",
+                        "cancel",
+                        "extend_reservation",
+                        "add_user",
+                        "enable_jupyter",
+                        "disable_jupyter"
+                    ]
 
-                    # Validate CLI version before processing any request (except disk ops)
+                    # Validate CLI version only for reservation creation
                     if not skip_version_check:
                         try:
                             validate_cli_version(message_body)
@@ -1129,23 +1143,24 @@ def handler(event, context):
                             continue
 
                     message_type = message_body.get("type", "reservation")
+                    action = message_body.get("action")
 
-                    if message_type == "cancellation":
+                    if message_type == "cancellation" or action == "cancel":
                         success = process_cancellation_request(record)
-                    elif message_body.get("action") in [
+                    elif action in [
                         "enable_jupyter",
                         "disable_jupyter",
                     ]:
                         success = process_jupyter_action(record)
-                    elif message_body.get("action") == "add_user":
+                    elif action == "add_user":
                         success = process_add_user_action(record)
-                    elif message_body.get("action") == "extend_reservation":
+                    elif action == "extend_reservation":
                         success = process_extend_reservation_action(record)
-                    elif message_body.get("action") == "delete_disk":
+                    elif action == "delete_disk":
                         success = process_delete_disk_action(record)
-                    elif message_body.get("action") == "create_disk":
+                    elif action == "create_disk":
                         success = process_create_disk_action(record)
-                    elif message_body.get("action") == "process_multinode_individual":
+                    elif action == "process_multinode_individual":
                         success = process_multinode_individual_node(
                             message_body)
                     else:
@@ -1816,51 +1831,125 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
         reservation_id = reservation_request.get("reservation_id")
         if reservation_id:
             try:
-                # Create initial reservation record with pending status
-                from datetime import datetime, timedelta
+                # Check if reservation already exists (idempotency for retries)
+                existing_reservation = get_reservation(reservation_id)
+                
+                if existing_reservation:
+                    existing_status = existing_reservation.get("status")
+                    pod_name = existing_reservation.get("pod_name")
+                    
+                    logger.info(
+                        f"Reservation {reservation_id} already exists with status '{existing_status}', pod_name='{pod_name}'")
+                    
+                    # If in terminal state, don't process again
+                    if existing_status in ["cancelled", "failed", "completed", "expired"]:
+                        logger.warning(
+                            f"Reservation {reservation_id} is in terminal state '{existing_status}', skipping processing")
+                        return  # Don't process terminal reservations
+                    
+                    # If pod_name is set, check if pod already exists
+                    if pod_name:
+                        try:
+                            # Initialize K8s client if not already done
+                            if not hasattr(globals().get('k8s_client'), 'CoreV1Api'):
+                                logger.info("Initializing K8s client for retry check...")
+                                from shared.k8s_client import get_k8s_client
+                                get_k8s_client()
+                            
+                            # Check if pod exists in Kubernetes
+                            from kubernetes import client
+                            from kubernetes.client.rest import ApiException
+                            k8s_client = client.CoreV1Api()
+                            
+                            try:
+                                pod = k8s_client.read_namespaced_pod(
+                                    name=pod_name,
+                                    namespace="gpu-dev"
+                                )
+                                logger.info(f"Pod {pod_name} already exists (phase: {pod.status.phase}), starting monitoring only")
+                                
+                                # Pod exists, just start monitoring it
+                                if reservation_id not in _monitoring_threads:
+                                    logger.info(f"Starting monitoring for existing pod {pod_name}")
+                                    monitor_stop_event = start_background_pod_monitoring(
+                                        k8s_client, pod_name, reservation_id
+                                    )
+                                    _monitoring_threads[reservation_id] = {
+                                        "pod_name": pod_name,
+                                        "stop_event": monitor_stop_event,
+                                    }
+                                else:
+                                    logger.info(f"Monitoring already active for {pod_name}")
+                                
+                                # Don't recreate, monitoring will handle status updates
+                                return
+                                
+                            except ApiException as e:
+                                if e.status == 404:
+                                    # Pod name is set but pod doesn't exist - partial failure
+                                    logger.warning(
+                                        f"Pod {pod_name} was recorded but doesn't exist in K8s - this is a partial failure from previous attempt")
+                                    logger.info("Clearing pod_name and retrying pod creation...")
+                                    
+                                    # Clear pod_name so we can retry
+                                    update_reservation_fields(reservation_id, pod_name=None)
+                                    # Fall through to normal processing
+                                else:
+                                    raise  # Re-raise non-404 errors
+                                    
+                        except Exception as check_error:
+                            logger.error(f"Error checking existing pod: {check_error}")
+                            # Fall through to normal processing on error
+                    
+                    # If we get here: either no pod_name, or pod doesn't exist (partial failure)
+                    # This is a retry where we need to continue/restart resource creation
+                    logger.info(f"Continuing processing for retry of reservation {reservation_id} (pod not yet created)")
+                else:
+                    # Create initial reservation record with pending status
+                    from datetime import datetime, timedelta
 
-                duration_hours = reservation_request.get("duration_hours", 8)
-                duration_float = float(duration_hours)
-                expires_at = (
-                    datetime.now(UTC) + timedelta(hours=duration_float)
-                ).isoformat()
+                    duration_hours = reservation_request.get("duration_hours", 8)
+                    duration_float = float(duration_hours)
+                    expires_at = (
+                        datetime.now(UTC) + timedelta(hours=duration_float)
+                    ).isoformat()
 
-                # PostgreSQL uses floats, not Decimal
-                duration_float_value = float(duration_hours)
+                    # PostgreSQL uses floats, not Decimal
+                    duration_float_value = float(duration_hours)
 
-                initial_record = {
-                    "reservation_id": reservation_id,
-                    "user_id": reservation_request.get("user_id"),
-                    "gpu_count": reservation_request.get("gpu_count", 1),
-                    "gpu_type": reservation_request.get("gpu_type", "a100"),
-                    "duration_hours": duration_float_value,
-                    "name": reservation_request.get(
-                        "name",
-                        f"{reservation_request.get('gpu_count', 1)}x {reservation_request.get('gpu_type', 'A100').upper()} reservation",
-                    ),
-                    "created_at": reservation_request.get(
-                        "created_at", datetime.now(UTC).isoformat()
-                    ),
-                    "status": "pending",
-                    "expires_at": expires_at,
-                }
+                    initial_record = {
+                        "reservation_id": reservation_id,
+                        "user_id": reservation_request.get("user_id"),
+                        "gpu_count": reservation_request.get("gpu_count", 1),
+                        "gpu_type": reservation_request.get("gpu_type", "a100"),
+                        "duration_hours": duration_float_value,
+                        "name": reservation_request.get(
+                            "name",
+                            f"{reservation_request.get('gpu_count', 1)}x {reservation_request.get('gpu_type', 'A100').upper()} reservation",
+                        ),
+                        "created_at": reservation_request.get(
+                            "created_at", datetime.now(UTC).isoformat()
+                        ),
+                        "status": "pending",
+                        "expires_at": expires_at,
+                    }
 
-                # Add github_user if provided
-                if reservation_request.get("github_user"):
-                    initial_record["github_user"] = reservation_request["github_user"]
+                    # Add github_user if provided
+                    if reservation_request.get("github_user"):
+                        initial_record["github_user"] = reservation_request["github_user"]
 
-                # Add Docker options if provided
-                if reservation_request.get("dockerfile"):
-                    initial_record["dockerfile_base64_data"] = reservation_request["dockerfile"]
-                if reservation_request.get("dockerimage"):
-                    initial_record["dockerimage"] = reservation_request["dockerimage"]
+                    # Add Docker options if provided
+                    if reservation_request.get("dockerfile"):
+                        initial_record["dockerfile_base64_data"] = reservation_request["dockerfile"]
+                    if reservation_request.get("dockerimage"):
+                        initial_record["dockerimage"] = reservation_request["dockerimage"]
 
-                # Store initial record using shared database function
-                from shared.reservation_db import create_reservation as create_reservation_db
-                create_reservation_db(initial_record)
+                    # Store initial record using shared database function
+                    from shared.reservation_db import create_reservation as create_reservation_db
+                    create_reservation_db(initial_record)
 
-                logger.info(
-                    f"Created initial reservation record: {reservation_id}")
+                    logger.info(
+                        f"Created initial reservation record: {reservation_id}")
 
             except Exception as record_error:
                 logger.error(
@@ -1904,9 +1993,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                     "preparing",
                     f"Found {available_gpus} available {gpu_type.upper()} GPUs - preparing resources",
                 )
-
-            # Create reservation
-            reservation_id = create_reservation(reservation_request)
+            
+            # Reservation already created in initial record above, just log it
             logger.info(f"Created reservation: {reservation_id}")
 
             # Allocate resources (K8s pod creation would go here)
@@ -2464,9 +2552,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         # to prevent race conditions with concurrent reservations
         if use_persistent_disk:
             try:
-                # Reserve the volume ID slot in DynamoDB immediately to prevent race conditions
-                update_reservation_fields(
-                    reservation_id, ebs_volume_reserved=True)
+                # Reserve the persistent disk slot
                 update_reservation_status(
                     reservation_id, "preparing", detailed_status="Reserving persistent disk slot")
                 logger.info(
@@ -5699,8 +5785,6 @@ def update_reservation_connection_info(
         # Add EBS persistent disk information if available
         if persistent_volume_id:
             update_fields["ebs_volume_id"] = persistent_volume_id
-            # Clear reservation flag once volume is attached
-            update_fields["ebs_volume_reserved"] = False
 
         if ebs_availability_zone:
             update_fields["ebs_availability_zone"] = ebs_availability_zone
@@ -6221,24 +6305,13 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
             status_updated_at = current_reservation.get("status_updated_at")
 
             # CRITICAL: If reservation has been cancelled or failed, don't override it
-            # Also check for cancellation markers (cancelled_at field exists)
-            cancelled_at = current_reservation.get("cancelled_at")
-            if current_status in ["cancelled", "failed"] or cancelled_at:
-                effective_status = current_status if current_status in [
-                    "cancelled", "failed"] else "cancelled"
+            if current_status in ["cancelled", "failed"]:
                 logger.info(
-                    f"Skipping pod status update for {pod_name} - reservation is {effective_status} (cancelled_at: {cancelled_at})")
-
-                # If status field doesn't match cancellation state, fix it
-                if current_status not in ["cancelled", "failed"] and cancelled_at:
-                    logger.info(
-                        f"Correcting status from '{current_status}' to 'cancelled' for reservation {reservation_id}")
-                    update_reservation_fields(
-                        reservation_id, status="cancelled")
+                    f"Skipping pod status update for {pod_name} - reservation is {current_status}")
 
                 return {
                     "phase": pod_phase,
-                    "display_message": f"Reservation {effective_status}",
+                    "display_message": f"Reservation {current_status}",
                     "has_errors": False,
                     "is_ready": False
                 }
@@ -6752,9 +6825,7 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
             now = datetime.now(UTC).isoformat()
             update_reservation_fields(
                 full_reservation_id,
-                status="cancelled",
-                cancelled_at=now,
-                reservation_ended=now,
+                status="cancelled"
             )
 
             if current_status == "active":

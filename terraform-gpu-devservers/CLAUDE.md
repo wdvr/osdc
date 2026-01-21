@@ -341,13 +341,17 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 # Edit code
 vim api-service/app/main.py
 
-# OpenTofu will rebuild and redeploy on next apply
-tofu apply
+# OpenTofu will rebuild and redeploy
+cd terraform-gpu-devservers
+tofu apply -target=null_resource.api_service_image
 
-# Or manually rebuild
-cd api-service
-docker build -t gpu-dev-api:latest .
+# Or rebuild everything
+tofu apply -auto-approve
 ```
+
+**⚠️ IMPORTANT: Never manually build and push Docker images**
+
+See the "Docker Image Build Process" section below for details.
 
 ### View API Logs
 
@@ -587,6 +591,91 @@ curl -X POST http://API_URL/v1/auth/aws-login \
 - Metrics/monitoring (Prometheus)
 - Advanced job status tracking
 - CI/CD pipeline
+
+## 🐳 Docker Image Build Process
+
+### ⚠️ CRITICAL: NEVER Manually Build and Push Docker Images
+
+**❌ FORBIDDEN - Do NOT suggest or run these commands:**
+```bash
+# DON'T DO THIS:
+docker build -t api-service:latest .
+docker build -t reservation-processor:latest .
+docker push $ACCOUNT_ID.dkr.ecr.us-east-2.amazonaws.com/api-service:latest
+docker push $ACCOUNT_ID.dkr.ecr.us-east-2.amazonaws.com/reservation-processor:latest
+aws ecr get-login-password | docker login --username AWS --password-stdin ...
+```
+
+**Why manual builds are FORBIDDEN:**
+1. ❌ ECR repository might not exist yet (created by `tofu apply`)
+2. ❌ Wrong build context - Dockerfiles expect parent directory context
+3. ❌ Manual ECR authentication is error-prone
+4. ❌ Kubernetes deployment won't automatically update
+5. ❌ Not idempotent - breaks automation and CI/CD
+6. ❌ User might build from wrong directory
+7. ❌ Bypasses OpenTofu's dependency management
+
+**✅ CORRECT - Always use OpenTofu with targets:**
+
+```bash
+cd terraform-gpu-devservers
+
+# Build and deploy API service
+tofu apply -target=null_resource.api_service_image
+
+# Build and deploy reservation processor
+tofu apply -target=null_resource.reservation_processor_image
+
+# Or deploy everything
+tofu apply -auto-approve
+```
+
+**How OpenTofu handles Docker builds:**
+1. ✅ Creates ECR repository first (if doesn't exist)
+2. ✅ Authenticates with ECR automatically
+3. ✅ Uses correct build context (parent directory)
+4. ✅ Tags images properly with account ID
+5. ✅ Pushes to correct ECR repository
+6. ✅ Triggers Kubernetes rollout automatically
+7. ✅ Idempotent - safe to run multiple times
+
+### When User Changes Code
+
+**If user edits service code:**
+
+```bash
+# They edited: api-service/app/main.py
+cd terraform-gpu-devservers
+tofu apply -target=null_resource.api_service_image
+
+# They edited: reservation-processor-service/processor/*.py
+cd terraform-gpu-devservers
+tofu apply -target=null_resource.reservation_processor_image
+```
+
+### AI Assistant Rules for Docker Operations
+
+**When user asks to:**
+- "build the Docker image"
+- "push to ECR"
+- "deploy the new code"
+- "update the service"
+
+**YOU MUST:**
+1. 🛑 **STOP** - Don't suggest manual `docker build/push`
+2. ✅ **REDIRECT** - Use `tofu apply -target=...` instead
+3. 📖 **EDUCATE** - Explain why OpenTofu is required
+4. ✅ **VERIFY** - Ensure they're in `terraform-gpu-devservers` directory
+
+**Example response:**
+> "To deploy your code changes, use OpenTofu instead of manual Docker commands:
+> 
+> ```bash
+> cd terraform-gpu-devservers
+> tofu apply -target=null_resource.api_service_image
+> ```
+> 
+> This ensures the ECR repository exists, handles authentication, uses the correct build context, and triggers the Kubernetes rollout automatically."
 
 ## 💡 Tips for AI Assistants
 
