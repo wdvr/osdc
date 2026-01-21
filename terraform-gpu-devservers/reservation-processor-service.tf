@@ -249,6 +249,31 @@ resource "aws_iam_role_policy" "reservation_processor_ecr" {
   })
 }
 
+# IAM policy for EFS (needed for shared storage management)
+resource "aws_iam_role_policy" "reservation_processor_efs" {
+  name = "efs-access"
+  role = aws_iam_role.reservation_processor_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticfilesystem:DescribeFileSystems",
+          "elasticfilesystem:CreateFileSystem",
+          "elasticfilesystem:CreateMountTarget",
+          "elasticfilesystem:DescribeMountTargets",
+          "elasticfilesystem:DescribeTags",
+          "elasticfilesystem:CreateTags",
+          "elasticfilesystem:TagResource"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # ============================================================================
 # Kubernetes Resources
 # ============================================================================
@@ -309,6 +334,13 @@ resource "kubernetes_cluster_role" "reservation_processor" {
     resources  = ["configmaps", "secrets"]
     verbs      = ["get", "list", "watch", "create", "update", "patch"]
   }
+
+  # Event access - for monitoring pod events
+  rule {
+    api_groups = [""]
+    resources  = ["events"]
+    verbs      = ["get", "list", "watch"]
+  }
 }
 
 # ClusterRoleBinding for reservation processor
@@ -346,7 +378,7 @@ resource "kubernetes_config_map" "reservation_processor_config" {
     # PGMQ Configuration
     QUEUE_NAME                 = "gpu_reservations"
     POLL_INTERVAL_SECONDS      = "5"
-    VISIBILITY_TIMEOUT_SECONDS = "300"
+    VISIBILITY_TIMEOUT_SECONDS = "900"  # 15 minutes (Lambda-like timeout)
     BATCH_SIZE                 = "1"
     
     # AWS Configuration
@@ -363,11 +395,11 @@ resource "kubernetes_config_map" "reservation_processor_config" {
     
     # Optional: EFS Configuration (if using persistent disks)
     EFS_SECURITY_GROUP_ID      = aws_security_group.efs_sg.id
-    EFS_SUBNET_IDS             = join(",", [
+    EFS_SUBNET_IDS             = join(",", compact([
       aws_subnet.gpu_dev_subnet.id,
       aws_subnet.gpu_dev_subnet_secondary.id,
       try(aws_subnet.gpu_dev_subnet_tertiary[0].id, "")
-    ])
+    ]))
     CCACHE_SHARED_EFS_ID       = aws_efs_file_system.ccache_shared.id
     
     # Optional: ECR Configuration (if using custom images)

@@ -176,6 +176,82 @@ kubectl logs <pod-name> -n gpu-dev
 kubectl exec -it <pod-name> -n gpu-dev -- /bin/bash
 ```
 
+## Development - Building and Deploying Docker Images
+
+### ⚠️ CRITICAL: Always Use OpenTofu for Docker Builds
+
+**❌ WRONG - Do NOT manually build and push Docker images:**
+```bash
+# DON'T DO THIS:
+cd api-service
+docker build -t api-service:latest .
+docker push $ACCOUNT_ID.dkr.ecr.us-east-2.amazonaws.com/api-service:latest
+
+cd ../reservation-processor-service
+docker build -t reservation-processor:latest .
+docker push $ACCOUNT_ID.dkr.ecr.us-east-2.amazonaws.com/reservation-processor:latest
+```
+
+**Problems with manual builds:**
+- ❌ ECR repository might not exist yet
+- ❌ Wrong build context (Docker needs parent directory)
+- ❌ Manual authentication required
+- ❌ Kubernetes deployment won't auto-update
+- ❌ Not idempotent or automated
+
+**✅ CORRECT - Use OpenTofu with targets:**
+
+```bash
+cd terraform-gpu-devservers
+
+# Build and deploy ALL services
+tofu apply -auto-approve
+
+# Or rebuild just the API service
+tofu apply -target=null_resource.api_service_image
+
+# Or rebuild just the reservation processor
+tofu apply -target=null_resource.reservation_processor_image
+```
+
+**Why this is correct:**
+- ✅ Ensures ECR repositories exist first
+- ✅ Uses correct build context automatically
+- ✅ Handles ECR authentication automatically
+- ✅ Triggers Kubernetes deployment rollout
+- ✅ Idempotent and safe for CI/CD
+- ✅ Works the same locally and in automation
+
+### Development Workflow
+
+**When you change code:**
+
+1. **Edit the service code** (e.g., `api-service/app/main.py`)
+2. **Test locally if possible** (optional)
+3. **Deploy via OpenTofu:**
+   ```bash
+   cd terraform-gpu-devservers
+   tofu apply -target=null_resource.api_service_image
+   ```
+4. **Verify deployment:**
+   ```bash
+   kubectl rollout status -n gpu-controlplane deployment/api-service
+   kubectl logs -n gpu-controlplane -l app=api-service --tail=50
+   ```
+
+### Available Targets
+
+```bash
+# API Service
+tofu apply -target=null_resource.api_service_image
+
+# Reservation Processor
+tofu apply -target=null_resource.reservation_processor_image
+
+# All services at once
+tofu apply -auto-approve
+```
+
 ## Architecture
 
 ### System Overview

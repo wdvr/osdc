@@ -73,10 +73,22 @@ def get_bearer_token() -> str:
 
 def setup_kubernetes_client() -> client.ApiClient:
     """
-    Build an ApiClient configured for EKS and attach a refresh hook that
-    keeps the Authorization header up to date. No locking (single-threaded Lambda).
+    Build an ApiClient configured for EKS.
+    If running in a Kubernetes pod (detected by service account token), use in-cluster config.
+    Otherwise (Lambda), use custom EKS token generation.
     """
     try:
+        # Check if running in a Kubernetes pod with service account
+        service_account_token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        if os.path.exists(service_account_token_path):
+            logger.info("Detected in-cluster environment, using service account")
+            from kubernetes import config as k8s_config
+            k8s_config.load_incluster_config()
+            api_client = client.ApiClient()
+            logger.info("Successfully initialized in-cluster Kubernetes client")
+            return api_client
+        
+        # Lambda/external environment - use custom EKS token generation
         logger.info(f"Creating EKS client for region {REGION}")
         eks = boto3.client("eks", region_name=REGION)
 
