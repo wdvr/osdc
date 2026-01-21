@@ -27,6 +27,32 @@ from fastapi import FastAPI, HTTPException, Query, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+# For retry metadata in PGMQ messages
+# Note: This would work if shared module is in PYTHONPATH
+# For now, we'll inline the function
+# from shared import create_message_metadata
+
+# ============================================================================
+# Retry Metadata Utilities
+# ============================================================================
+
+def create_message_metadata(max_retries: int = 3) -> dict[str, Any]:
+    """
+    Create initial message metadata for PGMQ messages.
+    
+    Args:
+        max_retries: Maximum number of retry attempts (default: 3)
+    
+    Returns:
+        Metadata dictionary to include in message
+    """
+    return {
+        "retry_count": 0,
+        "created_at": datetime.now(UTC).isoformat(),
+        "max_retries": max_retries
+    }
+
+
 # ============================================================================
 # Timezone Handling Utilities
 # ============================================================================
@@ -900,7 +926,9 @@ async def submit_job(
                 "command": job.command,
                 "submitted_at": datetime.now(UTC).isoformat(),
                 "created_at": datetime.now(UTC).isoformat(),
-                "status": "queued"
+                "status": "queued",
+                # Retry metadata for job orchestration
+                "_metadata": create_message_metadata()
             }
 
             # Send to PGMQ (queue name is validated at startup)
@@ -1159,6 +1187,8 @@ async def cancel_job(
                 "user_id": user_info["username"],  # Use username for consistency
                 "username": user_info["username"],
                 "requested_at": datetime.now(UTC).isoformat(),
+                # Retry metadata for job orchestration
+                "_metadata": create_message_metadata()
             }
             
             # Send to PGMQ (queue name is validated at startup)
@@ -1204,6 +1234,8 @@ async def extend_job(
                 "username": user_info["username"],
                 "extension_hours": request.extension_hours,
                 "requested_at": datetime.now(UTC).isoformat(),
+                # Retry metadata for job orchestration
+                "_metadata": create_message_metadata()
             }
             
             # Send to PGMQ (queue name is validated at startup)
@@ -1250,6 +1282,8 @@ async def enable_jupyter(
                 "user_id": user_info["username"],  # Use username for consistency
                 "username": user_info["username"],
                 "requested_at": datetime.now(UTC).isoformat(),
+                # Retry metadata for job orchestration
+                "_metadata": create_message_metadata()
             }
             
             # Send to PGMQ (queue name is validated at startup)
@@ -1293,6 +1327,8 @@ async def disable_jupyter(
                 "user_id": user_info["username"],  # Use username for consistency
                 "username": user_info["username"],
                 "requested_at": datetime.now(UTC).isoformat(),
+                # Retry metadata for job orchestration
+                "_metadata": create_message_metadata()
             }
             
             # Send to PGMQ (queue name is validated at startup)
@@ -1339,6 +1375,8 @@ async def add_user_to_job(
                 "username": user_info["username"],
                 "github_username": request.github_username,
                 "requested_at": datetime.now(UTC).isoformat(),
+                # Retry metadata for job orchestration
+                "_metadata": create_message_metadata()
             }
             
             # Send to PGMQ (queue name is validated at startup)
@@ -1730,7 +1768,9 @@ async def create_disk(
         "user_id": username,
         "disk_name": request.disk_name,
         "size_gb": request.size_gb,
-        "requested_at": requested_at.isoformat()
+        "requested_at": requested_at.isoformat(),
+        # Retry metadata for job orchestration
+        "_metadata": create_message_metadata()
     }
     
     try:
@@ -1782,7 +1822,9 @@ async def delete_disk(
         "user_id": username,
         "disk_name": disk_name,
         "delete_date": delete_date_str,
-        "requested_at": requested_at.isoformat()
+        "requested_at": requested_at.isoformat(),
+        # Retry metadata for job orchestration
+        "_metadata": create_message_metadata()
     }
     
     try:
