@@ -373,6 +373,15 @@ resource "kubernetes_job" "database_schema_migration" {
     kubernetes_config_map.database_fixtures,
   ]
 
+  # Wait for job to complete before continuing
+  wait_for_completion = true
+  
+  # Set timeouts for job completion
+  timeouts {
+    create = "10m"
+    update = "10m"
+  }
+
   metadata {
     # Include hash of all schema files in name to trigger re-run on changes
     name = "db-migration-${substr(md5(join("", [
@@ -386,6 +395,12 @@ resource "kubernetes_job" "database_schema_migration" {
   }
 
   spec {
+    # Retry failed migrations (up to 3 retries = 4 total attempts)
+    backoff_limit = 3
+    
+    # Clean up completed/failed jobs after 1 hour
+    ttl_seconds_after_finished = 3600
+    
     template {
       metadata {
         labels = {
@@ -518,18 +533,6 @@ resource "kubernetes_job" "database_schema_migration" {
         }
       }
     }
-
-    backoff_limit = 4
-
-    # Clean up completed jobs after 1 hour
-    ttl_seconds_after_finished = 3600
-  }
-
-  wait_for_completion = true
-
-  timeouts {
-    create = "5m"
-    update = "5m"
   }
 }
 
@@ -571,6 +574,8 @@ resource "kubernetes_persistent_volume_claim" "postgres_replica_pvc" {
     kubernetes_namespace.controlplane,
     kubernetes_storage_class.gp3,  # Storage class defined in monitoring.tf
   ]
+
+  wait_until_bound = false  # PVC uses WaitForFirstConsumer - will bind when pod is created
 
   metadata {
     name      = "postgres-replica-data"

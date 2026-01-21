@@ -214,11 +214,17 @@ resource "kubernetes_deployment" "api_service" {
     kubernetes_namespace.controlplane,
     kubernetes_stateful_set.postgres_primary,
     kubernetes_service.postgres_primary,
-    kubernetes_job.database_schema_migration,  # Wait for schema to be created
+    kubernetes_job.database_schema_migration,  # Wait for schema to be created (job completes before this starts)
     null_resource.api_service_build,
   ]
 
-  wait_for_rollout = false
+  # Wait for deployment to be ready before considering it complete
+  wait_for_rollout = true
+  
+  timeouts {
+    create = "10m"
+    update = "10m"
+  }
 
   metadata {
     name      = "api-service"

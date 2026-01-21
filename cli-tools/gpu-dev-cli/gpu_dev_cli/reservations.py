@@ -1924,6 +1924,10 @@ class ReservationManager:
                                         # User approved Include - show simple commands
                                         console.print(
                                             f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh {pod_name}[/green]")
+                                        # Also show full command with IP:port
+                                        ssh_with_forwarding = _add_agent_forwarding_to_ssh(ssh_command)
+                                        console.print(
+                                            f"[dim]   Direct:[/dim] {ssh_with_forwarding}")
                                         # Create clickable VS Code link
                                         vscode_url = _make_vscode_link(pod_name)
                                         vscode_command = f"code --remote ssh-remote+{pod_name} /home/dev"
@@ -1939,6 +1943,10 @@ class ReservationManager:
                                         # User declined Include - show commands with -F flag
                                         console.print(
                                             f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh -F {config_path} {pod_name}[/green]")
+                                        # Also show full command with IP:port
+                                        ssh_with_forwarding = _add_agent_forwarding_to_ssh(ssh_command)
+                                        console.print(
+                                            f"[dim]   Direct:[/dim] {ssh_with_forwarding}")
                                         console.print(
                                             f"[cyan]💻 VS Code/Cursor:[/cyan] Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config and ~/.cursor/ssh_config")
                                         console.print(

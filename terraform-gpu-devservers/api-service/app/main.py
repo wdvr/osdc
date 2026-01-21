@@ -204,20 +204,22 @@ async def lifespan(app: FastAPI):
                 "This should be installed during database initialization."
             )
 
-        # Create PGMQ queues if they don't exist
+        # Verify PGMQ queues exist (created by schema/007_pgmq_queues.sql)
         # Queue names are validated at startup (alphanumeric + underscore only)
-        # PGMQ functions require queue name as a string parameter, not an identifier
-        try:
-            await conn.execute("SELECT pgmq.create($1)", QUEUE_NAME)
-        except asyncpg.exceptions.DuplicateObjectError:
-            # Queue already exists, that's fine
-            pass
+        existing_queues = await conn.fetch(
+            "SELECT queue_name FROM pgmq.list_queues()"
+        )
+        existing_queue_names = {row['queue_name'] for row in existing_queues}
         
-        try:
-            await conn.execute("SELECT pgmq.create($1)", DISK_QUEUE_NAME)
-        except asyncpg.exceptions.DuplicateObjectError:
-            # Queue already exists, that's fine
-            pass
+        required_queues = {QUEUE_NAME, DISK_QUEUE_NAME}
+        missing_queues = required_queues - existing_queue_names
+        
+        if missing_queues:
+            raise RuntimeError(
+                f"Required PGMQ queues not found: {', '.join(missing_queues)}. "
+                f"These should be created by database schema (007_pgmq_queues.sql). "
+                f"Existing queues: {', '.join(existing_queue_names) if existing_queue_names else 'none'}"
+            )
 
     yield
 
