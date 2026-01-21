@@ -164,279 +164,47 @@ async def lifespan(app: FastAPI):
         command_timeout=60
     )
 
-    # Initialize database schema and PGMQ queue
+    # Verify database schema exists (do not create it - managed by Terraform/K8s Job)
     async with db_pool.acquire() as conn:
-        # Create users table if not exists
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS api_users (
-                user_id SERIAL PRIMARY KEY,
-                username VARCHAR(255) UNIQUE NOT NULL,
-                email VARCHAR(255),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT true
+        # List of required tables that must exist
+        required_tables = [
+            'api_users',
+            'api_keys',
+            'reservations',
+            'disks',
+            'gpu_types'
+        ]
+        
+        # Check that all required tables exist
+        for table_name in required_tables:
+            exists = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = $1
+                )
+                """,
+                table_name
             )
-        """)
-
-        # Create API keys table
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS api_keys (
-                key_id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES api_users(user_id)
-                    ON DELETE CASCADE,
-                key_hash VARCHAR(128) NOT NULL UNIQUE,
-                key_prefix VARCHAR(16) NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP WITH TIME ZONE,
-                last_used_at TIMESTAMP WITH TIME ZONE,
-                is_active BOOLEAN DEFAULT true,
-                description TEXT
+            if not exists:
+                raise RuntimeError(
+                    f"Required table '{table_name}' does not exist. "
+                    f"Database schema must be initialized before starting API service. "
+                    f"This is typically done via Kubernetes Job during infrastructure deployment."
+                )
+        
+        # Verify PGMQ extension is installed
+        pgmq_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pgmq')"
+        )
+        if not pgmq_exists:
+            raise RuntimeError(
+                "PGMQ extension is not installed. "
+                "This should be installed during database initialization."
             )
-        """)
 
-        # Create indexes for faster lookups
-        # Index on api_keys.key_hash (for API key verification)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_api_keys_hash
-            ON api_keys(key_hash)
-            WHERE is_active = true
-        """)
-
-        # Index on api_keys.user_id (for listing user's keys)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_api_keys_user_id
-            ON api_keys(user_id)
-            WHERE is_active = true
-        """)
-
-        # Index on api_keys.expires_at (for cleanup queries)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at
-            ON api_keys(expires_at)
-            WHERE is_active = true AND expires_at IS NOT NULL
-        """)
-
-        # Index on api_users.username (for login lookups)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_api_users_username
-            ON api_users(username)
-        """)
-
-        # Create reservations table if not exists (MUST be before disks due to FK)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS reservations (
-                reservation_id VARCHAR(255) PRIMARY KEY,
-                user_id VARCHAR(255) NOT NULL,
-                status VARCHAR(50) NOT NULL,
-                gpu_type VARCHAR(50),
-                gpu_count INTEGER,
-                instance_type VARCHAR(100),
-                duration_hours FLOAT NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                launched_at TIMESTAMP WITH TIME ZONE,
-                expires_at TIMESTAMP WITH TIME ZONE,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                name VARCHAR(255),
-                github_user VARCHAR(255),
-                pod_name VARCHAR(255),
-                namespace VARCHAR(100) DEFAULT 'default',
-                node_ip VARCHAR(50),
-                node_port INTEGER,
-                ssh_command TEXT,
-                jupyter_enabled BOOLEAN DEFAULT FALSE,
-                jupyter_url TEXT,
-                jupyter_port INTEGER,
-                jupyter_token VARCHAR(255),
-                jupyter_error TEXT,
-                ebs_volume_id VARCHAR(255),
-                disk_name VARCHAR(255),
-                failure_reason TEXT,
-                current_detailed_status TEXT,
-                status_history JSONB DEFAULT '[]'::jsonb,
-                pod_logs TEXT,
-                warning TEXT,
-                secondary_users JSONB DEFAULT '[]'::jsonb,
-                is_multinode BOOLEAN DEFAULT FALSE,
-                master_reservation_id VARCHAR(255),
-                node_index INTEGER,
-                total_nodes INTEGER,
-                cli_version VARCHAR(50)
-            )
-        """)
-
-        # Create indexes for reservations table
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reservations_user_id
-            ON reservations(user_id)
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reservations_user_status
-            ON reservations(user_id, status)
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reservations_status
-            ON reservations(status)
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reservations_gpu_type_status
-            ON reservations(gpu_type, status)
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reservations_created_at
-            ON reservations(created_at DESC)
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reservations_expires_at
-            ON reservations(expires_at)
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reservations_master_id
-            ON reservations(master_reservation_id)
-            WHERE master_reservation_id IS NOT NULL
-        """)
-
-        # Create trigger function for reservations updated_at
-        await conn.execute("""
-            CREATE OR REPLACE FUNCTION update_reservations_updated_at()
-            RETURNS TRIGGER AS $$
-            BEGIN
-                NEW.updated_at = NOW();
-                RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql
-        """)
-
-        # Create trigger for reservations
-        await conn.execute("""
-            DROP TRIGGER IF EXISTS trigger_reservations_updated_at ON reservations
-        """)
-        await conn.execute("""
-            CREATE TRIGGER trigger_reservations_updated_at
-            BEFORE UPDATE ON reservations
-            FOR EACH ROW
-            EXECUTE FUNCTION update_reservations_updated_at()
-        """)
-
-        # Create disks table if not exists (AFTER reservations due to FK)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS disks (
-                disk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                disk_name TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                size_gb INTEGER,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                last_used TIMESTAMP WITH TIME ZONE,
-                in_use BOOLEAN DEFAULT FALSE,
-                reservation_id VARCHAR(255) REFERENCES reservations(reservation_id) ON DELETE SET NULL,
-                is_backing_up BOOLEAN DEFAULT FALSE,
-                is_deleted BOOLEAN DEFAULT FALSE,
-                delete_date DATE,
-                snapshot_count INTEGER DEFAULT 0,
-                pending_snapshot_count INTEGER DEFAULT 0,
-                ebs_volume_id TEXT,
-                last_snapshot_at TIMESTAMP WITH TIME ZONE,
-                operation_id UUID,
-                operation_status TEXT,
-                operation_error TEXT,
-                latest_snapshot_content_s3 TEXT,
-                last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                UNIQUE(user_id, disk_name)
-            )
-        """)
-
-        # Create indexes for disks table
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_disks_user_id ON disks (user_id)
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_disks_in_use
-            ON disks (in_use) WHERE in_use = true
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_disks_is_deleted
-            ON disks (is_deleted) WHERE is_deleted = true
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_disks_operation_id
-            ON disks (operation_id) WHERE operation_id IS NOT NULL
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_disks_reservation_id
-            ON disks (reservation_id) WHERE reservation_id IS NOT NULL
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_disks_delete_date
-            ON disks (delete_date) WHERE delete_date IS NOT NULL
-        """)
-
-        # Create trigger function for disks table
-        await conn.execute("""
-            CREATE OR REPLACE FUNCTION update_disks_last_updated_column()
-            RETURNS TRIGGER AS $$
-            BEGIN
-                NEW.last_updated = NOW();
-                RETURN NEW;
-            END;
-            $$ language 'plpgsql'
-        """)
-
-        # Create trigger for disks table
-        await conn.execute("""
-            DROP TRIGGER IF EXISTS update_disks_last_updated ON disks
-        """)
-        await conn.execute("""
-            CREATE TRIGGER update_disks_last_updated
-            BEFORE UPDATE ON disks
-            FOR EACH ROW
-            EXECUTE FUNCTION update_disks_last_updated_column()
-        """)
-
-        # Create gpu_types table for centralized GPU configuration
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS gpu_types (
-                gpu_type VARCHAR(50) PRIMARY KEY,
-                instance_type VARCHAR(100) NOT NULL,
-                max_gpus INTEGER NOT NULL,
-                cpus INTEGER NOT NULL,
-                memory_gb INTEGER NOT NULL,
-                total_cluster_gpus INTEGER DEFAULT 0,
-                max_per_node INTEGER,
-                is_active BOOLEAN DEFAULT true,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                description TEXT
-            )
-        """)
-
-        # Create index for active GPU types
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_gpu_types_active
-            ON gpu_types(is_active)
-            WHERE is_active = true
-        """)
-
-        # Create trigger function for gpu_types table
-        await conn.execute("""
-            CREATE OR REPLACE FUNCTION update_gpu_types_updated_at_column()
-            RETURNS TRIGGER AS $$
-            BEGIN
-                NEW.updated_at = NOW();
-                RETURN NEW;
-            END;
-            $$ language 'plpgsql'
-        """)
-
-        # Create trigger for gpu_types table
-        await conn.execute("""
-            DROP TRIGGER IF EXISTS update_gpu_types_updated_at ON gpu_types
-        """)
-        await conn.execute("""
-            CREATE TRIGGER update_gpu_types_updated_at
-            BEFORE UPDATE ON gpu_types
-            FOR EACH ROW
-            EXECUTE FUNCTION update_gpu_types_updated_at_column()
-        """)
-
-        # Create PGMQ queues if not exists
+        # Create PGMQ queues if they don't exist
         # Queue names are validated at startup (alphanumeric + underscore only)
         # PGMQ functions require queue name as a string parameter, not an identifier
         try:
