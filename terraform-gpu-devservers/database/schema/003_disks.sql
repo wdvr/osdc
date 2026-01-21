@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS disks (
     disk_name TEXT NOT NULL,
     user_id TEXT NOT NULL,
     size_gb INTEGER,
+    disk_size TEXT,  -- Human-readable disk usage from du -sh (e.g., "1.2G")
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     last_used TIMESTAMP WITH TIME ZONE,
     in_use BOOLEAN DEFAULT FALSE,
