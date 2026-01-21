@@ -214,6 +214,7 @@ resource "kubernetes_deployment" "api_service" {
     kubernetes_namespace.controlplane,
     kubernetes_stateful_set.postgres_primary,
     kubernetes_service.postgres_primary,
+    kubernetes_job.database_schema_migration,  # Wait for schema to be created
     null_resource.api_service_build,
   ]
 

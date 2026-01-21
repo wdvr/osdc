@@ -326,6 +326,213 @@ resource "kubernetes_config_map" "postgres_init_script" {
   }
 }
 
+# ConfigMap for database schema files
+resource "kubernetes_config_map" "database_schema" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "database-schema"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "postgres"
+    }
+  }
+
+  # Load all SQL files from database/schema directory
+  data = {
+    for file in fileset("${path.module}/database/schema", "*.sql") :
+    file => file("${path.module}/database/schema/${file}")
+  }
+}
+
+# ConfigMap for database fixture files
+resource "kubernetes_config_map" "database_fixtures" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "database-fixtures"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "postgres"
+    }
+  }
+
+  # Load all SQL files from database/fixtures directory
+  data = {
+    for file in fileset("${path.module}/database/fixtures", "*.sql") :
+    file => file("${path.module}/database/fixtures/${file}")
+  }
+}
+
+# Job for database schema migration
+# Name includes hash of schema files to trigger re-migration on changes
+resource "kubernetes_job" "database_schema_migration" {
+  depends_on = [
+    kubernetes_stateful_set.postgres_primary,
+    kubernetes_config_map.database_schema,
+    kubernetes_config_map.database_fixtures,
+  ]
+
+  metadata {
+    # Include hash of all schema files in name to trigger re-run on changes
+    name = "db-migration-${substr(md5(join("", [
+      for f in sort(fileset("${path.module}/database/schema", "*.sql")) :
+      filemd5("${path.module}/database/schema/${f}")
+    ])), 0, 8)}"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "database-migration"
+    }
+  }
+
+  spec {
+    template {
+      metadata {
+        labels = {
+          app = "database-migration"
+        }
+      }
+
+      spec {
+        restart_policy = "OnFailure"
+
+        # Wait for postgres to be ready
+        init_container {
+          name  = "wait-for-postgres"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
+
+          command = ["/bin/bash", "-c"]
+          args = [<<-EOT
+            echo "Waiting for PostgreSQL to be ready..."
+            until pg_isready -h postgres-primary -U gpudev -d gpudev; do
+              echo "PostgreSQL is unavailable - sleeping"
+              sleep 2
+            done
+            echo "PostgreSQL is ready!"
+          EOT
+          ]
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret.postgres_credentials.metadata[0].name
+            }
+          }
+        }
+
+        container {
+          name  = "migrate"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
+
+          command = ["/bin/bash", "-c"]
+          args = [<<-EOT
+            set -e
+            
+            echo "=========================================="
+            echo "Database Schema Migration"
+            echo "=========================================="
+            echo ""
+            
+            # Run schema files in order
+            echo "Applying schema files..."
+            for file in $(ls /schema/*.sql | sort); do
+              if [ -f "$file" ]; then
+                echo "  → $(basename $file)"
+                PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                  -h postgres-primary \
+                  -U "$POSTGRES_USER" \
+                  -d "$POSTGRES_DB" \
+                  -v ON_ERROR_STOP=1 \
+                  -f "$file" || {
+                    echo "ERROR: Failed to apply $(basename $file)"
+                    exit 1
+                  }
+              fi
+            done
+            
+            echo ""
+            echo "Applying fixture data..."
+            
+            # Run fixtures in order
+            for file in $(ls /fixtures/*.sql | sort); do
+              if [ -f "$file" ]; then
+                echo "  → $(basename $file)"
+                PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                  -h postgres-primary \
+                  -U "$POSTGRES_USER" \
+                  -d "$POSTGRES_DB" \
+                  -v ON_ERROR_STOP=1 \
+                  -f "$file" || {
+                    echo "ERROR: Failed to apply $(basename $file)"
+                    exit 1
+                  }
+              fi
+            done
+            
+            echo ""
+            echo "=========================================="
+            echo "Migration completed successfully!"
+            echo "=========================================="
+          EOT
+          ]
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret.postgres_credentials.metadata[0].name
+            }
+          }
+
+          volume_mount {
+            name       = "schema"
+            mount_path = "/schema"
+          }
+
+          volume_mount {
+            name       = "fixtures"
+            mount_path = "/fixtures"
+          }
+
+          resources {
+            requests = {
+              cpu    = "100m"
+              memory = "128Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+          }
+        }
+
+        volume {
+          name = "schema"
+          config_map {
+            name = kubernetes_config_map.database_schema.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "fixtures"
+          config_map {
+            name = kubernetes_config_map.database_fixtures.metadata[0].name
+          }
+        }
+      }
+    }
+
+    backoff_limit = 4
+
+    # Clean up completed jobs after 1 hour
+    ttl_seconds_after_finished = 3600
+  }
+
+  wait_for_completion = true
+
+  timeouts {
+    create = "5m"
+    update = "5m"
+  }
+}
+
 # PersistentVolumeClaim for PostgreSQL primary
 resource "kubernetes_persistent_volume_claim" "postgres_primary_pvc" {
   depends_on = [
