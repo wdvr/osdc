@@ -148,6 +148,84 @@ def get_disk_by_id(disk_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def try_acquire_disk(user_id: str, disk_name: str, reservation_id: str) -> tuple[bool, str]:
+    """
+    Atomically try to acquire a disk for exclusive use.
+    
+    Uses SELECT FOR UPDATE to lock the row and check availability in a single
+    atomic transaction, preventing race conditions where multiple reservations
+    could try to claim the same disk simultaneously.
+    
+    Args:
+        user_id: The user ID
+        disk_name: The disk name
+        reservation_id: The reservation ID trying to acquire the disk
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+        - (True, "Disk acquired") if successfully acquired
+        - (False, error_message) if disk is unavailable or error occurred
+    """
+    try:
+        from .db_pool import get_db_transaction
+        
+        with get_db_transaction() as conn:
+            with conn.cursor() as cur:
+                # Lock row and check availability in single atomic operation
+                # NOWAIT ensures we fail fast if another process holds the lock
+                try:
+                    cur.execute("""
+                        SELECT in_use, reservation_id as current_reservation, 
+                               is_deleted, is_backing_up
+                        FROM disks
+                        WHERE user_id = %s AND disk_name = %s
+                        FOR UPDATE NOWAIT
+                    """, (user_id, disk_name))
+                    
+                    disk = cur.fetchone()
+                    
+                    if not disk:
+                        return False, f"Disk '{disk_name}' not found"
+                    
+                    # Check if disk is deleted
+                    if disk['is_deleted']:
+                        return False, f"Disk '{disk_name}' has been deleted"
+                    
+                    # Check if disk is already in use
+                    if disk['in_use']:
+                        current_res = disk['current_reservation'] or 'unknown'
+                        return False, f"Disk '{disk_name}' is currently in use by reservation {current_res}"
+                    
+                    # Check if disk is backing up (not safe to attach)
+                    if disk['is_backing_up']:
+                        return False, f"Disk '{disk_name}' is currently backing up, please try again later"
+                    
+                    # Disk is available - claim it atomically
+                    cur.execute("""
+                        UPDATE disks
+                        SET in_use = TRUE, 
+                            reservation_id = %s, 
+                            last_used = %s
+                        WHERE user_id = %s AND disk_name = %s
+                    """, (reservation_id, datetime.now(UTC), user_id, disk_name))
+                    
+                    logger.info(f"Acquired disk '{disk_name}' for reservation {reservation_id}")
+                    # Commit happens automatically on context exit
+                    return True, "Disk acquired"
+                    
+                except Exception as lock_error:
+                    # Check if it's a lock wait error
+                    if hasattr(lock_error, 'pgcode'):
+                        # 55P03 = lock_not_available
+                        if lock_error.pgcode == '55P03':
+                            return False, f"Disk '{disk_name}' is locked by another process, please try again"
+                    raise  # Re-raise if it's a different error
+                    
+    except Exception as e:
+        logger.error(f"Error acquiring disk '{disk_name}' for user {user_id}: {e}", exc_info=True)
+        return False, f"Error acquiring disk: {str(e)}"
+
+
 def update_disk(user_id: str, disk_name: str, updates: Dict[str, Any]) -> bool:
     """
     Update a disk with the provided field updates.

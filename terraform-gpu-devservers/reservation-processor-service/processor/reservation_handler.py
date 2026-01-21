@@ -30,6 +30,7 @@ from shared import (
     list_reservations_by_user,
     list_reservations_by_status,
     append_status_history,
+    add_secondary_user_atomic,
     list_multinode_reservations,
     update_reservation_status,
     # Disk operations
@@ -39,6 +40,7 @@ from shared import (
     mark_disk_in_use,
     mark_disk_deleted,
     list_disks_by_user,
+    try_acquire_disk,
 )
 from shared.snapshot_utils import (
     create_pod_shutdown_snapshot, 
@@ -1354,6 +1356,7 @@ def coordinate_multinode_reservation(master_reservation_id: str, total_nodes: in
             # Execute all nodes in parallel
             success_count = 0
             failed_nodes = []
+            successful_node_ids = []
 
             with ThreadPoolExecutor(max_workers=min(total_nodes, 4)) as executor:
                 # Submit all node processing tasks
@@ -1367,6 +1370,7 @@ def coordinate_multinode_reservation(master_reservation_id: str, total_nodes: in
                     success, reservation_id, node_index = future.result()
                     if success:
                         success_count += 1
+                        successful_node_ids.append(reservation_id)
                     else:
                         failed_nodes.append(
                             f"{reservation_id} (node {node_index+1})")
@@ -1380,6 +1384,52 @@ def coordinate_multinode_reservation(master_reservation_id: str, total_nodes: in
                 logger.error(
                     f"✗ Failed to process all nodes ({success_count}/{total_nodes} succeeded)")
                 logger.error(f"Failed nodes: {', '.join(failed_nodes)}")
+                
+                # CRITICAL: Clean up resources for nodes that succeeded before failing all
+                logger.info(f"Cleaning up {len(successful_node_ids)} successfully created nodes")
+                for success_rid in successful_node_ids:
+                    try:
+                        logger.info(f"Cleaning up partially created node {success_rid}")
+                        reservation = get_reservation(success_rid)
+                        
+                        if not reservation:
+                            logger.warning(f"Could not find reservation {success_rid} for cleanup")
+                            continue
+                        
+                        user_id = reservation.get('user_id')
+                        
+                        # Delete pod/service if created
+                        pod_name = reservation.get('pod_name')
+                        if pod_name:
+                            try:
+                                logger.info(f"Deleting pod {pod_name}")
+                                cleanup_pod_resources(pod_name)
+                            except Exception as pod_cleanup_err:
+                                logger.error(f"Failed to delete pod {pod_name}: {pod_cleanup_err}")
+                        
+                        # Release disk if attached
+                        disk_name = reservation.get('disk_name')
+                        if disk_name and user_id:
+                            try:
+                                logger.info(f"Releasing disk {disk_name}")
+                                mark_disk_in_use(user_id, disk_name, False)
+                            except Exception as disk_cleanup_err:
+                                logger.error(f"Failed to release disk {disk_name}: {disk_cleanup_err}")
+                        
+                        # Delete domain mapping if created
+                        domain_name = reservation.get('domain_name')
+                        if domain_name:
+                            try:
+                                from shared.dns_utils import delete_domain_mapping
+                                logger.info(f"Deleting domain mapping {domain_name}")
+                                delete_domain_mapping(domain_name)
+                            except Exception as domain_cleanup_err:
+                                logger.error(f"Failed to delete domain mapping: {domain_cleanup_err}")
+                                
+                    except Exception as cleanup_err:
+                        logger.error(f"Error during cleanup of node {success_rid}: {cleanup_err}")
+                
+                # Now fail all nodes
                 fail_all_multinode_reservations(
                     master_reservation_id, f"Partial processing failure ({success_count}/{total_nodes})")
                 return False
@@ -1461,33 +1511,85 @@ def process_multinode_individual_node(message_body: dict) -> bool:
 
 
 def acquire_multinode_lock(master_reservation_id: str, ttl_seconds: int = 300) -> bool:
-    """Acquire a best-effort coordination lock using the reservations table.
-    Uses a conditional put on a special lock item keyed by reservation_id = lock:<master_id>.
-    Returns True if acquired, False if already held."""
+    """
+    Acquire coordination lock using atomic INSERT ... ON CONFLICT.
+    
+    This provides proper distributed locking without race conditions:
+    - Uses PostgreSQL's atomic INSERT ... ON CONFLICT for test-and-set
+    - Handles stale lock cleanup (locks older than TTL)
+    - Returns True if lock acquired, False if held by another process
+    
+    Args:
+        master_reservation_id: The master reservation ID to lock
+        ttl_seconds: Lock TTL in seconds (default: 300)
+    
+    Returns:
+        True if lock acquired, False otherwise
+    """
     try:
         lock_id = f"lock:{master_reservation_id}"
-
-        # Minimal lock item; include numeric expires_at for stale lock takeover and optional TTL
-        now_epoch = int(time.time())
-        expires_at = now_epoch + ttl_seconds
+        now_ts = datetime.now(UTC)
+        expires_at_ts = now_ts + timedelta(seconds=ttl_seconds)
         
-        # Use create_reservation for lock entries
-        # Note: PostgreSQL doesn't have conditional expressions like DynamoDB
-        # We'll handle the lock logic with try/except
-        lock_item = {
-            "reservation_id": lock_id,
-            "lock_owner": "coordinator",
-            "master_reservation_id": master_reservation_id,
-            "created_at": datetime.now(UTC).isoformat(),
-            "expires_at": expires_at,  # epoch seconds
-            "type": "lock",
-        }
-        create_reservation(lock_item)
-        logger.info(f"Acquired coordinator lock {lock_id}")
-        return True
+        with get_db_cursor() as cur:
+            # STEP 1: Try atomic INSERT with ON CONFLICT DO NOTHING
+            # This is the PostgreSQL equivalent of DynamoDB's conditional put
+            cur.execute("""
+                INSERT INTO reservations (
+                    reservation_id, user_id, status, created_at, expires_at,
+                    duration_hours
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (reservation_id) DO NOTHING
+            """, (lock_id, 'system', 'lock', now_ts, expires_at_ts, 0.0))
+            
+            # If we inserted, we got the lock
+            if cur.rowcount == 1:
+                logger.info(f"Acquired coordinator lock {lock_id}")
+                return True
+            
+            # STEP 2: Lock exists - check if it's stale
+            cur.execute("""
+                SELECT expires_at FROM reservations 
+                WHERE reservation_id = %s
+            """, (lock_id,))
+            row = cur.fetchone()
+            
+            if row:
+                # Handle both datetime and int types for expires_at
+                expires_at = row['expires_at']
+                
+                # Convert to datetime if it's an integer (epoch seconds)
+                if isinstance(expires_at, int):
+                    expires_at = datetime.fromtimestamp(expires_at, tz=UTC)
+                
+                # Check if lock is stale
+                if expires_at < now_ts:
+                    logger.info(f"Lock {lock_id} is stale (expired at {expires_at}), attempting takeover")
+                    
+                    # STEP 3: Try to steal stale lock atomically
+                    # Use WHERE clause to ensure we only update if still expired
+                    cur.execute("""
+                        UPDATE reservations 
+                        SET created_at = %s, expires_at = %s
+                        WHERE reservation_id = %s AND expires_at < %s
+                    """, (now_ts, expires_at_ts, lock_id, now_ts))
+                    
+                    if cur.rowcount == 1:
+                        logger.info(f"Acquired stale lock {lock_id}")
+                        return True
+                    else:
+                        logger.info(f"Another process acquired stale lock {lock_id} first")
+                        return False
+                else:
+                    logger.info(f"Lock {lock_id} held by another process (expires at {expires_at})")
+                    return False
+            else:
+                # Lock disappeared between queries - rare race condition
+                logger.warning(f"Lock {lock_id} disappeared, retrying")
+                return False
+                
     except Exception as e:
-        # ConditionalCheckFailedException -> someone else holds the lock
-        logger.info(f"Could not acquire lock for {master_reservation_id}: {e}")
+        logger.error(f"Error acquiring lock for {master_reservation_id}: {e}", exc_info=True)
         return False
 
 
@@ -7094,29 +7196,16 @@ EOF
             # Update reservation with secondary user
             current_timestamp = int(time.time())
 
-            # Get current secondary users list
+            # Add secondary user atomically (no race condition)
             try:
-                reservation_item = get_reservation(reservation_id)
-                current_secondary_users = []
-                if reservation_item:
-                    current_secondary_users = reservation_item.get("secondary_users", [])
-
-                # Add new user if not already present
-                if github_username not in current_secondary_users:
-                    updated_secondary_users = current_secondary_users + [
-                        github_username
-                    ]
-
-                    update_reservation_fields(
-                        reservation_id,
-                        secondary_users=updated_secondary_users,
-                    )
+                success = add_secondary_user_atomic(reservation_id, github_username)
+                if success:
                     logger.info(
-                        f"Updated reservation {reservation_id} with secondary user {github_username}"
+                        f"Added secondary user {github_username} to reservation {reservation_id}"
                     )
                 else:
-                    logger.info(
-                        f"User {github_username} already in secondary users list for reservation {reservation_id}"
+                    logger.warning(
+                        f"Failed to add secondary user {github_username} to reservation {reservation_id}"
                     )
 
             except Exception as db_error:

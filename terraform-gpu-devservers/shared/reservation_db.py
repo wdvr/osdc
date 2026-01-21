@@ -328,6 +328,47 @@ def append_status_history(reservation_id: str, status_entry: Dict[str, Any]) -> 
         return False
 
 
+def add_secondary_user_atomic(reservation_id: str, username: str) -> bool:
+    """
+    Atomically add a secondary user to the reservation.
+    
+    Uses PostgreSQL's JSONB operators for atomic append without read-modify-write,
+    preventing race conditions when multiple users are added simultaneously.
+    Only adds the user if not already present.
+    
+    Args:
+        reservation_id: The reservation ID
+        username: The username to add
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        with get_db_cursor() as cur:
+            # Use JSONB ? operator to check if user exists, then conditionally append
+            # This is atomic - no race condition possible
+            cur.execute("""
+                UPDATE reservations
+                SET secondary_users = CASE
+                    WHEN COALESCE(secondary_users, '[]'::jsonb) ? %s
+                    THEN secondary_users  -- User already exists, don't add
+                    ELSE COALESCE(secondary_users, '[]'::jsonb) || %s::jsonb  -- Add user
+                END
+                WHERE reservation_id = %s
+            """, (username, json.dumps([username]), reservation_id))
+            
+            if cur.rowcount > 0:
+                logger.info(f"Added secondary user {username} to reservation {reservation_id}")
+                return True
+            else:
+                logger.warning(f"Reservation {reservation_id} not found")
+                return False
+            
+    except Exception as e:
+        logger.error(f"Error adding secondary user to {reservation_id}: {e}", exc_info=True)
+        return False
+
+
 def list_multinode_reservations(master_reservation_id: str) -> List[Dict[str, Any]]:
     """
     Get all nodes in a multinode reservation.
@@ -415,10 +456,14 @@ def update_reservation_status(
     new_status: str, 
     detailed_status: Optional[str] = None,
     failure_reason: Optional[str] = None,
-    add_to_history: bool = True
+    add_to_history: bool = True,
+    force: bool = False
 ) -> bool:
     """
-    Update reservation status and optionally add to status history.
+    Update reservation status with protection for terminal states.
+    
+    Terminal states (cancelled, failed) cannot be overwritten unless force=True.
+    This prevents race conditions where status updates overwrite cancellations.
     
     Args:
         reservation_id: The reservation ID
@@ -426,24 +471,82 @@ def update_reservation_status(
         detailed_status: Optional detailed status message
         failure_reason: Optional failure reason
         add_to_history: Whether to add entry to status_history
+        force: If True, allow overwriting terminal states (use with caution!)
     
     Returns:
         True if successful, False otherwise
     """
     try:
-        updates = {'status': new_status}
+        # Terminal states that should not be overwritten
+        TERMINAL_STATES = ['cancelled', 'failed']
+        
+        # Build the update
+        set_clauses = []
+        params = []
+        
+        set_clauses.append("status = %s")
+        params.append(new_status)
         
         if detailed_status is not None:
-            updates['current_detailed_status'] = detailed_status
+            set_clauses.append("current_detailed_status = %s")
+            params.append(detailed_status)
         
         if failure_reason is not None:
-            updates['failure_reason'] = failure_reason
+            set_clauses.append("failure_reason = %s")
+            params.append(failure_reason)
         
-        # First update the status
-        success = update_reservation(reservation_id, updates)
+        # Add updated_at timestamp
+        set_clauses.append("updated_at = NOW()")
         
-        # Then add to history if requested
-        if success and add_to_history:
+        # Add reservation_id for WHERE clause
+        params.append(reservation_id)
+        
+        # Build query with terminal state protection
+        if force:
+            # Force mode: Update regardless of current status
+            where_clause = "WHERE reservation_id = %s"
+        else:
+            # Normal mode: Only update if not in terminal state
+            where_clause = f"""
+                WHERE reservation_id = %s 
+                AND status NOT IN ({','.join(['%s'] * len(TERMINAL_STATES))})
+            """
+            params.extend(TERMINAL_STATES)
+        
+        query = f"""
+            UPDATE reservations
+            SET {', '.join(set_clauses)}
+            {where_clause}
+        """
+        
+        with get_db_cursor() as cur:
+            cur.execute(query, params)
+            
+            if cur.rowcount == 0:
+                # Check if reservation exists and is in terminal state
+                cur.execute("""
+                    SELECT status FROM reservations 
+                    WHERE reservation_id = %s
+                """, (reservation_id,))
+                
+                row = cur.fetchone()
+                if row:
+                    current_status = row['status']
+                    if current_status in TERMINAL_STATES:
+                        logger.info(
+                            f"Skipped status update for {reservation_id}: "
+                            f"already in terminal state '{current_status}' "
+                            f"(tried to set '{new_status}')"
+                        )
+                        return False
+                else:
+                    logger.warning(f"Reservation {reservation_id} not found")
+                    return False
+            
+            logger.debug(f"Updated reservation {reservation_id} status to {new_status}")
+        
+        # Add to history if requested and update was successful
+        if cur.rowcount > 0 and add_to_history:
             status_entry = {
                 'status': new_status,
                 'timestamp': datetime.now(UTC).isoformat(),
@@ -455,9 +558,9 @@ def update_reservation_status(
             
             append_status_history(reservation_id, status_entry)
         
-        return success
+        return cur.rowcount > 0
         
     except Exception as e:
-        logger.error(f"Error updating reservation status for {reservation_id}: {e}")
+        logger.error(f"Error updating reservation status for {reservation_id}: {e}", exc_info=True)
         return False
 
