@@ -907,9 +907,6 @@ API pod needs:
 
 ## 📚 Additional Documentation
 
-- **`AWS_AUTH_SUMMARY.md`** - Complete authentication architecture
-- **`CLI_INTEGRATION.md`** - How to integrate with CLI tool
-- **`FRESH_CODE_REVIEW.md`** - Code review and known issues
 - **OpenAPI Docs** - Available at `/docs` when running
 
 ## 🤝 Contributing

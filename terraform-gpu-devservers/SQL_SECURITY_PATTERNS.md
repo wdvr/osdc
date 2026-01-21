@@ -313,5 +313,4 @@ bandit -r shared/ -f json -o bandit-report.json
 
 **Files Documented**:
 - ✅ `SQL_SECURITY_PATTERNS.md` - This document
-- ✅ `EDGE_CASES_GOTCHAS.md` - Added as issue #14 (FIXED)
 
