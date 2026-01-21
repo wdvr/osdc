@@ -75,6 +75,16 @@ from .disk_db import (
     update_disk_operation
 )
 
+# Retry utilities
+from .retry_utils import (
+    should_retry,
+    increment_retry_count,
+    get_retry_info,
+    create_message_metadata,
+    is_dead_letter,
+    MAX_RETRIES
+)
+
 __all__ = [
     # Database pool
     "get_db_cursor",
@@ -131,4 +141,11 @@ __all__ = [
     "get_disks_in_use",
     "get_disks_pending_deletion",
     "update_disk_operation",
+    # Retry
+    "should_retry",
+    "increment_retry_count",
+    "get_retry_info",
+    "create_message_metadata",
+    "is_dead_letter",
+    "MAX_RETRIES",
 ]
