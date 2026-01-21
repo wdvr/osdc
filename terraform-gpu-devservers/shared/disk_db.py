@@ -62,32 +62,73 @@ def create_disk(disk_data: Dict[str, Any]) -> bool:
         disk_size = disk_data.get('disk_size')  # Human-readable size like "1.2G"
         
         with get_db_cursor() as cur:
+            # Check if disk_size column exists (for backwards compatibility during migration)
             cur.execute("""
-                INSERT INTO disks (
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'disks' AND column_name = 'disk_size'
+                )
+            """)
+            disk_size_column_exists = cur.fetchone()[0]
+            
+            if disk_size_column_exists:
+                # New schema with disk_size column
+                cur.execute("""
+                    INSERT INTO disks (
+                        disk_id, disk_name, user_id, size_gb, created_at, last_used,
+                        in_use, reservation_id, is_backing_up, is_deleted, delete_date,
+                        snapshot_count, pending_snapshot_count, ebs_volume_id, last_snapshot_at,
+                        operation_id, operation_status, operation_error,
+                        latest_snapshot_content_s3, disk_size
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (user_id, disk_name) DO UPDATE SET
+                        size_gb = EXCLUDED.size_gb,
+                        last_used = EXCLUDED.last_used,
+                        in_use = EXCLUDED.in_use,
+                        reservation_id = EXCLUDED.reservation_id,
+                        is_deleted = EXCLUDED.is_deleted,
+                        operation_id = EXCLUDED.operation_id,
+                        operation_status = EXCLUDED.operation_status,
+                        operation_error = EXCLUDED.operation_error,
+                        disk_size = EXCLUDED.disk_size
+                """, (
                     disk_id, disk_name, user_id, size_gb, created_at, last_used,
                     in_use, reservation_id, is_backing_up, is_deleted, delete_date,
                     snapshot_count, pending_snapshot_count, ebs_volume_id, last_snapshot_at,
                     operation_id, operation_status, operation_error,
                     latest_snapshot_content_s3, disk_size
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                )
-                ON CONFLICT (user_id, disk_name) DO UPDATE SET
-                    size_gb = EXCLUDED.size_gb,
-                    last_used = EXCLUDED.last_used,
-                    in_use = EXCLUDED.in_use,
-                    reservation_id = EXCLUDED.reservation_id,
-                    is_deleted = EXCLUDED.is_deleted,
-                    operation_id = EXCLUDED.operation_id,
-                    operation_status = EXCLUDED.operation_status,
-                    operation_error = EXCLUDED.operation_error
-            """, (
-                disk_id, disk_name, user_id, size_gb, created_at, last_used,
-                in_use, reservation_id, is_backing_up, is_deleted, delete_date,
-                snapshot_count, pending_snapshot_count, ebs_volume_id, last_snapshot_at,
-                operation_id, operation_status, operation_error,
-                latest_snapshot_content_s3, disk_size
-            ))
+                ))
+            else:
+                # Old schema without disk_size column (backwards compatibility)
+                logger.warning("disk_size column does not exist yet - using old schema")
+                cur.execute("""
+                    INSERT INTO disks (
+                        disk_id, disk_name, user_id, size_gb, created_at, last_used,
+                        in_use, reservation_id, is_backing_up, is_deleted, delete_date,
+                        snapshot_count, pending_snapshot_count, ebs_volume_id, last_snapshot_at,
+                        operation_id, operation_status, operation_error,
+                        latest_snapshot_content_s3
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (user_id, disk_name) DO UPDATE SET
+                        size_gb = EXCLUDED.size_gb,
+                        last_used = EXCLUDED.last_used,
+                        in_use = EXCLUDED.in_use,
+                        reservation_id = EXCLUDED.reservation_id,
+                        is_deleted = EXCLUDED.is_deleted,
+                        operation_id = EXCLUDED.operation_id,
+                        operation_status = EXCLUDED.operation_status,
+                        operation_error = EXCLUDED.operation_error
+                """, (
+                    disk_id, disk_name, user_id, size_gb, created_at, last_used,
+                    in_use, reservation_id, is_backing_up, is_deleted, delete_date,
+                    snapshot_count, pending_snapshot_count, ebs_volume_id, last_snapshot_at,
+                    operation_id, operation_status, operation_error,
+                    latest_snapshot_content_s3
+                ))
             
         logger.info(f"Created/updated disk '{disk_name}' for user {user_id}")
         return True

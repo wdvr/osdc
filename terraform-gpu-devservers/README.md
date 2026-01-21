@@ -44,6 +44,8 @@ OpenTofu configuration for PyTorch GPU development servers using AWS EKS with Ku
 >
 > terraform *    # ❌ NEVER - Will destroy infrastructure
 > ```
+>
+> **📖 Read the full explanation: [OPENTOFU_ONLY.md](OPENTOFU_ONLY.md)**
 
 ## Overview
 
