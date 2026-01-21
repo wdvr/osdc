@@ -40,7 +40,7 @@ class ConnectionHealthCheckError(Exception):
 
 def init_connection_pool(
     minconn: int = 1,
-    maxconn: int = 20,
+    maxconn: int = 50,  # Increased from 20 to support multinode parallel processing
     host: Optional[str] = None,
     port: Optional[int] = None,
     user: Optional[str] = None,

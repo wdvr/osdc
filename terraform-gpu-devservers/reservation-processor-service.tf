@@ -282,12 +282,35 @@ resource "kubernetes_config_map" "reservation_processor_config" {
   }
 
   data = {
+    # PGMQ Configuration
     QUEUE_NAME                 = "gpu_reservations"
     POLL_INTERVAL_SECONDS      = "5"
     VISIBILITY_TIMEOUT_SECONDS = "300"
     BATCH_SIZE                 = "1"
-    AWS_REGION                 = local.current_config.aws_region
+    
+    # AWS Configuration
+    REGION                     = local.current_config.aws_region
     EKS_CLUSTER_NAME           = aws_eks_cluster.gpu_dev_cluster.name
+    PRIMARY_AVAILABILITY_ZONE  = local.current_config.primary_az
+    
+    # Reservation Configuration
+    MAX_RESERVATION_HOURS      = "168"  # 7 days maximum
+    DEFAULT_TIMEOUT_HOURS      = "4"    # Default 4 hours
+    
+    # Container Configuration
+    GPU_DEV_CONTAINER_IMAGE    = "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel"
+    
+    # Optional: EFS Configuration (if using persistent disks)
+    EFS_SECURITY_GROUP_ID      = try(aws_security_group.efs[0].id, "")
+    EFS_SUBNET_IDS             = join(",", try(local.private_subnet_ids, []))
+    CCACHE_SHARED_EFS_ID       = try(aws_efs_file_system.ccache_shared[0].id, "")
+    
+    # Optional: ECR Configuration (if using custom images)
+    ECR_REPOSITORY_URL         = try(aws_ecr_repository.user_images[0].repository_url, "")
+    
+    # Version Configuration
+    PROCESSOR_VERSION          = "0.4.0"
+    MIN_CLI_VERSION            = "0.3.5"
   }
 }
 
