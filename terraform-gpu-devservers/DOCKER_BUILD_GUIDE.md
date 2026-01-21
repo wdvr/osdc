@@ -407,7 +407,6 @@ docker login ...
 
 For more information, see:
 - `README.md` - Main project documentation
-- `CLAUDE.md` - AI assistant guidelines  
-- `URGENT_CLEANUP.md` - Deployment troubleshooting
+- `CLAUDE.md` - AI assistant guidelines
 - `reservation-processor-service/README.md` - Service-specific docs
 

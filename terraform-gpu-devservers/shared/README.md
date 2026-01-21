@@ -116,25 +116,9 @@ When all services are migrated to Kubernetes, Lambda-specific code can be remove
 - **[README.md](./README.md)** - This file, overview of shared utilities
 - **[DB_USAGE.md](./DB_USAGE.md)** - Complete guide to using the database connection pool
 
-### Connection Pool Deep Dives
-- **[CONNECTION_POOLING_SUMMARY.md](./CONNECTION_POOLING_SUMMARY.md)** - Summary of connection pool implementation
-- **[CONNECTION_STATE_CLEANUP.md](./CONNECTION_STATE_CLEANUP.md)** - How connection state is cleaned between uses
-- **[CONNECTION_HOLD_TIME_ANALYSIS.md](./CONNECTION_HOLD_TIME_ANALYSIS.md)** - Performance analysis of connection hold optimization
-- **[STALE_CONNECTION_HANDLING.md](./STALE_CONNECTION_HANDLING.md)** - How stale connections are detected and recovered
-- **[ENV_VALIDATION.md](./ENV_VALIDATION.md)** - Environment variable validation with clear error messages
-
 ### Security Best Practices
-- **[SQL_SECURITY_PATTERNS.md](./SQL_SECURITY_PATTERNS.md)** - SQL query construction patterns and injection prevention
+- **[SQL_SECURITY_PATTERNS.md](../SQL_SECURITY_PATTERNS.md)** - SQL query construction patterns and injection prevention
 
 ### Important Concepts
 - **[NESTED_CONTEXT_MANAGERS.md](./NESTED_CONTEXT_MANAGERS.md)** - ⚠️ **Must Read**: How nested `get_db_cursor()` calls behave
-- **[CRITICAL_FIXES_SUMMARY.md](./CRITICAL_FIXES_SUMMARY.md)** - Summary of all critical fixes applied
-- **[EDGE_CASES_GOTCHAS.md](./EDGE_CASES_GOTCHAS.md)** - Edge cases, gotchas, and how they were addressed
-
-### Migration History
-- **[POSTGRES_MIGRATION.md](./POSTGRES_MIGRATION.md)** - DynamoDB to PostgreSQL migration notes
-- **[CODE_REVIEW_FIXES.md](./CODE_REVIEW_FIXES.md)** - Bugs fixed during code review
-
-### Bug Fixes
-- **[SNAPSHOT_CONSISTENCY_FIX.md](./SNAPSHOT_CONSISTENCY_FIX.md)** - Fix for inconsistent state on partial snapshot failure
 

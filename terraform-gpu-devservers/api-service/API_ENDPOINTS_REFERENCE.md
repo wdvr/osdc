@@ -796,8 +796,6 @@ curl -s "$API_URL/v1/jobs/$JOB_ID" \
 ## Related Documentation
 
 - [API Service README](./README.md) - Architecture and deployment
-- [Test Coverage](./TEST_API_COVERAGE.md) - Comprehensive test suite documentation
-- [CloudFront HTTPS Setup](../CLOUDFRONT_HTTPS.md) - HTTPS configuration
 
 ---
 
