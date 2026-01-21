@@ -269,6 +269,67 @@ resource "kubernetes_service_account" "reservation_processor_sa" {
   }
 }
 
+# ClusterRole for reservation processor - needs to manage pods, nodes, services across all namespaces
+resource "kubernetes_cluster_role" "reservation_processor" {
+  metadata {
+    name = "reservation-processor-role"
+  }
+
+  # Node access - for checking GPU availability and node status
+  rule {
+    api_groups = [""]
+    resources  = ["nodes"]
+    verbs      = ["get", "list", "watch"]
+  }
+
+  # Pod access - for creating, managing, and monitoring reservation pods
+  rule {
+    api_groups = [""]
+    resources  = ["pods", "pods/log", "pods/status"]
+    verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
+  }
+
+  # Service access - for creating NodePort services for SSH access
+  rule {
+    api_groups = [""]
+    resources  = ["services"]
+    verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
+  }
+
+  # PersistentVolumeClaim access - for managing EBS volumes
+  rule {
+    api_groups = [""]
+    resources  = ["persistentvolumeclaims"]
+    verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
+  }
+
+  # ConfigMap and Secret access - for pod configurations
+  rule {
+    api_groups = [""]
+    resources  = ["configmaps", "secrets"]
+    verbs      = ["get", "list", "watch", "create", "update", "patch"]
+  }
+}
+
+# ClusterRoleBinding for reservation processor
+resource "kubernetes_cluster_role_binding" "reservation_processor" {
+  metadata {
+    name = "reservation-processor-binding"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role.reservation_processor.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account.reservation_processor_sa.metadata[0].name
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+  }
+}
+
 # ConfigMap for reservation processor configuration
 resource "kubernetes_config_map" "reservation_processor_config" {
   depends_on = [kubernetes_namespace.controlplane]
@@ -291,7 +352,7 @@ resource "kubernetes_config_map" "reservation_processor_config" {
     # AWS Configuration
     REGION                     = local.current_config.aws_region
     EKS_CLUSTER_NAME           = aws_eks_cluster.gpu_dev_cluster.name
-    PRIMARY_AVAILABILITY_ZONE  = local.current_config.primary_az
+    PRIMARY_AVAILABILITY_ZONE  = aws_subnet.gpu_dev_subnet.availability_zone
     
     # Reservation Configuration
     MAX_RESERVATION_HOURS      = "168"  # 7 days maximum
@@ -301,16 +362,20 @@ resource "kubernetes_config_map" "reservation_processor_config" {
     GPU_DEV_CONTAINER_IMAGE    = "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel"
     
     # Optional: EFS Configuration (if using persistent disks)
-    EFS_SECURITY_GROUP_ID      = try(aws_security_group.efs[0].id, "")
-    EFS_SUBNET_IDS             = join(",", try(local.private_subnet_ids, []))
-    CCACHE_SHARED_EFS_ID       = try(aws_efs_file_system.ccache_shared[0].id, "")
+    EFS_SECURITY_GROUP_ID      = aws_security_group.efs_sg.id
+    EFS_SUBNET_IDS             = join(",", [
+      aws_subnet.gpu_dev_subnet.id,
+      aws_subnet.gpu_dev_subnet_secondary.id,
+      try(aws_subnet.gpu_dev_subnet_tertiary[0].id, "")
+    ])
+    CCACHE_SHARED_EFS_ID       = aws_efs_file_system.ccache_shared.id
     
     # Optional: ECR Configuration (if using custom images)
-    ECR_REPOSITORY_URL         = try(aws_ecr_repository.user_images[0].repository_url, "")
+    ECR_REPOSITORY_URL         = aws_ecr_repository.gpu_dev_custom_images.repository_url
     
     # Version Configuration
     PROCESSOR_VERSION          = "0.4.0"
-    MIN_CLI_VERSION            = "0.3.5"
+    MIN_CLI_VERSION            = "0.0.1"  # Temporarily lowered to allow current CLI
   }
 }
 
