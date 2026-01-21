@@ -1816,6 +1816,9 @@ def calculate_multinode_queue_position_and_wait_time(master_reservation_id: str,
 
 def process_reservation_request(record: dict[str, Any]) -> bool:
     """Process individual reservation request"""
+    # Import at function start to avoid Python scoping issues
+    from kubernetes.client.rest import ApiException
+    
     try:
         # Parse the reservation request
         reservation_request = json.loads(record["body"])
@@ -1851,14 +1854,10 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                     if pod_name:
                         try:
                             # Initialize K8s client if not already done
-                            if not hasattr(globals().get('k8s_client'), 'CoreV1Api'):
-                                logger.info("Initializing K8s client for retry check...")
-                                from shared.k8s_client import get_k8s_client
-                                get_k8s_client()
+                            logger.info("Initializing K8s client for retry check...")
+                            get_k8s_client()  # Use module-level function
                             
                             # Check if pod exists in Kubernetes
-                            from kubernetes import client
-                            from kubernetes.client.rest import ApiException
                             k8s_client = client.CoreV1Api()
                             
                             try:
@@ -1984,9 +1983,25 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
         else:
             available_gpus = check_gpu_availability(gpu_type)
 
+        # Check if nodes exist for this GPU type (especially important for CPU instances)
+        reservation_id = reservation_request.get("reservation_id")
+        if not is_multinode:
+            k8s_client = get_k8s_client()
+            v1 = client.CoreV1Api(k8s_client)
+            nodes_for_type = v1.list_node(label_selector=f"GpuType={gpu_type}")
+            
+            if len(nodes_for_type.items) == 0:
+                logger.error(f"No nodes exist for GPU type {gpu_type}")
+                if reservation_id:
+                    update_reservation_status(
+                        reservation_id,
+                        "failed",
+                        f"GPU type '{gpu_type.upper()}' not available - no nodes configured in cluster"
+                    )
+                return True  # Delete message - reservation marked as failed
+
         if available_gpus >= requested_gpus:
             # Update status to show we're preparing the machine
-            reservation_id = reservation_request.get("reservation_id")
             if reservation_id:
                 update_reservation_status(
                     reservation_id,
@@ -3325,6 +3340,21 @@ def create_kubernetes_resources(
                     logger.warning(
                         f"Failed to create headless service: {headless_error}")
                     # Don't fail the whole pod creation if headless service fails
+
+        # Check if background monitoring has detected a terminal state (e.g., no nodes available)
+        # This prevents race condition where monitoring sets "failed" but we override it with "preparing"
+        current_reservation = get_reservation(reservation_id)
+        if current_reservation:
+            current_status = current_reservation.get("status", "unknown")
+            if current_status in ["failed", "cancelled", "expired"]:
+                logger.info(
+                    f"Skipping pod wait for reservation {reservation_id} - status is {current_status}")
+                # Stop monitoring if it's running
+                if 'monitor_stop_event' in locals():
+                    logger.info("Stopping background pod monitoring due to terminal status")
+                    monitor_stop_event.set()
+                # Return early - don't proceed with waiting for pod
+                raise RuntimeError(f"Reservation {reservation_id} is in terminal state: {current_status}")
 
         # Wait for pod to be ready (regardless of whether it was just created or already existed)
         update_reservation_status(
@@ -5974,6 +6004,21 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
     Returns dict with current status info for immediate use.
     """
     try:
+        # First check if reservation is in terminal state - prevents status overwrites
+        current_reservation = get_reservation(reservation_id)
+        if current_reservation:
+            current_status = current_reservation.get("status", "unknown")
+            if current_status in ["failed", "cancelled", "expired"]:
+                logger.info(
+                    f"Skipping pod status update for {pod_name} - reservation is {current_status}")
+                return {
+                    "phase": "Terminated",
+                    "display_message": f"Reservation {current_status}",
+                    "has_errors": False,
+                    "is_ready": False,
+                    "terminated": True
+                }
+
         v1 = client.CoreV1Api(k8s_client)
 
         # Get pod object
