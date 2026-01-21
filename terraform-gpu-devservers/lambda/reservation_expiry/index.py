@@ -861,6 +861,17 @@ def handler(event, context):
             logger.error(f"Error cleaning up soft-deleted snapshots: {e}")
             deleted_snapshot_count = 0
 
+        # Clean up orphaned ALB target groups (created but never attached to listener rules)
+        orphaned_tg_count = 0
+        try:
+            from shared.alb_utils import cleanup_orphaned_target_groups, is_alb_enabled
+            if is_alb_enabled():
+                cleanup_stats = cleanup_orphaned_target_groups()
+                orphaned_tg_count = cleanup_stats.get("deleted", 0)
+                logger.info(f"Orphaned target group cleanup: {cleanup_stats}")
+        except Exception as e:
+            logger.error(f"Error cleaning up orphaned target groups: {e}")
+
         return {
             "statusCode": 200,
             "body": json.dumps(
@@ -873,6 +884,7 @@ def handler(event, context):
                     "deleted_snapshots": deleted_snapshot_count,
                     "tagged_snapshots": tagged_snapshot_count,
                     "synced_disks": synced_disk_count,
+                    "orphaned_tg_cleaned": orphaned_tg_count,
                 }
             ),
         }

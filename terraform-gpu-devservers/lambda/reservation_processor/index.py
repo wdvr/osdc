@@ -2616,20 +2616,10 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             # Fallback to direct IP+port when DNS is not configured
             ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
 
-        # Generate Jupyter URL (we'll get the token after pod is ready)
-        if domain_name and domain_ssh_command:
-            # Use HTTP with domain name for Jupyter when DNS is configured
-            # TODO: Add HTTPS support with SSL certificate
-            # domain_name is just the subdomain, we need to add DOMAIN_NAME to get FQDN
-            from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
-            if DNS_DOMAIN:
-                full_domain = f"{domain_name}.{DNS_DOMAIN}"
-            else:
-                full_domain = domain_name
-            jupyter_url_base = f"http://{full_domain}:{jupyter_port}"
-        else:
-            # Fallback to HTTP with IP when DNS is not configured
-            jupyter_url_base = f"http://{node_public_ip}:{jupyter_port}"
+        # Generate Jupyter URL - will be set to HTTPS if ALB setup succeeds
+        # NOTE: When ALB is enabled, only port 443 is exposed, so http://ip:port fallback won't work
+        # If ALB setup fails, jupyter_url_base stays empty and user gets an error message
+        jupyter_url_base = ""
 
         # Update status: Finalizing connection setup
         update_reservation_status(
@@ -2700,9 +2690,9 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
                     alb_enabled = is_alb_enabled()
                     logger.info(f"ALB enabled check result: {alb_enabled}")
-                    if alb_enabled:
+                    if alb_enabled and jupyter_port > 0:
                         logger.info(
-                            f"Setting up ALB/NLB for reservation {reservation_id}")
+                            f"Setting up ALB for reservation {reservation_id} (jupyter_port={jupyter_port})")
 
                         # Get instance ID from pod
                         instance_id = get_instance_id_from_pod(
@@ -2752,6 +2742,16 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
                                     logger.info(
                                         f"ALB setup complete for {reservation_id} (Jupyter HTTPS + SSH proxy)")
+                                else:
+                                    # Listener rule creation failed - clean up the orphaned target group
+                                    logger.warning(
+                                        f"Listener rule creation failed for {reservation_id}, cleaning up target group {jupyter_tg_arn}")
+                                    try:
+                                        elbv2 = boto3.client("elbv2")
+                                        elbv2.delete_target_group(TargetGroupArn=jupyter_tg_arn)
+                                        logger.info(f"Cleaned up orphaned target group {jupyter_tg_arn}")
+                                    except Exception as cleanup_error:
+                                        logger.error(f"Failed to clean up target group {jupyter_tg_arn}: {cleanup_error}")
                         else:
                             logger.warning(
                                 f"Could not get instance ID for pod {pod_name}, skipping ALB setup")
@@ -7048,21 +7048,51 @@ def enable_jupyter_in_pod(
                 jupyter_token = get_jupyter_token_from_pod(
                     k8s_client, pod_name)
 
-                # Try to use domain name if available
-                from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
-                reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
-                reservation_resp = reservations_table.get_item(
-                    Key={"reservation_id": reservation_id})
-                domain_name = None
-                if "Item" in reservation_resp:
-                    domain_name = reservation_resp["Item"].get("domain_name")
+                # Build Jupyter URL - set up ALB if enabled, otherwise use IP:port
+                jupyter_url = ""
 
-                # Build Jupyter URL with domain if available, otherwise use IP
-                if domain_name and DNS_DOMAIN:
-                    full_domain = f"{domain_name}.{DNS_DOMAIN}"
-                    jupyter_url = f"http://{full_domain}:{jupyter_port}"
-                else:
+                # Try to set up ALB for HTTPS access
+                try:
+                    from shared.alb_utils import (
+                        is_alb_enabled,
+                        create_jupyter_target_group,
+                        create_alb_listener_rule,
+                        store_alb_mapping,
+                        get_instance_id_from_pod,
+                    )
+                    from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
+
+                    # Get domain_name from reservation
+                    reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+                    res_resp = reservations_table.get_item(Key={"reservation_id": reservation_id})
+                    domain_name = res_resp.get("Item", {}).get("domain_name")
+
+                    if is_alb_enabled() and domain_name and jupyter_port > 0:
+                        instance_id = get_instance_id_from_pod(k8s_client, pod_name)
+                        if instance_id:
+                            jupyter_tg_arn = create_jupyter_target_group(
+                                reservation_id, pod_name, instance_id, jupyter_port
+                            )
+                            if jupyter_tg_arn:
+                                jupyter_rule_arn = create_alb_listener_rule(domain_name, jupyter_tg_arn)
+                                if jupyter_rule_arn:
+                                    full_domain = f"{domain_name}.{DNS_DOMAIN}"
+                                    jupyter_url = f"https://{full_domain}"
+                                    logger.info(f"ALB setup complete for late-enabled Jupyter on {reservation_id}")
+                                else:
+                                    # Clean up target group if listener rule failed
+                                    try:
+                                        elbv2 = boto3.client("elbv2")
+                                        elbv2.delete_target_group(TargetGroupArn=jupyter_tg_arn)
+                                    except Exception:
+                                        pass
+                except Exception as alb_error:
+                    logger.warning(f"ALB setup failed for late-enabled Jupyter: {alb_error}")
+
+                # Fallback to IP:port if ALB not available (only works if NodePorts are exposed)
+                if not jupyter_url:
                     jupyter_url = f"http://{node_public_ip}:{jupyter_port}"
+                    logger.warning(f"Using IP:port fallback for Jupyter - may not work if only 443 is exposed")
 
                 if jupyter_token:
                     jupyter_url += f"?token={jupyter_token}"
