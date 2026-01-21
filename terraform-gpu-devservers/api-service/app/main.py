@@ -368,7 +368,7 @@ class JobDetail(BaseModel):
     status: str = Field(..., description="Job status")
     gpu_type: str | None = Field(None, description="GPU type (h100, a100, etc.)")
     gpu_count: int | None = Field(None, description="Number of GPUs")
-    instance_type: str = Field(..., description="EC2 instance type")
+    instance_type: str | None = Field(None, description="EC2 instance type")
     duration_hours: float = Field(..., description="Reservation duration in hours")
     created_at: str = Field(..., description="Creation timestamp (ISO 8601)")
     expires_at: str | None = Field(None, description="Expiration timestamp (ISO 8601)")
@@ -858,13 +858,38 @@ async def submit_job(
     """
     try:
         async with db_pool.acquire() as conn:
-            # Create job message
-            job_id = str(uuid.uuid4())
+            # Extract processor-required fields from env_vars
+            env_vars = job.env_vars or {}
+            
+            # CRITICAL: Use the reservation_id from CLI if provided, otherwise generate new
+            # The CLI creates the reservation first, so we must use its ID
+            reservation_id = env_vars.get("RESERVATION_ID")
+            if not reservation_id:
+                reservation_id = str(uuid.uuid4())
+            
+            job_id = reservation_id  # job_id and reservation_id must match
+            
+            gpu_type = env_vars.get("GPU_TYPE", "a100").lower()
+            gpu_count = int(env_vars.get("GPU_COUNT", "1"))
+            github_user = env_vars.get("GITHUB_USER", "")
+            jupyter_enabled = env_vars.get("JUPYTER_ENABLED", "false").lower() == "true"
+            pod_name = env_vars.get("POD_NAME", f"gpu-dev-{job_id[:8]}")
+            
             message = {
+                "action": "create_reservation",  # Required by processor
                 "job_id": job_id,
-                "user_id": user_info["username"],  # Use username for consistency
+                "reservation_id": job_id,
+                "user_id": user_info["username"],
                 "username": user_info["username"],
-                "image": job.image,
+                # Processor-required fields
+                "gpu_type": gpu_type,
+                "gpu_count": gpu_count,
+                "github_user": github_user,
+                "jupyter_enabled": jupyter_enabled,
+                "name": pod_name,
+                "version": "0.4.0",  # CLI version - set to current to pass validation
+                # Job-specific fields
+                "dockerimage": job.image,
                 "instance_type": job.instance_type,
                 "duration_hours": job.duration_hours,
                 "disk_name": job.disk_name,
@@ -872,6 +897,7 @@ async def submit_job(
                 "env_vars": job.env_vars,
                 "command": job.command,
                 "submitted_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
                 "status": "queued"
             }
 
