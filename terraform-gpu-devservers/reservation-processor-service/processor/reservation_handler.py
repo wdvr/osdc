@@ -48,7 +48,7 @@ from shared.snapshot_utils import (
     safe_create_snapshot, 
     capture_disk_contents
 )
-from buildkit_job import create_buildkit_job, wait_for_buildkit_job
+from processor.buildkit_job import create_buildkit_job, wait_for_buildkit_job
 from shared.dns_utils import (
     generate_unique_name,
     create_dns_record,

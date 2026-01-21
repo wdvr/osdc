@@ -18,6 +18,10 @@ RUN useradd -m -u 1000 processoruser && \
 
 USER processoruser
 
-# Run the processor
-CMD ["python3", "-u", "processor/main.py"]
+# Set PYTHONPATH so processor module can be imported
+ENV PYTHONPATH=/app:$PYTHONPATH
+
+# Default command runs the poller service
+# Worker jobs will override this with: python -m processor.worker <msg_id>
+CMD ["python3", "-u", "-m", "processor.poller"]
 

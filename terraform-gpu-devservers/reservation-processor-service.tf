@@ -341,6 +341,13 @@ resource "kubernetes_cluster_role" "reservation_processor" {
     resources  = ["events"]
     verbs      = ["get", "list", "watch"]
   }
+
+  # Job access - for creating and monitoring worker jobs
+  rule {
+    api_groups = ["batch"]
+    resources  = ["jobs", "jobs/status"]
+    verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
+  }
 }
 
 # ClusterRoleBinding for reservation processor
@@ -515,6 +522,22 @@ resource "kubernetes_deployment" "reservation_processor" {
                 key  = "POSTGRES_PASSWORD"
               }
             }
+          }
+
+          # Job orchestration configuration
+          env {
+            name  = "WORKER_IMAGE"
+            value = local.reservation_processor_latest_uri
+          }
+
+          env {
+            name  = "KUBE_NAMESPACE"
+            value = kubernetes_namespace.controlplane.metadata[0].name
+          }
+
+          env {
+            name  = "SERVICE_ACCOUNT"
+            value = kubernetes_service_account.reservation_processor_sa.metadata[0].name
           }
 
           resources {
