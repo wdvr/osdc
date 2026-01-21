@@ -849,14 +849,15 @@ def reserve(
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
 
+            # Update max_gpus after interactive GPU type selection
+            gpu_type_lower = gpu_type.lower()
+            if gpu_type_lower not in gpu_configs:
+                rprint(f"[red]❌ Invalid GPU type '{gpu_type}'[/red]")
+                return
+            max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
+
             # Interactive GPU count selection
             if gpus is None:
-                gpu_type_lower = gpu_type.lower()
-                if gpu_type_lower not in gpu_configs:
-                    rprint(f"[red]❌ Invalid GPU type '{gpu_type}'[/red]")
-                    return
-
-                max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
                 gpu_count = select_gpu_count_interactive(
                     gpu_type_lower, max_gpus)
                 if gpu_count is None:
