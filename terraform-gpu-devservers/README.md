@@ -817,3 +817,5 @@ kubectl get pods -n gpu-controlplane -l app=ssh-proxy
 **Documentation:**
 - Full API docs: `api-service/README.md`
 - Architecture details: `CLAUDE.md`
+- Timezone standards: `TIMEZONE_STANDARD.md`
+- SQL security patterns: `SQL_SECURITY_PATTERNS.md`
