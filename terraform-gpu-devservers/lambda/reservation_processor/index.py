@@ -60,7 +60,17 @@ ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.5")
 MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.5")
 
-# GPU Configuration - single source of truth for all GPU type mappings
+# GPU Configuration - GPU type to instance type mappings
+# NOTE: This configuration is also stored in the gpu_types database table.
+# The API service reads from the database for availability queries.
+# This Lambda uses the hardcoded config for pod resource allocation.
+# 
+# IMPORTANT: When adding/modifying GPU types:
+# 1. Update this config here
+# 2. Run migrations/populate_gpu_types.py to update the database
+# 3. Ensure both configs stay in sync
+#
+# See migrations/populate_gpu_types.py for the database schema
 GPU_CONFIG = {
     "t4": {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
     "l4": {"instance_type": "g6.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
