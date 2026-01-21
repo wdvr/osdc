@@ -216,11 +216,11 @@ def poll_disk_operation(
             
             if is_completed:
                 if operation_status == 'completed':
-            if operation_type == 'create':
-                    return True, f"Disk '{disk_name}' created successfully"
+                    if operation_type == 'create':
+                        return True, f"Disk '{disk_name}' created successfully"
                     else:  # delete
                         delete_date = status.get('delete_date', 'in 30 days')
-                    return True, f"Disk '{disk_name}' marked for deletion. Snapshots will be permanently deleted on {delete_date}"
+                        return True, f"Disk '{disk_name}' marked for deletion. Snapshots will be permanently deleted on {delete_date}"
                 elif operation_status == 'failed':
                     error_msg = error or "Unknown error"
                     return False, f"Disk operation failed: {error_msg}"
