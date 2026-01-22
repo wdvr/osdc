@@ -3913,6 +3913,12 @@ EOF_PROFILE
 # User identification
 export GPU_DEV_USER_ID="{user_id or 'dev'}"
 
+# Show MOTD once per session, only for interactive terminals (skip for Claude Code, scripts, etc.)
+if [ -z "\$GPU_DEV_MOTD_SHOWN" ] && [ -t 0 ] && [ -t 1 ] && [ -f /etc/motd ]; then
+    cat /etc/motd
+    export GPU_DEV_MOTD_SHOWN=1
+fi
+
 # Function to check for GPU reservation expiry warnings and startup script status
 check_warnings() {{
     # Check for startup script still running
@@ -3940,6 +3946,12 @@ EOF_BASHRC_EXT
 
 # User identification
 export GPU_DEV_USER_ID="{user_id or 'dev'}"
+
+# Show MOTD once per session, only for interactive terminals (skip for Claude Code, scripts, etc.)
+if [[ -z "\$GPU_DEV_MOTD_SHOWN" ]] && [[ -t 0 ]] && [[ -t 1 ]] && [[ -f /etc/motd ]]; then
+    cat /etc/motd
+    export GPU_DEV_MOTD_SHOWN=1
+fi
 
 # Function to check for GPU reservation expiry warnings and startup script status
 check_warnings() {{
@@ -3979,6 +3991,19 @@ EOF_ZSHRC_EXT
                             fi
                         done
                         echo "[STARTUP] ✓ Shell extension sourcing configured"
+
+                        # Always update system profile files (these control login behavior)
+                        # MOTD is now handled by extension files, so remove from profiles
+                        echo "[STARTUP] Updating system profile files..."
+                        if [ -d "/devserver-setup" ]; then
+                            for profile_file in .bash_profile .zprofile .profile; do
+                                if [ -f "/devserver-setup/$profile_file" ]; then
+                                    cp "/devserver-setup/$profile_file" "/home/dev/$profile_file"
+                                    echo "[STARTUP] ✓ Updated $profile_file"
+                                fi
+                            done
+                        fi
+                        echo "[STARTUP] ✓ System profile files updated"
 
                         # Ensure correct ownership
                         chown -R dev:dev /home/dev
