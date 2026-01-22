@@ -369,8 +369,10 @@ def get_db_transaction(readonly: bool = False, timeout: Optional[float] = None, 
         conn = _get_connection_with_timeout(pool_instance, timeout, check_health=check_health)
         logger.debug("Connection acquired from pool for transaction")
         
+        # If readonly, set transaction to read-only using SQL (not set_session which can't be used in a transaction)
         if readonly:
-            conn.set_session(readonly=True)
+            with conn.cursor() as cur:
+                cur.execute("SET TRANSACTION READ ONLY")
         
         yield conn
         
@@ -391,11 +393,8 @@ def get_db_transaction(readonly: bool = False, timeout: Optional[float] = None, 
             try:
                 # Always ensure no transaction is pending (rollback is no-op if already committed)
                 # This also clears SET LOCAL variables and drops temporary tables
+                # Note: No need to reset readonly - it was set per-transaction, not per-connection
                 conn.rollback()
-                
-                # Reset readonly if it was set
-                if readonly:
-                    conn.set_session(readonly=False)
             except Exception as e:
                 # Connection might be in a bad state, but still return it
                 # Pool will handle broken connections on next getconn()
