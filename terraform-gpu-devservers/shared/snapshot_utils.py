@@ -118,12 +118,13 @@ def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name
                 logger.debug(f"Updated database for disk '{disk_name}' - marked as backing up")
             except Exception as db_error:
                 # Database update failed - snapshot created but database state is inconsistent
+                # This typically means the disk is orphaned (exists in AWS but not in database)
                 logger.error(
                     f"CRITICAL: Snapshot {snapshot_id} created successfully, "
                     f"but database update failed for disk '{disk_name}': {db_error}"
                 )
                 
-                # Attempt to clean up the snapshot to maintain consistency
+                # Clean up both the snapshot and the orphaned volume
                 try:
                     logger.warning(f"Attempting to delete snapshot {snapshot_id} to maintain consistency")
                     ec2_client.delete_snapshot(SnapshotId=snapshot_id)
@@ -133,6 +134,21 @@ def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name
                         f"Failed to delete snapshot {snapshot_id}: {cleanup_error}. "
                         f"Snapshot exists but is not tracked in database. Manual cleanup required!"
                     )
+                
+                # If disk not found in database, also delete the orphaned volume
+                if "not found in database" in str(db_error).lower():
+                    try:
+                        logger.warning(
+                            f"Disk '{disk_name}' not found in database - "
+                            f"deleting orphaned volume {volume_id}"
+                        )
+                        ec2_client.delete_volume(VolumeId=volume_id)
+                        logger.info(f"Successfully deleted orphaned volume {volume_id}")
+                    except Exception as volume_cleanup_error:
+                        logger.error(
+                            f"Failed to delete orphaned volume {volume_id}: {volume_cleanup_error}. "
+                            f"Manual cleanup may be required."
+                        )
                 
                 # Propagate the error so caller knows the operation failed
                 raise Exception(

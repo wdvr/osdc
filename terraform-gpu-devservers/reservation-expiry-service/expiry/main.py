@@ -48,8 +48,12 @@ from shared.alb_utils import (
 )
 
 # Setup logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
 
 # AWS clients (EC2 still needed for snapshots)
 ec2_client = boto3.client("ec2")
