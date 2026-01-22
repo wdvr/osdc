@@ -34,36 +34,7 @@ resource "aws_security_group" "efs_sg" {
   }
 }
 
-# IAM role for Lambda to manage EFS
-resource "aws_iam_role_policy" "lambda_efs_policy" {
-  name = "${local.workspace_prefix}-lambda-efs-policy"
-  role = aws_iam_role.reservation_processor_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "elasticfilesystem:CreateFileSystem",
-          "elasticfilesystem:DeleteFileSystem",
-          "elasticfilesystem:DescribeFileSystems",
-          "elasticfilesystem:CreateMountTarget",
-          "elasticfilesystem:DescribeMountTargets",
-          "elasticfilesystem:DeleteMountTarget",
-          "elasticfilesystem:CreateTags",
-          "elasticfilesystem:DescribeTags",
-          "elasticfilesystem:PutFileSystemPolicy",
-          "elasticfilesystem:PutLifecycleConfiguration",
-          "elasticfilesystem:DescribeLifecycleConfiguration"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-# Output EFS security group ID for Lambda to use
+# Output EFS security group ID for use by other resources
 output "efs_security_group_id" {
   description = "Security group ID for EFS"
   value       = aws_security_group.efs_sg.id

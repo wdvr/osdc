@@ -1,6 +1,65 @@
 # Route53 configuration for domain-based SSH access
 # Handles both prod (devservers.io) and test (test.devservers.io) domains
 
+# =============================================================================
+# Private Hosted Zone for Internal VPC DNS
+# =============================================================================
+# This allows nodes to resolve internal service names via VPC DNS (not CoreDNS)
+# Used for: registry cache, databases, and other infrastructure services
+
+resource "aws_route53_zone" "internal" {
+  name = "internal.${var.prefix}.local"
+
+  vpc {
+    vpc_id = aws_vpc.gpu_dev_vpc.id
+  }
+
+  tags = {
+    Name        = "${var.prefix}-internal-zone"
+    Environment = local.current_config.environment
+    Purpose     = "Internal VPC DNS for infrastructure services"
+  }
+}
+
+# Data source to find the NLB created by the Kubernetes LoadBalancer service
+# The NLB is tagged with the kubernetes service information
+data "aws_lb" "registry_ghcr" {
+  depends_on = [kubernetes_service.registry_ghcr]
+
+  tags = {
+    "kubernetes.io/service-name" = "gpu-controlplane/registry-ghcr"
+  }
+}
+
+# DNS record for the registry pull-through cache
+# Points to the internal NLB that fronts the registry service
+resource "aws_route53_record" "registry_ghcr" {
+  zone_id = aws_route53_zone.internal.zone_id
+  name    = "registry-ghcr.internal.${var.prefix}.local"
+  type    = "A"
+
+  alias {
+    name                   = data.aws_lb.registry_ghcr.dns_name
+    zone_id                = data.aws_lb.registry_ghcr.zone_id
+    evaluate_target_health = true
+  }
+}
+
+# Output the internal DNS name for the registry
+output "registry_ghcr_dns" {
+  description = "DNS name for the ghcr.io pull-through cache registry"
+  value       = "registry-ghcr.internal.${var.prefix}.local"
+}
+
+output "internal_hosted_zone_id" {
+  description = "The private hosted zone ID for internal VPC DNS"
+  value       = aws_route53_zone.internal.zone_id
+}
+
+# =============================================================================
+# Public Domain Configuration (existing)
+# =============================================================================
+
 locals {
   # Use workspace config for domain_name if variable is not set, fallback to empty string
   effective_domain_name = var.domain_name != null ? var.domain_name : try(local.current_config.domain_name, "")
@@ -80,19 +139,6 @@ resource "aws_iam_policy" "route53_policy" {
   name        = "${local.workspace_prefix}-route53-policy"
   description = "Policy for Lambda functions to manage Route53 DNS records"
   policy      = data.aws_iam_policy_document.route53_policy[0].json
-}
-
-# Attach Route53 policy to existing Lambda execution roles
-resource "aws_iam_role_policy_attachment" "reservation_processor_route53" {
-  count      = local.effective_domain_name != "" ? 1 : 0
-  role       = aws_iam_role.reservation_processor_role.name
-  policy_arn = aws_iam_policy.route53_policy[0].arn
-}
-
-resource "aws_iam_role_policy_attachment" "reservation_expiry_route53" {
-  count      = local.effective_domain_name != "" ? 1 : 0
-  role       = aws_iam_role.reservation_expiry_role.name
-  policy_arn = aws_iam_policy.route53_policy[0].arn
 }
 
 # Output the hosted zone ID and NS records for external DNS setup (only when domain is configured)
