@@ -164,6 +164,13 @@ $ gpu-dev submit --image my-model:v2 --instance p5.48xlarge
 | `/v1/gpu/availability` | GET | ✅ | Get current GPU availability by type |
 | `/v1/cluster/status` | GET | ✅ | Get overall cluster status and statistics |
 | `/v1/keys/rotate` | POST | ✅ | Generate new API key |
+| `/v1/disks` | POST | ✅ | Create a new persistent disk |
+| `/v1/disks` | GET | ✅ | List user's persistent disks |
+| `/v1/disks/{disk_name}` | GET | ✅ | Get disk details |
+| `/v1/disks/{disk_name}/content` | GET | ✅ | Get disk snapshot content listing |
+| `/v1/disks/{disk_name}/rename` | POST | ✅ | Rename a disk |
+| `/v1/disks/{disk_name}` | DELETE | ✅ | Delete a disk (soft delete) |
+| `/v1/disks/{disk_name}/operations/{op_id}` | GET | ✅ | Poll async disk operation status |
 
 **Legend:**
 - ✅ Implemented and functional

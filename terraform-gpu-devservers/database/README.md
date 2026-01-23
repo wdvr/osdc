@@ -1,6 +1,6 @@
 # Database Schema Management
 
-This directory contains the database schema and fixture files for the GPU Dev platform. The schema is managed declaratively using SQL files and applied via Terraform/Kubernetes during infrastructure deployment.
+This directory contains the database schema and fixture files for the GPU Dev platform. The schema is managed declaratively using SQL files and applied via OpenTofu/Kubernetes during infrastructure deployment.
 
 ## Directory Structure
 
@@ -11,10 +11,140 @@ database/
 │   ├── 001_users_and_keys.sql
 │   ├── 002_reservations.sql
 │   ├── 003_disks.sql
-│   └── 004_gpu_types.sql
+│   ├── 004_gpu_types.sql
+│   ├── 005_domain_mappings.sql
+│   ├── 006_alb_target_groups.sql
+│   ├── 007_pgmq_queues.sql
+│   ├── 008_add_expiry_tracking.sql
+│   └── 009_add_availability_to_gpu_types.sql
 └── fixtures/           # Initial data/seed files
     └── 001_initial_gpu_types.sql
 ```
+
+## Table Schemas
+
+### `api_users`
+
+User accounts for API authentication.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `user_id` | SERIAL | PRIMARY KEY | Auto-incrementing user ID |
+| `username` | VARCHAR(255) | UNIQUE, NOT NULL | GitHub username |
+| `email` | VARCHAR(255) | | User email (optional) |
+| `created_at` | TIMESTAMP | DEFAULT NOW() | Account creation time |
+| `is_active` | BOOLEAN | DEFAULT true | Account status |
+
+### `api_keys`
+
+API keys for authenticated requests.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `key_id` | SERIAL | PRIMARY KEY | Auto-incrementing key ID |
+| `user_id` | INTEGER | FK→api_users, CASCADE | Owner user ID |
+| `key_hash` | VARCHAR(128) | UNIQUE, NOT NULL | SHA-256 hash of API key |
+| `key_prefix` | VARCHAR(16) | NOT NULL | First chars for identification |
+| `created_at` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Key creation time |
+| `expires_at` | TIMESTAMP WITH TIME ZONE | | Key expiration (default: 2 hours) |
+| `last_used_at` | TIMESTAMP WITH TIME ZONE | | Last API call with this key |
+| `is_active` | BOOLEAN | DEFAULT true | Key status |
+| `description` | TEXT | | Optional key description |
+
+### `reservations`
+
+GPU reservation/job tracking.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `reservation_id` | VARCHAR(255) | PRIMARY KEY | Unique reservation ID |
+| `user_id` | VARCHAR(255) | NOT NULL | Owner's username |
+| `status` | VARCHAR(50) | NOT NULL | Status (queued, preparing, running, etc.) |
+| `gpu_type` | VARCHAR(50) | | GPU type (h100, a100, t4, etc.) |
+| `gpu_count` | INTEGER | | Number of GPUs requested |
+| `instance_type` | VARCHAR(100) | | AWS instance type |
+| `duration_hours` | FLOAT | NOT NULL | Requested duration |
+| `created_at` | TIMESTAMP WITH TIME ZONE | NOT NULL | Request creation time |
+| `launched_at` | TIMESTAMP WITH TIME ZONE | | Pod launch time |
+| `expires_at` | TIMESTAMP WITH TIME ZONE | | Expiration time |
+| `updated_at` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Last update (auto-triggered) |
+| `name` | VARCHAR(255) | | User-friendly reservation name |
+| `github_user` | VARCHAR(255) | | GitHub username for SSH keys |
+| `pod_name` | VARCHAR(255) | | Kubernetes pod name |
+| `namespace` | VARCHAR(100) | DEFAULT 'default' | Kubernetes namespace |
+| `node_ip` | VARCHAR(50) | | Node public IP for SSH |
+| `node_port` | INTEGER | | NodePort for SSH access |
+| `ssh_command` | TEXT | | Ready-to-use SSH command |
+| `jupyter_enabled` | BOOLEAN | DEFAULT FALSE | Jupyter notebook enabled |
+| `jupyter_url` | TEXT | | Jupyter access URL |
+| `jupyter_port` | INTEGER | | Jupyter port |
+| `jupyter_token` | VARCHAR(255) | | Jupyter authentication token |
+| `jupyter_error` | TEXT | | Jupyter startup error |
+| `ebs_volume_id` | VARCHAR(255) | | Attached EBS volume ID |
+| `disk_name` | VARCHAR(255) | | Persistent disk name |
+| `failure_reason` | TEXT | | Error message if failed |
+| `current_detailed_status` | TEXT | | Detailed status message |
+| `status_history` | JSONB | DEFAULT '[]' | Status change history |
+| `pod_logs` | TEXT | | Recent pod logs |
+| `warning` | TEXT | | Active warning message |
+| `secondary_users` | JSONB | DEFAULT '[]' | Additional users with access |
+| `is_multinode` | BOOLEAN | DEFAULT FALSE | Multi-node reservation |
+| `master_reservation_id` | VARCHAR(255) | | Master reservation for workers |
+| `node_index` | INTEGER | | Node index in multi-node |
+| `total_nodes` | INTEGER | | Total nodes in multi-node |
+| `cli_version` | VARCHAR(50) | | CLI version used |
+| `ebs_availability_zone` | VARCHAR(50) | | EBS volume AZ |
+| `domain_name` | VARCHAR(255) | | Subdomain name |
+| `fqdn` | VARCHAR(512) | | Full qualified domain name |
+| `alb_config` | JSONB | | ALB/NLB configuration |
+| `preserve_entrypoint` | BOOLEAN | DEFAULT false | Keep Docker ENTRYPOINT |
+| `node_private_ip` | VARCHAR(50) | | Node private IP |
+
+### `disks`
+
+Persistent disk management.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `disk_id` | UUID | PRIMARY KEY | Auto-generated disk ID |
+| `disk_name` | TEXT | NOT NULL, UNIQUE(user_id, disk_name) | Disk name |
+| `user_id` | TEXT | NOT NULL | Owner's username |
+| `size_gb` | INTEGER | | Disk size in GB |
+| `disk_size` | TEXT | | Human-readable usage (e.g., "1.2G") |
+| `created_at` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Creation time |
+| `last_used` | TIMESTAMP WITH TIME ZONE | | Last usage time |
+| `in_use` | BOOLEAN | DEFAULT FALSE | Currently attached |
+| `reservation_id` | VARCHAR(255) | FK→reservations, SET NULL | Current reservation |
+| `is_backing_up` | BOOLEAN | DEFAULT FALSE | Backup in progress |
+| `is_deleted` | BOOLEAN | DEFAULT FALSE | Soft deleted |
+| `delete_date` | DATE | | Scheduled deletion date |
+| `snapshot_count` | INTEGER | DEFAULT 0 | Number of snapshots |
+| `pending_snapshot_count` | INTEGER | DEFAULT 0 | Pending snapshots |
+| `ebs_volume_id` | TEXT | | AWS EBS volume ID |
+| `last_snapshot_at` | TIMESTAMP WITH TIME ZONE | | Last snapshot time |
+| `operation_id` | UUID | | Current async operation |
+| `operation_status` | TEXT | | Operation status |
+| `operation_error` | TEXT | | Operation error message |
+| `latest_snapshot_content_s3` | TEXT | | S3 path to snapshot |
+| `last_updated` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Auto-updated timestamp |
+
+### `gpu_types`
+
+GPU configuration and availability.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `gpu_type` | VARCHAR(50) | PRIMARY KEY | GPU type identifier |
+| `instance_type` | VARCHAR(100) | NOT NULL | AWS instance type |
+| `max_gpus` | INTEGER | NOT NULL | GPUs per instance |
+| `cpus` | INTEGER | NOT NULL | vCPUs per instance |
+| `memory_gb` | INTEGER | NOT NULL | RAM in GB |
+| `total_cluster_gpus` | INTEGER | DEFAULT 0 | Total GPUs in cluster |
+| `max_per_node` | INTEGER | | Max GPUs per node |
+| `is_active` | BOOLEAN | DEFAULT true | Type enabled |
+| `created_at` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Creation time |
+| `updated_at` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Last update |
+| `description` | TEXT | | Human-readable description |
 
 ## How It Works
 
