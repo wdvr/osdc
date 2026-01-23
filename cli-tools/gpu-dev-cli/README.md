@@ -232,6 +232,7 @@ gpu-dev list [OPTIONS]
 | `--user` | `-u` | Filter by user (`all` for all users) |
 | `--status` | `-s` | Filter by status: `active`, `queued`, `pending`, `preparing`, `expired`, `cancelled`, `failed` |
 | `--all` | `-a` | Show all reservations (including expired/cancelled) |
+| `--details` | `-d` | Show additional details including CLI version used for reservation |
 | `--watch` | | Continuously refresh every 2 seconds |
 
 ### `gpu-dev show`
@@ -267,6 +268,8 @@ gpu-dev cancel [RESERVATION_ID]
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--all` | `-a` | Cancel all your active reservations |
+| `--force` | `-f` | Skip confirmation prompt when using `--all` |
+| `--interactive/--no-interactive` | | Force interactive mode on/off (auto-detected by default) |
 
 ### `gpu-dev edit`
 
@@ -280,8 +283,9 @@ gpu-dev edit [RESERVATION_ID] [OPTIONS]
 |--------|-------------|
 | `--enable-jupyter` | Enable Jupyter Lab |
 | `--disable-jupyter` | Disable Jupyter Lab |
-| `--extend` | Extend reservation duration |
+| `--extend` | Extend reservation by specified hours (max: 24h) |
 | `--add-user` | Add secondary user (GitHub username) |
+| `--interactive/--no-interactive` | Force interactive mode on/off (auto-detected by default) |
 
 **Examples**:
 ```bash

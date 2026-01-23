@@ -815,7 +815,110 @@ kubectl get pods -n gpu-controlplane -l app=ssh-proxy
 ---
 
 **Documentation:**
-- Full API docs: `api-service/README.md`
-- Architecture details: `CLAUDE.md`
-- Timezone standards: `TIMEZONE_STANDARD.md`
-- SQL security patterns: `SQL_SECURITY_PATTERNS.md`
+
+| Document | Description |
+|----------|-------------|
+| [api-service/README.md](api-service/README.md) | Full API documentation with endpoints and examples |
+| [api-service/API_ENDPOINTS_REFERENCE.md](api-service/API_ENDPOINTS_REFERENCE.md) | Quick reference for all API endpoints |
+| [CLAUDE.md](CLAUDE.md) | AI assistant context and architecture details |
+| [database/README.md](database/README.md) | Database schema management and table definitions |
+| [shared/README.md](shared/README.md) | Shared Python utilities documentation |
+
+**Service Documentation:**
+
+| Document | Description |
+|----------|-------------|
+| [reservation-processor-service/README.md](reservation-processor-service/README.md) | Job processor pod documentation |
+| [reservation-expiry-service/README.md](reservation-expiry-service/README.md) | Reservation expiry CronJob documentation |
+| [availability-updater-service/README.md](availability-updater-service/README.md) | GPU availability updater documentation |
+
+**Development Guides:**
+
+| Document | Description |
+|----------|-------------|
+| [OPENTOFU_ONLY.md](OPENTOFU_ONLY.md) | Why OpenTofu is mandatory (never use Terraform) |
+| [DOCKER_BUILD_GUIDE.md](DOCKER_BUILD_GUIDE.md) | How to build and deploy Docker images correctly |
+| [TIMEZONE_STANDARD.md](TIMEZONE_STANDARD.md) | Timezone handling standards for Python code |
+| [SQL_SECURITY_PATTERNS.md](SQL_SECURITY_PATTERNS.md) | SQL security best practices |
+| [shared/DB_USAGE.md](shared/DB_USAGE.md) | Database connection pool usage patterns |
+| [shared/NESTED_CONTEXT_MANAGERS.md](shared/NESTED_CONTEXT_MANAGERS.md) | How nested DB context managers work |
+
+**Operations & Migrations:**
+
+| Document | Description |
+|----------|-------------|
+| [DATABASE_RECREATION_GUIDE.md](DATABASE_RECREATION_GUIDE.md) | How to recreate the database from scratch |
+| [database/MIGRATION_SUMMARY.md](database/MIGRATION_SUMMARY.md) | Schema migration implementation details |
+| [migrations/README.md](migrations/README.md) | Database migration scripts |
+| [scripts/CLEANUP_GUIDE.md](scripts/CLEANUP_GUIDE.md) | Volume and snapshot cleanup procedures |
+
+## Infrastructure Reference
+
+### OpenTofu Outputs
+
+| Output | Description |
+|--------|-------------|
+| `vpc_id` | VPC identifier |
+| `subnet_id` | Subnet identifier |
+| `eks_cluster_name` | EKS cluster name (`pytorch-gpu-dev-cluster`) |
+| `eks_cluster_endpoint` | EKS API endpoint |
+| `eks_cluster_arn` | EKS cluster ARN |
+| `placement_group_names` | Placement group names for GPU nodes |
+| `security_group_id` | Security group identifier |
+| `supported_gpu_types` | List of supported GPU types |
+| `cli_config` | CLI configuration JSON (API URL, cluster name, region) |
+| `ecr_repository_url` | ECR repository for custom images |
+| `ecr_pull_through_cache_urls` | Pull-through cache URLs (dockerhub prefix) |
+| `api_service_url` | API service HTTPS URL (CloudFront) |
+| `api_service_url_loadbalancer` | API service HTTP URL (LoadBalancer) |
+
+### Kubernetes Namespaces
+
+| Namespace | Purpose |
+|-----------|---------|
+| `gpu-dev` | GPU development server pods and user workloads |
+| `gpu-controlplane` | Control plane infrastructure (PostgreSQL, API, processors) |
+| `monitoring` | Prometheus, Grafana, and observability stack |
+| `gpu-operator` | NVIDIA GPU Operator and device plugins |
+
+### Container Registries
+
+| Registry | Purpose |
+|----------|---------|
+| **ECR - API Service** | `${account_id}.dkr.ecr.${region}.amazonaws.com/${prefix}-api-service` |
+| **ECR - Custom Images** | `${account_id}.dkr.ecr.${region}.amazonaws.com/gpu-dev-custom-images` |
+| **ECR - Docker Hub Cache** | `${account_id}.dkr.ecr.${region}.amazonaws.com/dockerhub/` |
+| **Registry Cache (ghcr.io)** | `registry-ghcr.gpu-controlplane.svc.cluster.local:5000` |
+
+### Helm Releases
+
+| Release | Chart | Version | Namespace |
+|---------|-------|---------|-----------|
+| `gpu-operator` | nvidia/gpu-operator | v25.3.3 | gpu-operator |
+| `kube-prometheus-stack` | prometheus-community/kube-prometheus-stack | v67.9.0 | monitoring |
+
+### CronJobs
+
+| CronJob | Schedule | Purpose |
+|---------|----------|---------|
+| `reservation-expiry` | `*/5 * * * *` | Expire reservations, send warnings, cleanup pods |
+| `availability-updater` | `*/5 * * * *` | Update GPU availability metrics |
+
+### Key Services
+
+| Service | Namespace | Type | Port |
+|---------|-----------|------|------|
+| `postgres-primary` | gpu-controlplane | ClusterIP | 5432 |
+| `postgres-replica` | gpu-controlplane | ClusterIP | 5432 |
+| `registry-ghcr` | gpu-controlplane | LoadBalancer | 5000 |
+| `api-service` | gpu-controlplane | ClusterIP | 80 |
+| `api-service-public` | gpu-controlplane | LoadBalancer | 80 |
+| `kube-prometheus-stack-grafana` | monitoring | NodePort | 30080 |
+
+### Storage
+
+| Resource | Type | Size | Purpose |
+|----------|------|------|---------|
+| `postgres-primary-data` | gp3 PVC | 100Gi | Primary PostgreSQL storage |
+| `postgres-replica-data` | gp3 PVC | 100Gi | Replica PostgreSQL storage |
+| `gp3` StorageClass | EBS gp3 | - | Default encrypted storage class |

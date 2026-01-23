@@ -128,7 +128,7 @@
 │  │         │ Push jobs     │ Pull jobs│ │
 │  │         ↓               │          │ │
 │  │  ┌────────────────────┴─────────┐ │ │
-│  │  │ Job Processor Pod (🚧)       │ │ │
+│  │  │ Job Processor Pod            │ │ │
 │  │  │ - Polls PGMQ queue           │ │ │
 │  │  │ - Creates dev server pods    │ │ │
 │  │  │ - Manages reservations       │ │ │
@@ -162,7 +162,7 @@ This represents a **second project built on top of the current infrastructure**,
 
 **System Architecture:**
 ```
-CLI → API → PostgreSQL + PGMQ → K8s Job Processor Pod → K8s
+CLI → API → PostgreSQL + PGMQ → K8s Job Processor → K8s
 ```
 
 **Status:**
