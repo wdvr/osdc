@@ -89,7 +89,7 @@ Table: `gpu_types` (with availability columns added by migration 009)
 
 ### Required
 
-- `POSTGRES_HOST` - PostgreSQL host (injected by Terraform)
+- `POSTGRES_HOST` - PostgreSQL host (injected by OpenTofu)
 - `POSTGRES_PORT` - PostgreSQL port (default: 5432)
 - `POSTGRES_USER` - PostgreSQL username
 - `POSTGRES_PASSWORD` - PostgreSQL password (from secret)
@@ -373,7 +373,7 @@ For issues or questions:
 - Check logs with kubectl commands above
 - Review migration documentation
 - Check database state with psql queries
-- Examine Terraform state for configuration issues
+- Examine OpenTofu state for configuration issues
 
 ---
 

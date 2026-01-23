@@ -271,7 +271,7 @@ For issues or questions:
 - Check logs with kubectl commands above
 - Review migration documentation
 - Check database state with `psql` queries
-- Examine Terraform state for configuration issues
+- Examine OpenTofu state for configuration issues
 
 ---
 
