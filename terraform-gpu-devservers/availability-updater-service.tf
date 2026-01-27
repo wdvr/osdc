@@ -233,6 +233,27 @@ resource "aws_iam_role_policy" "availability_updater_autoscaling" {
   })
 }
 
+# IAM policy for EBS and snapshots (needed for disk reconciliation)
+resource "aws_iam_role_policy" "availability_updater_ebs" {
+  name = "ebs-access"
+  role = aws_iam_role.availability_updater_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeVolumes",
+          "ec2:DescribeSnapshots",
+          "ec2:DescribeVolumesModifications"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # ============================================================================
 # Kubernetes Resources for Availability Updater Service
 # ============================================================================
@@ -320,11 +341,11 @@ resource "kubernetes_cron_job_v1" "availability_updater" {
   }
 
   spec {
-    # Run every 5 minutes
-    schedule = "*/2 * * * *"
+    # Run every 5 minutes (increased from 2 to accommodate disk reconciliation)
+    schedule = "*/5 * * * *"
 
-    # Allow concurrent runs (updates are idempotent)
-    concurrency_policy = "Allow"
+    # Forbid concurrent runs to prevent race conditions during disk reconciliation
+    concurrency_policy = "Forbid"
 
     # Keep last 3 successful and 3 failed jobs
     successful_jobs_history_limit = 3
@@ -338,8 +359,8 @@ resource "kubernetes_cron_job_v1" "availability_updater" {
       }
 
       spec {
-        # Job should complete within 5 minutes
-        active_deadline_seconds = 300
+        # Job should complete within 10 minutes (increased to accommodate disk reconciliation)
+        active_deadline_seconds = 600
 
         # Don't retry failed jobs (CronJob will run again in 5 minutes)
         backoff_limit = 0

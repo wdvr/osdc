@@ -176,6 +176,18 @@ $ gpu-dev submit --image my-model:v2 --instance p5.48xlarge
 - ✅ Implemented and functional
 - 🚧 In progress/planned
 
+**Note on Disk State Synchronization:**
+
+Disk metadata in the database is automatically reconciled with AWS EBS state every 5 minutes by the `availability-updater` service. This means:
+
+- **Attachment state** (`in_use`) reflects actual AWS attachment status
+- **Snapshot counts** are synced from AWS EBS snapshots
+- **Disk sizes** match actual EBS volume sizes
+- **Orphaned volumes** (deleted in AWS) are detected and marked
+- **Reservation associations** (`reservation_id`) are preserved for audit trails
+
+The API provides the interface for disk operations, while the reconciliation service ensures database consistency with AWS as the source of truth.
+
 ## 🔄 How It Works
 
 ### Complete Workflow
