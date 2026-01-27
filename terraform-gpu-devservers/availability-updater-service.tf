@@ -233,7 +233,7 @@ resource "aws_iam_role_policy" "availability_updater_autoscaling" {
   })
 }
 
-# IAM policy for EBS and snapshots (needed for disk reconciliation)
+# IAM policy for EBS and snapshots (needed for disk reconciliation - read-only)
 resource "aws_iam_role_policy" "availability_updater_ebs" {
   name = "ebs-access"
   role = aws_iam_role.availability_updater_role.id
@@ -249,6 +249,46 @@ resource "aws_iam_role_policy" "availability_updater_ebs" {
           "ec2:DescribeVolumesModifications"
         ]
         Resource = "*"
+      }
+    ]
+  })
+}
+
+# IAM policy for disk quarantine feature (write operations)
+resource "aws_iam_role_policy" "availability_updater_disk_quarantine" {
+  name = "disk-quarantine-access"
+  role = aws_iam_role.availability_updater_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DiskQuarantineTagging"
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateTags",
+          "ec2:DeleteTags"
+        ]
+        Resource = "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:volume/*"
+      },
+      {
+        Sid    = "DiskQuarantineSnapshot"
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateSnapshot"
+        ]
+        Resource = [
+          "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:volume/*",
+          "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:snapshot/*"
+        ]
+      },
+      {
+        Sid    = "DiskQuarantineCleanup"
+        Effect = "Allow"
+        Action = [
+          "ec2:DeleteVolume"
+        ]
+        Resource = "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:volume/*"
       }
     ]
   })
@@ -341,8 +381,9 @@ resource "kubernetes_cron_job_v1" "availability_updater" {
   }
 
   spec {
-    # Run every 5 minutes (increased from 2 to accommodate disk reconciliation)
-    schedule = "*/5 * * * *"
+    # Run every 5 minutes at fixed clock times (00, 05, 10, 15, etc.)
+    # This ensures predictable scheduling and shorter wait after deployments
+    schedule = "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
 
     # Forbid concurrent runs to prevent race conditions during disk reconciliation
     concurrency_policy = "Forbid"

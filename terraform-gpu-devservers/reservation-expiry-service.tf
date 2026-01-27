@@ -393,7 +393,9 @@ resource "kubernetes_cron_job_v1" "reservation_expiry" {
   }
 
   spec {
-    schedule                      = "*/5 * * * *"  # Every 5 minutes
+    # Run every 5 minutes at fixed clock times (00, 05, 10, 15, etc.)
+    # This ensures predictable scheduling and shorter wait after deployments
+    schedule                      = "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
     concurrency_policy            = "Forbid"       # No overlapping runs
     successful_jobs_history_limit = 3
     failed_jobs_history_limit     = 3
