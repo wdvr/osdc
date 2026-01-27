@@ -154,25 +154,45 @@
 └──────────────────────────────────────────┘
 ```
 
-**⚠️ IMPORTANT - This is a Complete Replacement, Not a Migration:**
+**Documentation:**
 
-This represents a **second project built on top of the current infrastructure**, not an evolution of the existing system. Key points:
+| Document | Description |
+|----------|-------------|
+| [api-service/README.md](api-service/README.md) | Full API documentation with endpoints and examples |
+| [api-service/API_ENDPOINTS_REFERENCE.md](api-service/API_ENDPOINTS_REFERENCE.md) | Quick reference for all API endpoints |
+| [CLAUDE.md](CLAUDE.md) | AI assistant context and architecture details |
+| [database/README.md](database/README.md) | Database schema management and table definitions |
+| [shared/README.md](shared/README.md) | Shared Python utilities documentation |
 
-- **No Backward Compatibility**: Old CLI will NOT work with new system
-- **Breaking Changes Allowed**: We can change anything without supporting legacy
-- **Complete Rewrite**: Different architecture, different patterns
-- **Not a Migration**: This is a replacement, users must upgrade completely
+**Service Documentation:**
 
-**System Architecture:**
-```
-CLI → API → PostgreSQL + PGMQ → K8s Job Processor → K8s
-```
+| Document | Description |
+|----------|-------------|
+| [reservation-processor-service/README.md](reservation-processor-service/README.md) | Job processor pod documentation |
+| [reservation-expiry-service/README.md](reservation-expiry-service/README.md) | Reservation expiry CronJob documentation |
+| [availability-updater-service/README.md](availability-updater-service/README.md) | Cluster state reconciliation (GPU availability + disk state sync) |
 
-**Status:**
-- ✅ PostgreSQL + PGMQ deployed and operational
-- ✅ API Service deployed with AWS IAM authentication and CloudFront HTTPS
-- ✅ CLI uses API exclusively
-- ✅ K8s Job Processor Pod operational
+**Development Guides:**
+
+| Document | Description |
+|----------|-------------|
+| [OPENTOFU_ONLY.md](OPENTOFU_ONLY.md) | Why OpenTofu is mandatory (never use Terraform) |
+| [DOCKER_BUILD_GUIDE.md](DOCKER_BUILD_GUIDE.md) | How to build and deploy Docker images correctly |
+| [TIMEZONE_STANDARD.md](TIMEZONE_STANDARD.md) | Timezone handling standards for Python code |
+| [SQL_SECURITY_PATTERNS.md](SQL_SECURITY_PATTERNS.md) | SQL security best practices |
+| [shared/DB_USAGE.md](shared/DB_USAGE.md) | Database connection pool usage patterns |
+| [shared/NESTED_CONTEXT_MANAGERS.md](shared/NESTED_CONTEXT_MANAGERS.md) | How nested DB context managers work |
+
+**Operations & Migrations:**
+
+| Document | Description |
+|----------|-------------|
+| [DATABASE_RECREATION_GUIDE.md](DATABASE_RECREATION_GUIDE.md) | How to recreate the database from scratch |
+| [database/MIGRATION_SUMMARY.md](database/MIGRATION_SUMMARY.md) | Schema migration implementation details |
+| [migrations/README.md](migrations/README.md) | Database migration scripts |
+| [scripts/CLEANUP_GUIDE.md](scripts/CLEANUP_GUIDE.md) | Volume and snapshot cleanup procedures |
+| [DISK_RECONCILIATION_PROPOSAL.md](DISK_RECONCILIATION_PROPOSAL.md) | Disk state reconciliation design and implementation |
+| [DISK_RECONCILIATION_DEPLOYMENT.md](DISK_RECONCILIATION_DEPLOYMENT.md) | Deployment guide for disk reconciliation feature |
 
 ## 🚀 Quick Start Commands
 

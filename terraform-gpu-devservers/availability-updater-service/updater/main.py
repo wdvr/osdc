@@ -353,7 +353,10 @@ def update_gpu_availability_for_type(
         )
 
     except Exception as e:
-        logger.error(f"Error updating availability for {gpu_type}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Error updating availability for {gpu_type}: {str(e)}",
+            exc_info=True
+        )
         raise
 
 
@@ -584,17 +587,29 @@ def run_disk_reconciliation():
         stats = reconcile_all_disks(ec2)
 
         logger.info("=== Disk Reconciliation Complete ===")
+        
+        # Check if run was skipped due to concurrent execution
+        if stats.get('skipped_concurrent_run'):
+            logger.info("Run skipped: Another reconciliation was already running")
+            return True  # Not an error, just skipped
+        
         logger.info(f"AWS Volumes: {stats['aws_volumes']}")
         logger.info(f"DB Records: {stats['db_records']}")
         logger.info(f"Synced (no changes): {stats['synced']}")
         logger.info(f"Updated: {stats['updated']}")
         logger.info(f"Created: {stats['created']}")
-        logger.info(f"Errors: {stats['errors']}")
+        logger.info(f"AWS Duplicates Found: {stats['aws_duplicates']}")
+        logger.info(f"Volumes Quarantined: {stats.get('quarantined_volumes', 0)}")
+        logger.info(f"Duplicates Skipped: {stats.get('skipped_duplicates', 0)}")
         logger.info(f"Volume ID Conflicts: {stats['volume_id_conflicts']}")
         logger.info(f"Orphaned (DB active): {stats['orphaned_db_active']}")
         logger.info(
             f"Orphaned (DB deleted): {stats['orphaned_db_deleted']}"
         )
+        logger.info(f"Cleanup - Quarantined Found: {stats.get('cleanup_quarantined_found', 0)}")
+        logger.info(f"Cleanup - Deleted (>30 days): {stats.get('cleanup_deleted', 0)}")
+        logger.info(f"Cleanup - Skipped (too recent): {stats.get('cleanup_skipped_too_recent', 0)}")
+        logger.info(f"Errors: {stats['errors']}")
 
         # Return success if no errors occurred
         return stats["errors"] == 0
