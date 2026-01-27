@@ -63,6 +63,8 @@ CLI → API → PostgreSQL + PGMQ → K8s Job Processor Pod → K8s
 - ✅ **PostgreSQL + PGMQ**: Database for all state + message queue for job processing
 - ✅ **CLI**: Python CLI tool using API exclusively
 - ✅ **Job Processor Pod**: K8s pod that continuously processes jobs from PGMQ queue
+- ✅ **Availability Updater CronJob**: Updates GPU availability + reconciles disk state from AWS (every 5 min)
+- ✅ **Reservation Expiry CronJob**: Expires reservations and cleans up pods (every 5 min)
 
 **User Workflow:**
 1. Users authenticate with AWS credentials via `gpu-dev login`
@@ -451,12 +453,14 @@ CREATE TABLE api_keys (
 - PGMQ `disk_operations` queue handles async disk create/delete
 - Job Processor Pod manages disk lifecycle and attachments
 - API endpoints provide CRUD operations for disks
+- **Availability Updater Service** reconciles disk state every 5 minutes
 
 **Features:**
 - Named persistent disks across reservations
 - Soft delete with 30-day retention
 - Automatic snapshot management
 - EBS volume backing
+- Automatic state synchronization from AWS to database (single source of truth: AWS)
 
 #### 7. **Node Management**
 
@@ -830,7 +834,7 @@ kubectl get pods -n gpu-controlplane -l app=ssh-proxy
 |----------|-------------|
 | [reservation-processor-service/README.md](reservation-processor-service/README.md) | Job processor pod documentation |
 | [reservation-expiry-service/README.md](reservation-expiry-service/README.md) | Reservation expiry CronJob documentation |
-| [availability-updater-service/README.md](availability-updater-service/README.md) | GPU availability updater documentation |
+| [availability-updater-service/README.md](availability-updater-service/README.md) | Cluster state reconciliation (GPU availability + disk state sync) |
 
 **Development Guides:**
 
@@ -851,6 +855,8 @@ kubectl get pods -n gpu-controlplane -l app=ssh-proxy
 | [database/MIGRATION_SUMMARY.md](database/MIGRATION_SUMMARY.md) | Schema migration implementation details |
 | [migrations/README.md](migrations/README.md) | Database migration scripts |
 | [scripts/CLEANUP_GUIDE.md](scripts/CLEANUP_GUIDE.md) | Volume and snapshot cleanup procedures |
+| [DISK_RECONCILIATION_PROPOSAL.md](DISK_RECONCILIATION_PROPOSAL.md) | Disk state reconciliation design and implementation |
+| [DISK_RECONCILIATION_DEPLOYMENT.md](DISK_RECONCILIATION_DEPLOYMENT.md) | Deployment guide for disk reconciliation feature |
 
 ## Infrastructure Reference
 
@@ -902,7 +908,11 @@ kubectl get pods -n gpu-controlplane -l app=ssh-proxy
 | CronJob | Schedule | Purpose |
 |---------|----------|---------|
 | `reservation-expiry` | `*/5 * * * *` | Expire reservations, send warnings, cleanup pods |
-| `availability-updater` | `*/5 * * * *` | Update GPU availability metrics |
+| `availability-updater` | `*/5 * * * *` | Update GPU availability metrics + reconcile disk state from AWS |
+
+**Note:** The `availability-updater` service now performs dual functions:
+1. **GPU Availability**: Updates real-time GPU availability in the `gpu_types` table
+2. **Disk Reconciliation**: Syncs disk metadata from AWS EBS to PostgreSQL `disks` table, ensuring database state matches AWS reality
 
 ### Key Services
 
