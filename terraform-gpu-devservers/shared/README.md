@@ -55,6 +55,34 @@ Real-time GPU resource tracking via Kubernetes API.
 **Key Class:**
 - `K8sGPUTracker` - Tracks GPU capacity, usage, and availability across cluster nodes
 
+### disk_reconciler.py
+**Disk state reconciliation between AWS EBS and PostgreSQL database.**
+
+Ensures database accurately reflects AWS EBS volume state by:
+- Syncing volume metadata (size, attachment status, snapshot counts)
+- Detecting and importing orphaned AWS volumes
+- Handling volume deletions and temporary detachments
+- Preserving audit trails (reservation associations)
+- Using atomic transactions and exponential backoff for reliability
+
+**Key Functions:**
+- `reconcile_all_disks(ec2_client)` - Main reconciliation loop (called by availability-updater service)
+- `get_all_gpudev_volumes(ec2_client)` - Fetches all EBS volumes with gpu-dev tags from AWS
+- `sync_volume_to_db(aws_vol, db_disk, ec2_client)` - Syncs AWS volume state to DB record
+- `import_volume_to_db(aws_vol, ec2_client)` - Creates DB record for orphaned AWS volume
+- `get_snapshot_info(ec2_client, volume_id, user_id)` - Retrieves snapshot metadata from AWS
+- `ensure_utc(dt)` - Normalizes datetimes to timezone-aware UTC (per project standards)
+
+**Features:**
+- Handles AWS API rate limiting with exponential backoff + jitter
+- Uses atomic database transactions for each volume (prevents race conditions)
+- Distinguishes volume replacement from conflicts
+- Detects duplicate database records
+- Timezone-aware timestamp comparisons
+- Supports EBS Multi-Attach volumes
+
+**Used By:** `availability-updater-service` (runs every 5 minutes)
+
 ### snapshot_utils.py
 EBS snapshot management utilities for persistent disk backups.
 
