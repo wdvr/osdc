@@ -69,7 +69,7 @@ def create_disk(disk_data: Dict[str, Any]) -> bool:
                     WHERE table_name = 'disks' AND column_name = 'disk_size'
                 )
             """)
-            disk_size_column_exists = cur.fetchone()[0]
+            disk_size_column_exists = cur.fetchone()['exists']
             
             if disk_size_column_exists:
                 # New schema with disk_size column
