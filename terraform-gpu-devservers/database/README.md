@@ -102,7 +102,7 @@ GPU reservation/job tracking.
 
 ### `disks`
 
-Persistent disk management.
+Persistent disk management with automatic state reconciliation.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -114,7 +114,7 @@ Persistent disk management.
 | `created_at` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Creation time |
 | `last_used` | TIMESTAMP WITH TIME ZONE | | Last usage time |
 | `in_use` | BOOLEAN | DEFAULT FALSE | Currently attached |
-| `reservation_id` | VARCHAR(255) | FK→reservations, SET NULL | Current reservation |
+| `reservation_id` | VARCHAR(255) | FK→reservations, SET NULL | Current/last reservation (preserved for audit trail) |
 | `is_backing_up` | BOOLEAN | DEFAULT FALSE | Backup in progress |
 | `is_deleted` | BOOLEAN | DEFAULT FALSE | Soft deleted |
 | `delete_date` | DATE | | Scheduled deletion date |
@@ -127,6 +127,20 @@ Persistent disk management.
 | `operation_error` | TEXT | | Operation error message |
 | `latest_snapshot_content_s3` | TEXT | | S3 path to snapshot |
 | `last_updated` | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Auto-updated timestamp |
+
+**Automatic State Reconciliation:**
+
+The `availability-updater` service (CronJob running every 5 minutes) automatically reconciles disk state from AWS EBS to the database:
+
+- **Single Source of Truth**: AWS EBS volumes are authoritative
+- **Automatic Sync**: Disk size, attachment state, snapshot counts updated from AWS
+- **Orphan Detection**: Volumes deleted in AWS are marked `in_use=false`
+- **Missing Volume Import**: AWS volumes with correct tags but no DB record are imported
+- **Audit Trail Preservation**: `reservation_id` is never cleared, preserving which reservation last used each disk
+- **Error Handling**: Conflicts and issues logged for manual investigation
+
+**Implementation**: `shared/disk_reconciler.py`
+**Documentation**: `availability-updater-service/README.md`
 
 ### `gpu_types`
 

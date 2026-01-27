@@ -1,23 +1,30 @@
-# Availability Updater Service
+# Cluster State Reconciliation Service
 
-**Status**: Migrated from Lambda to Kubernetes CronJob  
-**Version**: 1.0  
-**Last Updated**: 2026-01-21
+**Status**: Kubernetes CronJob (expanded from availability-updater)  
+**Version**: 2.0  
+**Last Updated**: 2026-01-26
 
 ---
 
 ## Overview
 
-The Availability Updater Service is a Kubernetes CronJob that maintains real-time GPU availability metrics by:
+The Cluster State Reconciliation Service is a Kubernetes CronJob that maintains consistency between AWS resources and the PostgreSQL database by:
 
+### GPU Availability Tracking
 - **Querying ASG capacity** for all GPU types across multiple Auto Scaling Groups
 - **Checking Kubernetes API** for actual GPU allocation and node status
 - **Calculating availability metrics** including total GPUs, available GPUs, and max reservable
 - **Supporting multinode reservations** for high-end GPUs (H100, H200, A100, B200)
 - **Handling CPU-only nodes** with special user slot tracking
-- **Updating PostgreSQL** with current availability data every 5 minutes
 
-This service replaced the original Lambda function `lambda/availability_updater` as part of the DynamoDB → PostgreSQL migration.
+### Disk State Reconciliation (NEW)
+- **Syncing EBS volumes** from AWS to database
+- **Reconciling disk metadata** (size, in-use status, snapshot counts)
+- **Importing orphaned volumes** that exist in AWS but not in database
+- **Handling deleted volumes** by marking them as unavailable
+- **Ensuring single source of truth** with AWS as the authoritative source
+
+Runs every 5 minutes to keep database state synchronized with AWS reality.
 
 ---
 
@@ -27,17 +34,26 @@ This service replaced the original Lambda function `lambda/availability_updater`
 
 - **Type**: Kubernetes CronJob
 - **Schedule**: Every 5 minutes (`*/5 * * * *`)
-- **Concurrency**: Allow (updates are idempotent)
-- **Timeout**: 5 minutes (`activeDeadlineSeconds: 300`)
+- **Concurrency**: Forbid (prevents race conditions during disk reconciliation)
+- **Timeout**: 10 minutes (`activeDeadlineSeconds: 600`)
 - **Namespace**: `gpu-controlplane`
+- **Execution Time**: ~3-5 minutes (1 min GPU + 2-4 min disk reconciliation)
 
 ### Key Components
 
+**Phase 1: GPU Availability Update** (~30-60 seconds)
 1. **ASG Query**: Scans all Auto Scaling Groups matching pattern `pytorch-gpu-dev-gpu-nodes-{gpu_type}*`
 2. **Kubernetes Integration**: Queries node status and pod GPU requests via K8s API
 3. **Multinode Support**: Calculates max reservable GPUs considering 4-node configurations
 4. **CPU Node Handling**: Tracks user slots on CPU-only nodes (3 users per node)
-5. **Database Updates**: Uses UPSERT to maintain current availability in PostgreSQL
+5. **Database Updates**: Uses UPSERT to maintain current availability in `gpu_types` table
+
+**Phase 2: Disk State Reconciliation** (~2-4 minutes)
+1. **Volume Discovery**: Queries all EBS volumes with `gpu-dev-user` tag
+2. **Snapshot Analysis**: Counts snapshots and detects in-progress backups
+3. **State Comparison**: Compares AWS state with database records
+4. **Drift Correction**: Updates database to match AWS reality
+5. **Orphan Handling**: Imports untracked volumes and handles deleted volumes
 
 ---
 
@@ -111,6 +127,7 @@ The service requires the following AWS permissions via IRSA:
 - **EKS**: `DescribeCluster` (for cluster access)
 - **AutoScaling**: `DescribeAutoScalingGroups` (for capacity queries)
 - **EC2**: `DescribeInstances`, `DescribeAvailabilityZones` (for instance info)
+- **EC2 EBS**: `DescribeVolumes`, `DescribeSnapshots`, `DescribeVolumesModifications` (for disk reconciliation)
 
 ### Kubernetes RBAC
 
@@ -167,8 +184,11 @@ kubectl patch cronjob availability-updater -n gpu-controlplane -p '{"spec":{"sus
 ### Metrics to Monitor
 
 - **Job Success Rate**: Should be ~100%
-- **Job Duration**: Should be <2 minutes (max 5 minutes)
+- **Job Duration**: Should be 3-5 minutes (max 10 minutes)
 - **GPU Types Updated**: Should match number of active GPU types
+- **Disks Reconciled**: Should match number of EBS volumes with gpu-dev-user tag
+- **Reconciliation Errors**: Should be 0
+- **Drift Events**: Track frequency of database updates (indicates drift)
 - **Failed Jobs**: Should be 0 or very rare
 
 ### Check Logs
@@ -231,9 +251,19 @@ kubectl logs -n gpu-controlplane job/<failed-job-name>
   - Test connectivity from within cluster
 
 #### Job Running Too Long
-- **Symptom**: Job exceeds 5 minute timeout
-- **Cause**: Large number of nodes or slow Kubernetes API
-- **Fix**: Consider increasing `activeDeadlineSeconds` or optimizing queries
+- **Symptom**: Job exceeds 10 minute timeout
+- **Cause**: Large number of nodes, volumes, or slow AWS API
+- **Fix**: Consider increasing schedule interval or optimizing queries
+
+#### Disk Reconciliation Errors
+- **Symptom**: "Error reconciling volume" or "Error importing volume"
+- **Cause**: Missing tags, invalid data, or database constraints
+- **Fix**: Check volume tags in AWS console, verify disk_name and gpu-dev-user are set
+
+#### Orphaned Volumes
+- **Symptom**: High "created" count in reconciliation stats
+- **Cause**: Volumes created outside the system or database records lost
+- **Fix**: Review imported volumes, verify they should be tracked
 
 ### No Jobs Running
 
@@ -354,6 +384,100 @@ High-end GPU types support multinode reservations:
 - Max GPUs per reservation: 32 (4 nodes * 8 GPUs)
 - Requires full nodes (all GPUs free)
 - Falls back to single node max if no full nodes available
+
+---
+
+## Disk Reconciliation Logic
+
+### Reconciliation Rules
+
+The disk reconciliation phase ensures database state matches AWS EBS reality. It handles three scenarios:
+
+#### 1. Volume in AWS but not in Database
+**Rule**: Create database entry  
+**Action**: Import volume with `is_deleted=False`, `operation_id=NULL`, `last_used=NULL`
+
+```python
+# Fields set during import:
+- disk_name: from volume tag
+- user_id: from gpu-dev-user tag
+- ebs_volume_id: volume ID
+- size_gb: from volume
+- in_use: from attachment state
+- is_deleted: False
+- snapshot_count: counted from AWS
+- is_backing_up: from pending snapshots
+```
+
+**Why**: Handles volumes created manually or database records lost due to system issues.
+
+#### 2. Volume in Database but Deleted from AWS
+
+**Rule**: Depends on `is_deleted` flag in database
+
+**Case A: `is_deleted = False`** (active record)
+- **Action**: Update `in_use=False`, `reservation_id=NULL`, keep other fields
+- **Rationale**: Volume was manually deleted in AWS, preserve database record for audit trail
+- **Impact**: User can see disk existed but is no longer available
+
+**Case B: `is_deleted = True`** (already marked deleted)
+- **Action**: No changes needed
+- **Rationale**: Expected state - disk deletion is propagating normally
+
+**Why**: Prevents accidental data loss and maintains audit history.
+
+#### 3. Volume in Both AWS and Database
+**Rule**: Sync state from AWS to database  
+**Action**: Update all reconcilable fields
+
+**Reconciled fields**:
+- `ebs_volume_id`: Volume ID (in case missing)
+- `size_gb`: Volume size
+- `in_use`: Attachment state
+- `reservation_id`: Cleared if not attached
+- `snapshot_count`: Counted from snapshots
+- `is_backing_up`: From pending snapshots
+- `last_snapshot_at`: Latest snapshot timestamp
+
+**Non-reconciled fields** (application-managed):
+- `is_deleted`: Soft delete flag
+- `operation_id`, `operation_status`, `operation_error`: Operation tracking
+- `last_used`: Not tracked by AWS
+- `latest_snapshot_content_s3`: S3 path, not in EBS metadata
+
+### Reconciliation Statistics
+
+Each run logs:
+```
+aws_volumes: Total volumes in AWS with gpu-dev-user tag
+db_records: Total disk records in database
+synced: Records that matched exactly (no updates)
+updated: Records that needed state updates
+created: New records imported from AWS
+errors: Reconciliation failures
+orphaned_db_active: Active DB records with no AWS volume
+orphaned_db_deleted: Deleted DB records with no AWS volume
+```
+
+### Edge Cases
+
+**Multiple Volumes for Same (user_id, disk_name)**:
+- Reconciliation links to first volume found
+- Manual intervention required to resolve duplicates
+
+**Volume Missing Required Tags**:
+- Skipped with warning log
+- Volume must have both `disk-name`/`disk_name` and `gpu-dev-user` tags
+
+**Snapshot Query Failures**:
+- Snapshot count/status fields not updated
+- Volume state still reconciled
+- Error logged but reconciliation continues
+
+**Database Constraint Violations**:
+- Transaction rolled back
+- Error logged
+- Reconciliation continues with next volume
 
 ---
 

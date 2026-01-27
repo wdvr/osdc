@@ -99,8 +99,11 @@
 1. **EKS Cluster** - Kubernetes cluster with GPU and CPU node groups
 2. **PostgreSQL + PGMQ** - Database with message queue for job management
 3. **API Service** - REST API for job submission with AWS IAM auth
-4. **SSH Proxy** - Secure access to development environments
-5. **Registry Cache** - Docker image caching (GHCR)
+4. **Job Processor Pod** - Polls PGMQ and manages reservation lifecycle
+5. **Availability Updater CronJob** - Updates GPU availability + reconciles disk state from AWS (every 5 min)
+6. **Reservation Expiry CronJob** - Expires reservations and cleans up pods (every 5 min)
+7. **SSH Proxy** - Secure access to development environments
+8. **Registry Cache** - Docker image caching (GHCR)
 
 ## 🏗️ Architecture
 
