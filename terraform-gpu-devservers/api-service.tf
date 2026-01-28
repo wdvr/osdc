@@ -124,7 +124,7 @@ resource "null_resource" "api_service_build" {
         sleep 1
       done
 
-      # Build and push (using 127.0.0.1:$REGISTRY_PORT for IPv4)
+      # Build and push (using host.docker.internal for Docker Desktop compatibility)
       echo ""
       echo "Building Docker image..."
       cd ${path.module}/api-service
