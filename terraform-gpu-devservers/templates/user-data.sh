@@ -6,23 +6,34 @@
 set -o xtrace
 
 # =============================================================================
-# Configure container runtimes to trust internal HTTP registries (pull-through caches)
+# Configure container runtimes to trust internal HTTP registries
 # This must be done BEFORE bootstrap.sh starts containerd/docker
 # =============================================================================
 
 # Configure containerd (certs.d method for containerd 1.5+)
 # Using Route53 private hosted zone DNS names (resolved via VPC DNS)
 
+# Native registry (for service images)
+REGISTRY_NATIVE_DNS="registry.internal.pytorch-gpu-dev.local:5000"
+mkdir -p /etc/containerd/certs.d/$REGISTRY_NATIVE_DNS
+cat > /etc/containerd/certs.d/$REGISTRY_NATIVE_DNS/hosts.toml <<NATIVE_EOF
+server = "http://$REGISTRY_NATIVE_DNS"
+
+[host."http://$REGISTRY_NATIVE_DNS"]
+  capabilities = ["pull", "resolve", "push"]
+  skip_verify = true
+NATIVE_EOF
+
 # GHCR pull-through cache
 REGISTRY_GHCR_DNS="registry-ghcr.internal.pytorch-gpu-dev.local:5000"
 mkdir -p /etc/containerd/certs.d/$REGISTRY_GHCR_DNS
-cat > /etc/containerd/certs.d/$REGISTRY_GHCR_DNS/hosts.toml <<REGISTRY_EOF
+cat > /etc/containerd/certs.d/$REGISTRY_GHCR_DNS/hosts.toml <<GHCR_EOF
 server = "http://$REGISTRY_GHCR_DNS"
 
 [host."http://$REGISTRY_GHCR_DNS"]
   capabilities = ["pull", "resolve"]
   skip_verify = true
-REGISTRY_EOF
+GHCR_EOF
 
 # Docker Hub pull-through cache
 REGISTRY_DOCKERHUB_DNS="registry-dockerhub.internal.pytorch-gpu-dev.local:5000"
@@ -40,6 +51,7 @@ mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<DOCKER_EOF
 {
   "insecure-registries": [
+    "$REGISTRY_NATIVE_DNS",
     "$REGISTRY_GHCR_DNS",
     "$REGISTRY_DOCKERHUB_DNS"
   ],
@@ -51,7 +63,7 @@ cat > /etc/docker/daemon.json <<DOCKER_EOF
 }
 DOCKER_EOF
 
-echo "Configured containerd and Docker to trust internal registry caches (GHCR, Docker Hub)"
+echo "Configured containerd and Docker to trust internal registries (native, GHCR, Docker Hub)"
 
 # Join the EKS cluster using the standard bootstrap script with GPU type label
 /etc/eks/bootstrap.sh ${cluster_name} --kubelet-extra-args '--node-labels=GpuType=${gpu_type}'

@@ -72,13 +72,14 @@ resource "kubernetes_secret" "registry_htpasswd" {
 # Setup kubectl port-forward for registry access during build
 resource "null_resource" "setup_port_forward" {
   depends_on = [
-    kubernetes_deployment.registry_ghcr,
-    kubernetes_service.registry_ghcr
+    kubernetes_deployment.registry_native,
+    kubernetes_service.registry_native,
+    aws_route53_record.registry_native
   ]
 
   triggers = {
-    registry_deployment = kubernetes_deployment.registry_ghcr.id
-    service             = kubernetes_service.registry_ghcr.id
+    registry_deployment = kubernetes_deployment.registry_native.id
+    service             = kubernetes_service.registry_native.id
   }
 
   provisioner "local-exec" {
@@ -97,17 +98,17 @@ resource "null_resource" "setup_port_forward" {
       
       # Verify registry pods are running
       echo "Verifying registry pods are running..."
-      PODS=$(kubectl get pods -n gpu-controlplane -l app=registry-cache,upstream=ghcr --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+      PODS=$(kubectl get pods -n gpu-controlplane -l app=registry-native --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
       if [ "$PODS" -eq 0 ]; then
         echo "ERROR: No running registry pods found"
-        kubectl get pods -n gpu-controlplane -l app=registry-cache,upstream=ghcr
+        kubectl get pods -n gpu-controlplane -l app=registry-native
         exit 1
       fi
       echo "✓ Found $PODS running registry pod(s)"
       
       # Start kubectl port-forward in background
       echo "Starting kubectl port-forward..."
-      kubectl port-forward -n gpu-controlplane svc/registry-ghcr 5000:5000 > /tmp/registry-port-forward.log 2>&1 &
+      kubectl port-forward -n gpu-controlplane svc/registry-native 5000:5000 > /tmp/registry-port-forward.log 2>&1 &
       PORT_FORWARD_PID=$!
       echo $PORT_FORWARD_PID > /tmp/registry-port-forward.pid
       echo "✓ Port-forward started (PID: $PORT_FORWARD_PID)"
@@ -139,10 +140,10 @@ resource "null_resource" "setup_port_forward" {
           cat /tmp/registry-port-forward.log
           echo ""
           echo "Registry pod status:"
-          kubectl get pods -n gpu-controlplane -l app=registry-cache,upstream=ghcr
+          kubectl get pods -n gpu-controlplane -l app=registry-native
           echo ""
           echo "Registry service:"
-          kubectl get svc -n gpu-controlplane registry-ghcr
+          kubectl get svc -n gpu-controlplane registry-native
           exit 1
         fi
         
@@ -199,7 +200,7 @@ resource "null_resource" "cleanup_port_forward" {
       fi
       
       # Also kill any kubectl port-forward to registry
-      pkill -f "port-forward.*registry-ghcr" || true
+      pkill -f "port-forward.*registry-native" || true
       
       echo "✓ Cleanup complete"
     EOF
@@ -230,7 +231,7 @@ output "registry_access_instructions" {
     
     Option 1: kubectl port-forward (recommended)
     -------------------------------------------
-    kubectl port-forward -n gpu-controlplane svc/registry-ghcr 5000:5000
+    kubectl port-forward -n gpu-controlplane svc/registry-native 5000:5000
     
     Then in another terminal:
     docker login localhost:5000 ${var.registry_password != "" ? "-u ${var.registry_username}" : "(no auth required)"}
@@ -241,7 +242,7 @@ output "registry_access_instructions" {
     # Get a node IP
     kubectl get nodes -o wide
     
-    # Create SSH tunnel
+    # Create SSH tunnel (registry DNS resolves to internal NLB)
     ssh -L 5000:registry.internal.${var.prefix}.local:5000 ec2-user@<node-ip> -N
     
     Then use localhost:5000 as above.
