@@ -1684,6 +1684,26 @@ resource "kubernetes_service" "registry_dockerhub" {
 # Unlike pull-through caches, this is a true registry that stores images
 # Used for: api-service, reservation-processor, ssh-proxy, etc.
 
+# TLS secret for registry-native (self-signed certificate)
+resource "kubernetes_secret" "registry_native_tls" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-native-tls"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+  }
+
+  type = "kubernetes.io/tls"
+
+  data = {
+    "tls.crt" = file("${path.module}/.certs/registry.crt")
+    "tls.key" = file("${path.module}/.certs/registry.key")
+  }
+}
+
 # ConfigMap for native registry configuration
 resource "kubernetes_config_map" "registry_native_config" {
   depends_on = [kubernetes_namespace.controlplane]
@@ -1712,6 +1732,9 @@ resource "kubernetes_config_map" "registry_native_config" {
           enabled: true
       http:
         addr: :5000
+        tls:
+          certificate: /etc/docker/registry/tls/tls.crt
+          key: /etc/docker/registry/tls/tls.key
         headers:
           X-Content-Type-Options: [nosniff]
       # No proxy configuration - this is a native registry for storing images
@@ -1752,6 +1775,7 @@ resource "kubernetes_persistent_volume_claim" "registry_native_pvc" {
 resource "kubernetes_deployment" "registry_native" {
   depends_on = [
     kubernetes_namespace.controlplane,
+    kubernetes_secret.registry_native_tls,
     kubernetes_config_map.registry_native_config,
     kubernetes_persistent_volume_claim.registry_native_pvc,
   ]
@@ -1820,6 +1844,12 @@ resource "kubernetes_deployment" "registry_native" {
           }
 
           volume_mount {
+            name       = "tls"
+            mount_path = "/etc/docker/registry/tls"
+            read_only  = true
+          }
+
+          volume_mount {
             name       = "data"
             mount_path = "/var/lib/registry"
           }
@@ -1837,8 +1867,9 @@ resource "kubernetes_deployment" "registry_native" {
 
           liveness_probe {
             http_get {
-              path = "/"
-              port = 5000
+              path   = "/"
+              port   = 5000
+              scheme = "HTTPS"
             }
             initial_delay_seconds = 10
             period_seconds        = 10
@@ -1846,8 +1877,9 @@ resource "kubernetes_deployment" "registry_native" {
 
           readiness_probe {
             http_get {
-              path = "/"
-              port = 5000
+              path   = "/"
+              port   = 5000
+              scheme = "HTTPS"
             }
             initial_delay_seconds = 5
             period_seconds        = 5
@@ -1858,6 +1890,13 @@ resource "kubernetes_deployment" "registry_native" {
           name = "config"
           config_map {
             name = kubernetes_config_map.registry_native_config.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "tls"
+          secret {
+            secret_name = kubernetes_secret.registry_native_tls.metadata[0].name
           }
         }
 

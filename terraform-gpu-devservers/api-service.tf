@@ -63,6 +63,12 @@ locals {
 }
 
 resource "null_resource" "api_service_build" {
+  depends_on = [
+    null_resource.setup_docker_certs,
+    kubernetes_deployment.registry_native,
+    kubernetes_service.registry_native,
+  ]
+
   triggers = {
     api_service_hash = local.api_service_hash
     registry         = local.registry_native_dns
@@ -99,14 +105,14 @@ resource "null_resource" "api_service_build" {
       sleep 1
       
       # Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
-      kubectl port-forward --address 127.0.0.1 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/api-service-port-forward.log 2>&1 &
+      kubectl port-forward --address 0.0.0.0 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/api-service-port-forward.log 2>&1 &
       PORT_FORWARD_PID=$!
       echo "Started port-forward (PID: $PORT_FORWARD_PID)"
       
       # Wait for port-forward to be ready
       echo "Waiting for registry to be accessible..."
       for i in {1..30}; do
-        if curl -sf --max-time 2 http://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+        if curl -sf --max-time 2 --insecure https://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
           echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
           break
         fi
@@ -122,12 +128,12 @@ resource "null_resource" "api_service_build" {
       echo ""
       echo "Building Docker image..."
       cd ${path.module}/api-service
-      docker build --platform=$PLATFORM -t 127.0.0.1:$REGISTRY_PORT/api-service:${local.api_service_image_tag} .
-      docker tag 127.0.0.1:$REGISTRY_PORT/api-service:${local.api_service_image_tag} 127.0.0.1:$REGISTRY_PORT/api-service:latest
+      docker build --platform=$PLATFORM -t host.docker.internal:$REGISTRY_PORT/api-service:${local.api_service_image_tag} .
+      docker tag host.docker.internal:$REGISTRY_PORT/api-service:${local.api_service_image_tag} host.docker.internal:$REGISTRY_PORT/api-service:latest
 
       echo "Pushing to registry..."
-      docker push 127.0.0.1:$REGISTRY_PORT/api-service:${local.api_service_image_tag}
-      docker push 127.0.0.1:$REGISTRY_PORT/api-service:latest
+      docker push host.docker.internal:$REGISTRY_PORT/api-service:${local.api_service_image_tag}
+      docker push host.docker.internal:$REGISTRY_PORT/api-service:latest
 
       # Cleanup port-forward
       echo ""
@@ -143,11 +149,6 @@ resource "null_resource" "api_service_build" {
 
     working_dir = path.module
   }
-
-  depends_on = [
-    kubernetes_deployment.registry_native,
-    kubernetes_service.registry_native
-  ]
 }
 
 # ============================================================================

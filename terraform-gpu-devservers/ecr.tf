@@ -84,6 +84,12 @@ locals {
 
 # Docker build and push using null_resource with proper architecture handling
 resource "null_resource" "docker_build_and_push" {
+  depends_on = [
+    null_resource.setup_docker_certs,
+    kubernetes_deployment.registry_native,
+    kubernetes_service.registry_native,
+  ]
+
   # Trigger rebuild when Docker context changes
   triggers = {
     docker_context_hash = local.docker_context_hash
@@ -122,14 +128,14 @@ resource "null_resource" "docker_build_and_push" {
       sleep 1
       
 # Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
-kubectl port-forward --address 127.0.0.1 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/gpu-dev-base-port-forward.log 2>&1 &
+kubectl port-forward --address 0.0.0.0 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/gpu-dev-base-port-forward.log 2>&1 &
       PORT_FORWARD_PID=$!
       echo "Started port-forward (PID: $PORT_FORWARD_PID)"
       
       # Wait for port-forward to be ready
 echo "Waiting for registry to be accessible..."
 for i in {1..30}; do
-  if curl -sf --max-time 2 http://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+  if curl -sf --max-time 2 --insecure https://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
     echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
     break
         fi
@@ -141,16 +147,16 @@ for i in {1..30}; do
         sleep 1
       done
 
-      # Build and push (using 127.0.0.1:$REGISTRY_PORT for IPv4)
+      # Build and push (using host.docker.internal for Docker Desktop compatibility)
       echo ""
       echo "Building Docker image..."
       cd ${path.module}/docker
-      docker build --platform=$PLATFORM -t 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} .
-      docker tag 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:latest
+      docker build --platform=$PLATFORM -t host.docker.internal:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} .
+      docker tag host.docker.internal:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} host.docker.internal:$REGISTRY_PORT/gpu-dev-base:latest
 
       echo "Pushing to registry..."
-      docker push 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:${local.image_tag}
-      docker push 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:latest
+      docker push host.docker.internal:$REGISTRY_PORT/gpu-dev-base:${local.image_tag}
+      docker push host.docker.internal:$REGISTRY_PORT/gpu-dev-base:latest
 
       # Cleanup port-forward
       echo ""
@@ -166,12 +172,6 @@ for i in {1..30}; do
 
     working_dir = path.module
   }
-
-  # Ensure registry is accessible before building
-  depends_on = [
-    kubernetes_deployment.registry_native,
-    kubernetes_service.registry_native
-  ]
 }
 
 # Trigger DaemonSet rollout to pull new image on all nodes after Docker rebuild
