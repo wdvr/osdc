@@ -3,7 +3,7 @@
 import subprocess
 import re
 from typing import Dict, Any
-from .config import Config
+from .config import Config, CLI_UPGRADE_MESSAGE
 from rich.spinner import Spinner
 
 
@@ -34,6 +34,9 @@ def authenticate_user(config: Config) -> Dict[str, Any]:
         }
 
     except Exception as e:
+        # Let upgrade messages pass through without re-wrapping
+        if CLI_UPGRADE_MESSAGE in str(e):
+            raise
         raise RuntimeError(f"AWS authentication failed: {e}")
 
 

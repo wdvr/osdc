@@ -179,8 +179,8 @@ resource "aws_lambda_function" "reservation_processor" {
       HOSTED_ZONE_ID                     = local.effective_domain_name != "" ? local.hosted_zone_id : ""
       SSH_DOMAIN_MAPPINGS_TABLE          = local.effective_domain_name != "" ? aws_dynamodb_table.ssh_domain_mappings.name : ""
       SSL_CERTIFICATE_ARN                = local.effective_domain_name != "" ? aws_acm_certificate.wildcard[0].arn : ""
-      LAMBDA_VERSION                     = "0.3.5"
-      MIN_CLI_VERSION                    = "0.3.5"
+      LAMBDA_VERSION                     = "0.3.6"
+      MIN_CLI_VERSION                    = "0.3.6"
       DISK_CONTENTS_BUCKET               = aws_s3_bucket.disk_contents.bucket
     }, local.alb_env_vars)
   }

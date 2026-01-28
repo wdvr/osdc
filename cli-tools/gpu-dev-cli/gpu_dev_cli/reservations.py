@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
 
-from .config import Config
+from .config import Config, CLI_UPGRADE_MESSAGE
 from .name_generator import sanitize_name
 from . import __version__
 
@@ -971,6 +971,13 @@ class ReservationManager:
 
             return availability_info
 
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "ResourceNotFoundException":
+                raise RuntimeError(CLI_UPGRADE_MESSAGE)
+            console.print(
+                f"[red]❌ Error getting GPU availability: {str(e)}[/red]")
+            return None
         except Exception as e:
             console.print(
                 f"[red]❌ Error getting GPU availability: {str(e)}[/red]")
