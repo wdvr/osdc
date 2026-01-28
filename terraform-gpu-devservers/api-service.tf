@@ -99,7 +99,7 @@ resource "null_resource" "api_service_build" {
       sleep 1
       
       # Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
-      kubectl port-forward -n gpu-controlplane svc/registry-native 127.0.0.1:$REGISTRY_PORT:5000 > /tmp/api-service-port-forward.log 2>&1 &
+      kubectl port-forward --address 127.0.0.1 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/api-service-port-forward.log 2>&1 &
       PORT_FORWARD_PID=$!
       echo "Started port-forward (PID: $PORT_FORWARD_PID)"
       
@@ -118,12 +118,12 @@ resource "null_resource" "api_service_build" {
         sleep 1
       done
 
-      # Build and push (using localhost:$REGISTRY_PORT)
+      # Build and push (using 127.0.0.1:$REGISTRY_PORT for IPv4)
       echo ""
       echo "Building Docker image..."
       cd ${path.module}/api-service
-      docker build --platform=$PLATFORM -t localhost:$REGISTRY_PORT/api-service:${local.api_service_image_tag} .
-      docker tag localhost:$REGISTRY_PORT/api-service:${local.api_service_image_tag} localhost:$REGISTRY_PORT/api-service:latest
+      docker build --platform=$PLATFORM -t 127.0.0.1:$REGISTRY_PORT/api-service:${local.api_service_image_tag} .
+      docker tag 127.0.0.1:$REGISTRY_PORT/api-service:${local.api_service_image_tag} 127.0.0.1:$REGISTRY_PORT/api-service:latest
 
       echo "Pushing to registry..."
       docker push 127.0.0.1:$REGISTRY_PORT/api-service:${local.api_service_image_tag}
