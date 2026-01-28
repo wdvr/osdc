@@ -56,21 +56,27 @@ locals {
   )))
 
   availability_updater_image_tag  = "v1-${substr(local.availability_updater_hash, 0, 8)}"
-  availability_updater_image_uri  = "${aws_ecr_repository.availability_updater_service.repository_url}:${local.availability_updater_image_tag}"
-  availability_updater_latest_uri = "${aws_ecr_repository.availability_updater_service.repository_url}:latest"
+  # Use localhost:5000 for build (via port-forward), registry-native DNS for runtime
+  availability_updater_image_uri         = "localhost:5000/availability-updater:${local.availability_updater_image_tag}"
+  availability_updater_latest_uri        = "localhost:5000/availability-updater:latest"
+  # Runtime image URIs for Kubernetes (internal cluster DNS)
+  availability_updater_runtime_uri        = "${local.registry_native_dns}/availability-updater:${local.availability_updater_image_tag}"
+  availability_updater_runtime_latest_uri = "${local.registry_native_dns}/availability-updater:latest"
 }
 
 resource "null_resource" "availability_updater_build" {
   triggers = {
     updater_hash = local.availability_updater_hash
-    ecr_repo     = aws_ecr_repository.availability_updater_service.repository_url
+    registry     = local.registry_native_dns
   }
 
   provisioner "local-exec" {
     command = <<-EOF
       set -e
 
-      echo "Building and pushing availability updater Docker image..."
+      echo "==================================================================="
+      echo "Building Availability Updater Service"
+      echo "==================================================================="
 
       # Get current architecture
       ARCH=$(uname -m)
@@ -85,41 +91,67 @@ resource "null_resource" "availability_updater_build" {
         echo "Building for linux/amd64 platform"
       fi
 
-      # Build from terraform-gpu-devservers directory (parent of availability-updater-service)
-      # This allows Docker to access both availability-updater-service/ and shared/
+      # Setup port-forward to registry on unique port
+      REGISTRY_PORT=5003
+      echo ""
+      echo "Setting up port-forward to registry on port $REGISTRY_PORT..."
+      
+      # Kill any existing port-forward on this port
+      lsof -ti:$REGISTRY_PORT | xargs kill -9 2>/dev/null || true
+      sleep 1
+      
+# Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
+kubectl port-forward -n gpu-controlplane svc/registry-native 127.0.0.1:$REGISTRY_PORT:5000 > /tmp/availability-updater-port-forward.log 2>&1 &
+      PORT_FORWARD_PID=$!
+      echo "Started port-forward (PID: $PORT_FORWARD_PID)"
+      
+      # Wait for port-forward to be ready
+      echo "Waiting for registry to be accessible..."
+      for i in {1..30}; do
+        if curl -sf --max-time 2 http://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+          echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "ERROR: Registry not accessible after 30 seconds"
+          kill $PORT_FORWARD_PID 2>/dev/null || true
+          exit 1
+        fi
+        sleep 1
+      done
+
+      # Build and push (using localhost:$REGISTRY_PORT)
+      echo ""
+      echo "Building Docker image..."
       cd ${path.module}
-
-      # Login to ECR
-      echo "Logging into ECR..."
-      aws ecr get-login-password --region ${local.current_config.aws_region} | \
-        docker login --username AWS --password-stdin ${aws_ecr_repository.availability_updater_service.repository_url}
-
-      # Build image with correct platform from parent directory
-      # Use -f to specify Dockerfile location and set build context to current directory
-      echo "Building Docker image for platform: $PLATFORM"
       docker build --platform=$PLATFORM \
         -f availability-updater-service/Dockerfile \
-        -t ${local.availability_updater_image_uri} \
+        -t localhost:$REGISTRY_PORT/availability-updater:${local.availability_updater_image_tag} \
         .
+      docker tag localhost:$REGISTRY_PORT/availability-updater:${local.availability_updater_image_tag} localhost:$REGISTRY_PORT/availability-updater:latest
 
-      # Also tag as latest
-      docker tag ${local.availability_updater_image_uri} ${local.availability_updater_latest_uri}
+      echo "Pushing to registry..."
+      docker push 127.0.0.1:$REGISTRY_PORT/availability-updater:${local.availability_updater_image_tag}
+      docker push 127.0.0.1:$REGISTRY_PORT/availability-updater:latest
 
-      # Push both tags
-      echo "Pushing Docker image..."
-      docker push ${local.availability_updater_image_uri}
-      docker push ${local.availability_updater_latest_uri}
-
-      echo "Availability updater image successfully built and pushed!"
-      echo "Image URI: ${local.availability_updater_image_uri}"
+      # Cleanup port-forward
+      echo ""
+      echo "Cleaning up port-forward..."
+      kill $PORT_FORWARD_PID 2>/dev/null || true
+      
+      echo ""
+      echo "✓ Availability updater image successfully built and pushed!"
+      echo "  Build port: $REGISTRY_PORT"
+      echo "  Runtime URI: ${local.availability_updater_runtime_uri}"
+      echo "==================================================================="
     EOF
 
     working_dir = path.module
   }
 
   depends_on = [
-    aws_ecr_repository.availability_updater_service,
-    aws_ecr_lifecycle_policy.availability_updater_service
+    kubernetes_deployment.registry_native,
+    kubernetes_service.registry_native
   ]
 }
 
@@ -424,7 +456,7 @@ resource "kubernetes_cron_job_v1" "availability_updater" {
 
             container {
               name  = "updater"
-              image = local.availability_updater_image_uri
+              image = local.availability_updater_runtime_uri
 
               # Pull latest image always
               image_pull_policy = "Always"

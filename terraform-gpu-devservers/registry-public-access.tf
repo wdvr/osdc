@@ -69,143 +69,9 @@ resource "kubernetes_secret" "registry_htpasswd" {
   }
 }
 
-# Setup kubectl port-forward for registry access during build
-resource "null_resource" "setup_port_forward" {
-  depends_on = [
-    kubernetes_deployment.registry_native,
-    kubernetes_service.registry_native,
-    aws_route53_record.registry_native
-  ]
-
-  triggers = {
-    registry_deployment = kubernetes_deployment.registry_native.id
-    service             = kubernetes_service.registry_native.id
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOF
-      set -e
-      
-      echo "==================================================================="
-      echo "Setting up port forwarding to registry..."
-      echo "==================================================================="
-      
-      # Kill any existing port-forward on 5000
-      echo "Checking for existing port-forwards on port 5000..."
-      lsof -ti:5000 | xargs kill -9 2>/dev/null || true
-      pkill -f "port-forward.*registry-ghcr" 2>/dev/null || true
-      sleep 2
-      
-      # Verify registry pods are running
-      echo "Verifying registry pods are running..."
-      PODS=$(kubectl get pods -n gpu-controlplane -l app=registry-native --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
-      if [ "$PODS" -eq 0 ]; then
-        echo "ERROR: No running registry pods found"
-        kubectl get pods -n gpu-controlplane -l app=registry-native
-        exit 1
-      fi
-      echo "✓ Found $PODS running registry pod(s)"
-      
-      # Start kubectl port-forward in background
-      echo "Starting kubectl port-forward..."
-      kubectl port-forward -n gpu-controlplane svc/registry-native 5000:5000 > /tmp/registry-port-forward.log 2>&1 &
-      PORT_FORWARD_PID=$!
-      echo $PORT_FORWARD_PID > /tmp/registry-port-forward.pid
-      echo "✓ Port-forward started (PID: $PORT_FORWARD_PID)"
-      
-      # Wait for port-forward to be ready with better testing
-      echo "Waiting for port-forward to be ready..."
-      for i in {1..30}; do
-        # Check if process is still running
-        if ! kill -0 $PORT_FORWARD_PID 2>/dev/null; then
-          echo "ERROR: Port-forward process died"
-          cat /tmp/registry-port-forward.log
-          exit 1
-        fi
-        
-        # Test actual connectivity
-        if curl -sf --max-time 2 http://localhost:5000/v2/ > /dev/null 2>&1; then
-          echo "✓ Registry is accessible at localhost:5000"
-          
-          # Additional test: verify we can list catalog
-          if curl -sf --max-time 2 http://localhost:5000/v2/_catalog > /dev/null 2>&1; then
-            echo "✓ Registry API is fully functional"
-            break
-          fi
-        fi
-        
-        if [ $i -eq 30 ]; then
-          echo "ERROR: Port-forward did not become ready after 30 seconds"
-          echo "Port-forward logs:"
-          cat /tmp/registry-port-forward.log
-          echo ""
-          echo "Registry pod status:"
-          kubectl get pods -n gpu-controlplane -l app=registry-native
-          echo ""
-          echo "Registry service:"
-          kubectl get svc -n gpu-controlplane registry-native
-          exit 1
-        fi
-        
-        echo "  Attempt $i/30..."
-        sleep 1
-      done
-      
-      # Docker login if password is set
-      if [ -n "${var.registry_password}" ]; then
-        echo ""
-        echo "Logging in to registry..."
-        echo "${var.registry_password}" | docker login localhost:5000 -u "${var.registry_username}" --password-stdin
-        echo "✓ Docker login successful"
-      fi
-      
-      echo ""
-      echo "==================================================================="
-      echo "✓ Registry is ready for builds at localhost:5000"
-      echo "  Port-forward PID: $PORT_FORWARD_PID"
-      echo "  Log file: /tmp/registry-port-forward.log"
-      echo "==================================================================="
-    EOF
-  }
-}
-
-# Cleanup port-forward after builds complete
-resource "null_resource" "cleanup_port_forward" {
-  depends_on = [
-    # Only wait for builds that use the registry (not ssh_proxy which uses ECR)
-    null_resource.api_service_build,
-    null_resource.reservation_processor_build,
-    null_resource.availability_updater_build,
-    null_resource.reservation_expiry_build,
-    null_resource.docker_build_and_push
-  ]
-
-  triggers = {
-    always_run = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOF
-      set -e
-      
-      echo "Cleaning up port-forward..."
-      
-      if [ -f /tmp/registry-port-forward.pid ]; then
-        PID=$(cat /tmp/registry-port-forward.pid)
-        if kill -0 $PID 2>/dev/null; then
-          kill $PID || true
-          echo "✓ Port-forward stopped (PID: $PID)"
-        fi
-        rm /tmp/registry-port-forward.pid
-      fi
-      
-      # Also kill any kubectl port-forward to registry
-      pkill -f "port-forward.*registry-native" || true
-      
-      echo "✓ Cleanup complete"
-    EOF
-  }
-}
+# Note: Port-forward management is now embedded in each build resource
+# Each build starts its own port-forward, uses it, and cleans it up
+# This is more reliable than trying to maintain a long-running background port-forward
 
 # Local variable for registry URL (localhost during builds)
 locals {
@@ -235,7 +101,7 @@ output "registry_access_instructions" {
     
     Then in another terminal:
     docker login localhost:5000 ${var.registry_password != "" ? "-u ${var.registry_username}" : "(no auth required)"}
-    docker push localhost:5000/myimage:v1
+    docker push 127.0.0.1:5000/myimage:v1
     
     Option 2: SSH tunnel via node
     ------------------------------
