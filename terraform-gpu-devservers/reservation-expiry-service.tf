@@ -101,7 +101,7 @@ resource "null_resource" "reservation_expiry_build" {
       sleep 1
       
 # Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
-kubectl port-forward -n gpu-controlplane svc/registry-native 127.0.0.1:$REGISTRY_PORT:5000 > /tmp/reservation-expiry-port-forward.log 2>&1 &
+kubectl port-forward --address 127.0.0.1 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/reservation-expiry-port-forward.log 2>&1 &
       PORT_FORWARD_PID=$!
       echo "Started port-forward (PID: $PORT_FORWARD_PID)"
       
@@ -120,15 +120,15 @@ kubectl port-forward -n gpu-controlplane svc/registry-native 127.0.0.1:$REGISTRY
         sleep 1
       done
 
-      # Build and push (using localhost:$REGISTRY_PORT)
+      # Build and push (using 127.0.0.1:$REGISTRY_PORT for IPv4)
       echo ""
       echo "Building Docker image..."
       cd ${path.module}
       docker build --platform=$PLATFORM \
         -f reservation-expiry-service/Dockerfile \
-        -t localhost:$REGISTRY_PORT/reservation-expiry:${local.reservation_expiry_image_tag} \
+        -t 127.0.0.1:$REGISTRY_PORT/reservation-expiry:${local.reservation_expiry_image_tag} \
         .
-      docker tag localhost:$REGISTRY_PORT/reservation-expiry:${local.reservation_expiry_image_tag} localhost:$REGISTRY_PORT/reservation-expiry:latest
+      docker tag 127.0.0.1:$REGISTRY_PORT/reservation-expiry:${local.reservation_expiry_image_tag} 127.0.0.1:$REGISTRY_PORT/reservation-expiry:latest
 
       echo "Pushing to registry..."
       docker push 127.0.0.1:$REGISTRY_PORT/reservation-expiry:${local.reservation_expiry_image_tag}

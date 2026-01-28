@@ -122,7 +122,7 @@ resource "null_resource" "docker_build_and_push" {
       sleep 1
       
 # Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
-kubectl port-forward -n gpu-controlplane svc/registry-native 127.0.0.1:$REGISTRY_PORT:5000 > /tmp/gpu-dev-base-port-forward.log 2>&1 &
+kubectl port-forward --address 127.0.0.1 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/gpu-dev-base-port-forward.log 2>&1 &
       PORT_FORWARD_PID=$!
       echo "Started port-forward (PID: $PORT_FORWARD_PID)"
       
@@ -141,16 +141,16 @@ for i in {1..30}; do
         sleep 1
       done
 
-      # Build and push (using localhost:$REGISTRY_PORT)
+      # Build and push (using 127.0.0.1:$REGISTRY_PORT for IPv4)
       echo ""
       echo "Building Docker image..."
       cd ${path.module}/docker
-      docker build --platform=$PLATFORM -t localhost:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} .
-      docker tag localhost:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} localhost:$REGISTRY_PORT/gpu-dev-base:latest
+      docker build --platform=$PLATFORM -t 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} .
+      docker tag 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:latest
 
       echo "Pushing to registry..."
-      docker push localhost:$REGISTRY_PORT/gpu-dev-base:${local.image_tag}
-      docker push localhost:$REGISTRY_PORT/gpu-dev-base:latest
+      docker push 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:${local.image_tag}
+      docker push 127.0.0.1:$REGISTRY_PORT/gpu-dev-base:latest
 
       # Cleanup port-forward
       echo ""
