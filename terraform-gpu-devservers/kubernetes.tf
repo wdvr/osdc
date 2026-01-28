@@ -1269,6 +1269,12 @@ resource "kubernetes_deployment" "registry_ghcr" {
       }
 
       spec {
+        # Set fsGroup so mounted volume is writable by registry container
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
         # Prefer running on CPU management nodes
         node_selector = {
           NodeType = "cpu"
@@ -1549,6 +1555,12 @@ resource "kubernetes_deployment" "registry_dockerhub" {
       }
 
       spec {
+        # Set fsGroup so mounted volume is writable by registry container
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
         # Prefer running on CPU management nodes
         node_selector = {
           NodeType = "cpu"
@@ -1773,6 +1785,12 @@ resource "kubernetes_deployment" "registry_native" {
       }
 
       spec {
+        # Set fsGroup so mounted volume is writable by registry container
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
         # Prefer running on CPU management nodes
         node_selector = {
           NodeType = "cpu"
@@ -2252,7 +2270,7 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
           initContainers = [
             {
               name            = "pull-gpu-dev-image"
-              image           = local.latest_image_uri  # Use stable 'latest' tag
+              image           = local.runtime_latest_image_uri  # Use stable 'latest' tag
               imagePullPolicy = "Always"
               command         = ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
             }
