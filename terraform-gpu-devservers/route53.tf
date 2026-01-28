@@ -84,6 +84,39 @@ output "registry_dockerhub_dns" {
   value       = "registry-dockerhub.internal.${var.prefix}.local"
 }
 
+# =============================================================================
+# Native Registry DNS (for internal service images)
+# =============================================================================
+
+# Data source to find the NLB created by the Kubernetes LoadBalancer service
+data "aws_lb" "registry_native" {
+  depends_on = [kubernetes_service.registry_native]
+
+  tags = {
+    "kubernetes.io/service-name" = "gpu-controlplane/registry-native"
+  }
+}
+
+# DNS record for the native registry
+# Points to the internal NLB that fronts the registry service
+resource "aws_route53_record" "registry_native" {
+  zone_id = aws_route53_zone.internal.zone_id
+  name    = "registry.internal.${var.prefix}.local"
+  type    = "A"
+
+  alias {
+    name                   = data.aws_lb.registry_native.dns_name
+    zone_id                = data.aws_lb.registry_native.zone_id
+    evaluate_target_health = true
+  }
+}
+
+# Output the internal DNS name for the native registry
+output "registry_native_dns" {
+  description = "DNS name for the native in-cluster registry (for service images)"
+  value       = "registry.internal.${var.prefix}.local"
+}
+
 output "internal_hosted_zone_id" {
   description = "The private hosted zone ID for internal VPC DNS"
   value       = aws_route53_zone.internal.zone_id
