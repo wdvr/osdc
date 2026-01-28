@@ -65,6 +65,12 @@ locals {
 }
 
 resource "null_resource" "availability_updater_build" {
+  depends_on = [
+    null_resource.setup_docker_certs,
+    kubernetes_deployment.registry_native,
+    kubernetes_service.registry_native,
+  ]
+
   triggers = {
     updater_hash = local.availability_updater_hash
     registry     = local.registry_native_dns
@@ -101,14 +107,14 @@ resource "null_resource" "availability_updater_build" {
       sleep 1
       
 # Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
-kubectl port-forward --address 127.0.0.1 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/availability-updater-port-forward.log 2>&1 &
+kubectl port-forward --address 0.0.0.0 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/availability-updater-port-forward.log 2>&1 &
       PORT_FORWARD_PID=$!
       echo "Started port-forward (PID: $PORT_FORWARD_PID)"
       
       # Wait for port-forward to be ready
       echo "Waiting for registry to be accessible..."
       for i in {1..30}; do
-        if curl -sf --max-time 2 http://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+        if curl -sf --max-time 2 --insecure https://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
           echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
           break
         fi
@@ -126,13 +132,13 @@ kubectl port-forward --address 127.0.0.1 -n gpu-controlplane svc/registry-native
       cd ${path.module}
       docker build --platform=$PLATFORM \
         -f availability-updater-service/Dockerfile \
-        -t 127.0.0.1:$REGISTRY_PORT/availability-updater:${local.availability_updater_image_tag} \
+        -t host.docker.internal:$REGISTRY_PORT/availability-updater:${local.availability_updater_image_tag} \
         .
-      docker tag 127.0.0.1:$REGISTRY_PORT/availability-updater:${local.availability_updater_image_tag} 127.0.0.1:$REGISTRY_PORT/availability-updater:latest
+      docker tag host.docker.internal:$REGISTRY_PORT/availability-updater:${local.availability_updater_image_tag} host.docker.internal:$REGISTRY_PORT/availability-updater:latest
 
       echo "Pushing to registry..."
-      docker push 127.0.0.1:$REGISTRY_PORT/availability-updater:${local.availability_updater_image_tag}
-      docker push 127.0.0.1:$REGISTRY_PORT/availability-updater:latest
+      docker push host.docker.internal:$REGISTRY_PORT/availability-updater:${local.availability_updater_image_tag}
+      docker push host.docker.internal:$REGISTRY_PORT/availability-updater:latest
 
       # Cleanup port-forward
       echo ""
@@ -148,11 +154,6 @@ kubectl port-forward --address 127.0.0.1 -n gpu-controlplane svc/registry-native
 
     working_dir = path.module
   }
-
-  depends_on = [
-    kubernetes_deployment.registry_native,
-    kubernetes_service.registry_native
-  ]
 }
 
 # ============================================================================
