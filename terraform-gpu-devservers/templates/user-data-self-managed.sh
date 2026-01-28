@@ -28,27 +28,43 @@ apt-get update -y
 apt-get install -y htop wget curl nvtop
 
 # =============================================================================
-# Configure container runtimes to trust internal HTTP registry (pull-through cache)
+# Configure container runtimes to trust internal HTTP registries (pull-through caches)
 # This must be done BEFORE bootstrap.sh starts containerd/docker
 # =============================================================================
 
 # Configure containerd (certs.d method for containerd 1.5+)
-# Using Route53 private hosted zone DNS name (resolved via VPC DNS)
-REGISTRY_DNS="registry-ghcr.internal.pytorch-gpu-dev.local:5000"
-mkdir -p /etc/containerd/certs.d/$REGISTRY_DNS
-cat > /etc/containerd/certs.d/$REGISTRY_DNS/hosts.toml <<REGISTRY_EOF
-server = "http://$REGISTRY_DNS"
+# Using Route53 private hosted zone DNS names (resolved via VPC DNS)
 
-[host."http://$REGISTRY_DNS"]
+# GHCR pull-through cache
+REGISTRY_GHCR_DNS="registry-ghcr.internal.pytorch-gpu-dev.local:5000"
+mkdir -p /etc/containerd/certs.d/$REGISTRY_GHCR_DNS
+cat > /etc/containerd/certs.d/$REGISTRY_GHCR_DNS/hosts.toml <<REGISTRY_EOF
+server = "http://$REGISTRY_GHCR_DNS"
+
+[host."http://$REGISTRY_GHCR_DNS"]
   capabilities = ["pull", "resolve"]
   skip_verify = true
 REGISTRY_EOF
+
+# Docker Hub pull-through cache
+REGISTRY_DOCKERHUB_DNS="registry-dockerhub.internal.pytorch-gpu-dev.local:5000"
+mkdir -p /etc/containerd/certs.d/$REGISTRY_DOCKERHUB_DNS
+cat > /etc/containerd/certs.d/$REGISTRY_DOCKERHUB_DNS/hosts.toml <<DOCKERHUB_EOF
+server = "http://$REGISTRY_DOCKERHUB_DNS"
+
+[host."http://$REGISTRY_DOCKERHUB_DNS"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+DOCKERHUB_EOF
 
 # Configure Docker daemon (if Docker is present/used)
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<DOCKER_EOF
 {
-  "insecure-registries": ["$REGISTRY_DNS"],
+  "insecure-registries": [
+    "$REGISTRY_GHCR_DNS",
+    "$REGISTRY_DOCKERHUB_DNS"
+  ],
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "100m",
@@ -57,7 +73,7 @@ cat > /etc/docker/daemon.json <<DOCKER_EOF
 }
 DOCKER_EOF
 
-echo "Configured containerd and Docker to trust internal registry cache"
+echo "Configured containerd and Docker to trust internal registry caches (GHCR, Docker Hub)"
 
 # Join EKS cluster with GPU node labels
 /etc/eks/bootstrap.sh ${cluster_name} \
