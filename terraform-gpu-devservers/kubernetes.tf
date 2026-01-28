@@ -1,8 +1,9 @@
 # Kubernetes resources for GPU development pods
 
-# Local variable for internal registry DNS name (Route53 private hosted zone)
+# Local variables for internal registry DNS names (Route53 private hosted zone)
 locals {
-  registry_ghcr_dns = "registry-ghcr.internal.${var.prefix}.local:5000"
+  registry_ghcr_dns       = "registry-ghcr.internal.${var.prefix}.local:5000"
+  registry_dockerhub_dns  = "registry-dockerhub.internal.${var.prefix}.local:5000"
 }
 
 # AWS Auth ConfigMap to allow Lambda roles to access EKS
@@ -662,7 +663,7 @@ resource "kubernetes_stateful_set" "postgres_primary" {
 
         init_container {
           name  = "init-config"
-          image = "busybox:1.36"
+          image = "busybox:1.36"  # Direct pull - can migrate to cache after registry-dockerhub is stable
 
           security_context {
             run_as_user = 999
@@ -1283,7 +1284,7 @@ resource "kubernetes_deployment" "registry_ghcr" {
         # Init container to inject credentials into config
         init_container {
           name  = "inject-credentials"
-          image = "busybox:1.36"
+          image = "busybox:1.36"  # Must use direct pull for registry bootstrap
 
           command = ["/bin/sh", "-c"]
           args = [<<-EOT
@@ -1424,6 +1425,235 @@ resource "kubernetes_service" "registry_ghcr" {
     selector = {
       app      = "registry-cache"
       upstream = "ghcr"
+    }
+
+    port {
+      name        = "registry"
+      port        = 5000
+      target_port = 5000
+    }
+  }
+}
+
+# =============================================================================
+# Registry Pull-Through Cache for Docker Hub
+# =============================================================================
+# Caches images from docker.io to improve pull times and avoid rate limits
+# Usage: Instead of busybox:1.36, use:
+#        registry-dockerhub.internal.pytorch-gpu-dev.local:5000/library/busybox:1.36
+# The DNS name is resolved via Route53 private hosted zone → internal NLB → registry pod
+
+# ConfigMap for Docker Hub registry cache configuration
+# Note: Docker Hub pull-through cache doesn't require authentication for public images
+resource "kubernetes_config_map" "registry_dockerhub_config" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-dockerhub-config"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  data = {
+    "config.yml" = <<-EOT
+      version: 0.1
+      log:
+        level: info
+        fields:
+          service: registry
+      storage:
+        filesystem:
+          rootdirectory: /var/lib/registry
+        cache:
+          blobdescriptor: inmemory
+        delete:
+          enabled: true
+      http:
+        addr: :5000
+        headers:
+          X-Content-Type-Options: [nosniff]
+      proxy:
+        remoteurl: https://registry-1.docker.io
+    EOT
+  }
+}
+
+# PersistentVolumeClaim for Docker Hub registry cache storage
+resource "kubernetes_persistent_volume_claim" "registry_dockerhub_pvc" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_storage_class.gp3,
+  ]
+
+  wait_until_bound = false
+
+  metadata {
+    name      = "registry-dockerhub-data"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  spec {
+    access_modes       = ["ReadWriteOnce"]
+    storage_class_name = kubernetes_storage_class.gp3.metadata[0].name
+
+    resources {
+      requests = {
+        storage = "50Gi"
+      }
+    }
+  }
+}
+
+# Deployment for Docker Hub pull-through cache
+resource "kubernetes_deployment" "registry_dockerhub" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_config_map.registry_dockerhub_config,
+    kubernetes_persistent_volume_claim.registry_dockerhub_pvc,
+  ]
+
+  metadata {
+    name      = "registry-dockerhub"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app      = "registry-cache"
+        upstream = "dockerhub"
+      }
+    }
+
+    strategy {
+      type = "Recreate"  # Required for RWO PVC
+    }
+
+    template {
+      metadata {
+        labels = {
+          app      = "registry-cache"
+          upstream = "dockerhub"
+        }
+      }
+
+      spec {
+        # Prefer running on CPU management nodes
+        node_selector = {
+          NodeType = "cpu"
+        }
+
+        # Tolerate CPU-only node taint
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        container {
+          name  = "registry"
+          image = "registry:2"
+
+          port {
+            container_port = 5000
+            name           = "registry"
+          }
+
+          volume_mount {
+            name       = "config"
+            mount_path = "/etc/docker/registry"
+          }
+
+          volume_mount {
+            name       = "data"
+            mount_path = "/var/lib/registry"
+          }
+
+          resources {
+            requests = {
+              cpu    = "100m"
+              memory = "128Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/"
+              port = 5000
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 10
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/"
+              port = 5000
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+          }
+        }
+
+        volume {
+          name = "config"
+          config_map {
+            name = kubernetes_config_map.registry_dockerhub_config.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.registry_dockerhub_pvc.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+}
+
+# Service for Docker Hub pull-through cache
+# Uses internal Network Load Balancer so nodes can reach it via VPC DNS
+resource "kubernetes_service" "registry_dockerhub" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-dockerhub"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+    annotations = {
+      # Use internal NLB (not internet-facing)
+      "service.beta.kubernetes.io/aws-load-balancer-internal" = "true"
+      "service.beta.kubernetes.io/aws-load-balancer-type"     = "nlb"
+      # Cross-zone load balancing for reliability
+      "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
+    }
+  }
+
+  spec {
+    type = "LoadBalancer"
+
+    selector = {
+      app      = "registry-cache"
+      upstream = "dockerhub"
     }
 
     port {

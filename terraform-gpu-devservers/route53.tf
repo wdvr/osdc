@@ -51,6 +51,39 @@ output "registry_ghcr_dns" {
   value       = "registry-ghcr.internal.${var.prefix}.local"
 }
 
+# =============================================================================
+# Docker Hub Pull-Through Cache DNS
+# =============================================================================
+
+# Data source to find the NLB created by the Kubernetes LoadBalancer service
+data "aws_lb" "registry_dockerhub" {
+  depends_on = [kubernetes_service.registry_dockerhub]
+
+  tags = {
+    "kubernetes.io/service-name" = "gpu-controlplane/registry-dockerhub"
+  }
+}
+
+# DNS record for the Docker Hub pull-through cache
+# Points to the internal NLB that fronts the registry service
+resource "aws_route53_record" "registry_dockerhub" {
+  zone_id = aws_route53_zone.internal.zone_id
+  name    = "registry-dockerhub.internal.${var.prefix}.local"
+  type    = "A"
+
+  alias {
+    name                   = data.aws_lb.registry_dockerhub.dns_name
+    zone_id                = data.aws_lb.registry_dockerhub.zone_id
+    evaluate_target_health = true
+  }
+}
+
+# Output the internal DNS name for the Docker Hub registry
+output "registry_dockerhub_dns" {
+  description = "DNS name for the Docker Hub pull-through cache registry"
+  value       = "registry-dockerhub.internal.${var.prefix}.local"
+}
+
 output "internal_hosted_zone_id" {
   description = "The private hosted zone ID for internal VPC DNS"
   value       = aws_route53_zone.internal.zone_id

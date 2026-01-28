@@ -215,7 +215,6 @@ def reconcile_all_disks(ec2_client) -> dict[str, int]:
                         with get_db_transaction():
                             # If DB record exists, update it to point to current volume
                             if db_record:
-                                from .disk_db import update_disk
                                 db_update_success = update_disk(
                                     user_id,
                                     disk_name,
