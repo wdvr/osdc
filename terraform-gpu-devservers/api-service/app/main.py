@@ -1454,27 +1454,31 @@ async def get_gpu_availability(
                 )
             
             # Query active/preparing reservations (GPU in use)
+            # Use LOWER() to handle case-insensitive matching with gpu_types table
             in_use_query = """
                 SELECT 
-                    gpu_type,
+                    LOWER(gpu_type) as gpu_type,
                     COALESCE(SUM(gpu_count), 0) as count
                 FROM reservations
                 WHERE status IN ('active', 'preparing')
                 AND gpu_type IS NOT NULL
-                GROUP BY gpu_type
+                GROUP BY LOWER(gpu_type)
+                ORDER BY LOWER(gpu_type)
             """
             in_use_rows = await conn.fetch(in_use_query)
             in_use_map = {row["gpu_type"]: int(row["count"]) for row in in_use_rows}
             
             # Query queued/pending reservations
+            # Use LOWER() to handle case-insensitive matching with gpu_types table
             queued_query = """
                 SELECT 
-                    gpu_type,
+                    LOWER(gpu_type) as gpu_type,
                     COALESCE(SUM(gpu_count), 0) as count
                 FROM reservations
                 WHERE status IN ('queued', 'pending')
                 AND gpu_type IS NOT NULL
-                GROUP BY gpu_type
+                GROUP BY LOWER(gpu_type)
+                ORDER BY LOWER(gpu_type)
             """
             queued_rows = await conn.fetch(queued_query)
             queued_map = {row["gpu_type"]: int(row["count"]) for row in queued_rows}
@@ -1557,27 +1561,31 @@ async def get_cluster_status(
             status_counts = {row["status"]: int(row["count"]) for row in status_rows}
             
             # Query GPU usage by type and status
+            # Use LOWER() to handle case-insensitive matching with gpu_types table
             in_use_query = """
                 SELECT 
-                    gpu_type,
+                    LOWER(gpu_type) as gpu_type,
                     COALESCE(SUM(gpu_count), 0) as count
                 FROM reservations
                 WHERE status IN ('active', 'preparing')
                 AND gpu_type IS NOT NULL
-                GROUP BY gpu_type
+                GROUP BY LOWER(gpu_type)
+                ORDER BY LOWER(gpu_type)
             """
             in_use_rows = await conn.fetch(in_use_query)
             in_use_map = {row["gpu_type"]: int(row["count"]) for row in in_use_rows}
             
             # Query queued/pending GPUs by type
+            # Use LOWER() to handle case-insensitive matching with gpu_types table
             queued_query = """
                 SELECT 
-                    gpu_type,
+                    LOWER(gpu_type) as gpu_type,
                     COALESCE(SUM(gpu_count), 0) as count
                 FROM reservations
                 WHERE status IN ('queued', 'pending')
                 AND gpu_type IS NOT NULL
-                GROUP BY gpu_type
+                GROUP BY LOWER(gpu_type)
+                ORDER BY LOWER(gpu_type)
             """
             queued_rows = await conn.fetch(queued_query)
             queued_map = {row["gpu_type"]: int(row["count"]) for row in queued_rows}
@@ -1605,6 +1613,9 @@ async def get_cluster_status(
                     max_per_node=config["max_per_node"]
                 )
             
+            # Sort alphabetically by gpu_type
+            sorted_by_gpu_type = dict(sorted(by_gpu_type.items()))
+            
             return ClusterStatusResponse(
                 total_gpus=total_gpus,
                 available_gpus=available_gpus,
@@ -1614,7 +1625,7 @@ async def get_cluster_status(
                 preparing_reservations=status_counts.get("preparing", 0),
                 queued_reservations=status_counts.get("queued", 0),
                 pending_reservations=status_counts.get("pending", 0),
-                by_gpu_type=by_gpu_type,
+                by_gpu_type=sorted_by_gpu_type,
                 timestamp=datetime.now(UTC)
             )
     
