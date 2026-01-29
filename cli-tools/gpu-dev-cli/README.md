@@ -36,7 +36,20 @@ pip install -e .
 
 ### Initial Setup
 
+**Option 1: Setup Wizard (Recommended)**
 ```bash
+gpu-dev setup
+```
+
+Interactive wizard that configures:
+- API service URL (HTTPS CloudFront endpoint)
+- GitHub username (for SSH keys)
+
+**Option 2: Manual Configuration**
+```bash
+# Set API URL (get from terraform output)
+gpu-dev config set api_url https://d1234567890abc.cloudfront.net
+
 # Set your GitHub username (required for SSH key authentication)
 gpu-dev config set github_user your-github-username
 
@@ -45,6 +58,12 @@ gpu-dev config show
 ```
 
 Configuration is stored at `~/.config/gpu-dev/config.json`.
+
+**Get API URL from infrastructure:**
+```bash
+cd terraform-gpu-devservers
+tofu output api_service_url
+```
 
 ### SSH Config Integration
 
@@ -67,18 +86,68 @@ When enabled, this adds `Include ~/.gpu-dev/*-sshconfig` to:
 The CLI uses your AWS credentials. Configure via:
 - `aws configure` command
 - Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
-- IAM roles (for EC2/Lambda)
+- IAM roles (for EC2 instances)
 - SSO: `aws sso login --profile your-profile`
+
+**Recommended:** Use AWS profile named `gpu-dev` for automatic detection:
+```bash
+aws configure --profile gpu-dev
+# or
+aws sso login --profile gpu-dev
+```
+
+### Setting Environment Defaults (For Admins)
+
+After deploying infrastructure, you can set default API URLs for test/prod environments in `gpu_dev_cli/config.py`:
+
+```python
+ENVIRONMENTS = {
+    "test": {
+        "region": "us-west-1",
+        "workspace": "default",
+        "description": "Test environment",
+        "api_url": "https://d1234test.cloudfront.net",  # Update this
+    },
+    "prod": {
+        "region": "us-east-2",
+        "workspace": "prod",
+        "description": "Production environment",
+        "api_url": "https://d5678prod.cloudfront.net",  # Update this
+    },
+}
+```
+
+**Get URLs:**
+```bash
+# Test environment
+cd terraform-gpu-devservers
+tofu output api_service_url
+
+# Prod environment (if using workspaces)
+tofu workspace select prod
+tofu output api_service_url
+```
+
+**Benefits:**
+- Users don't need to configure API URL manually
+- Environment switching (`gpu-dev config environment test`) includes API URL
+- Simplifies team onboarding
 
 ---
 
 ## Quick Start
 
 ```bash
+# First time setup (run once)
+gpu-dev setup
+
+# Authenticate with API
+gpu-dev login
+
 # Interactive reservation (guided setup)
 gpu-dev reserve
 
-# Reserve 4 H100 GPUs for 8 hours
+# Or reserve directly
 gpu-dev reserve --gpu-type h100 --gpus 4 --hours 8
 
 # Check your reservations
@@ -163,6 +232,7 @@ gpu-dev list [OPTIONS]
 | `--user` | `-u` | Filter by user (`all` for all users) |
 | `--status` | `-s` | Filter by status: `active`, `queued`, `pending`, `preparing`, `expired`, `cancelled`, `failed` |
 | `--all` | `-a` | Show all reservations (including expired/cancelled) |
+| `--details` | `-d` | Show additional details including CLI version used for reservation |
 | `--watch` | | Continuously refresh every 2 seconds |
 
 ### `gpu-dev show`
@@ -198,6 +268,8 @@ gpu-dev cancel [RESERVATION_ID]
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--all` | `-a` | Cancel all your active reservations |
+| `--force` | `-f` | Skip confirmation prompt when using `--all` |
+| `--interactive/--no-interactive` | | Force interactive mode on/off (auto-detected by default) |
 
 ### `gpu-dev edit`
 
@@ -211,8 +283,9 @@ gpu-dev edit [RESERVATION_ID] [OPTIONS]
 |--------|-------------|
 | `--enable-jupyter` | Enable Jupyter Lab |
 | `--disable-jupyter` | Disable Jupyter Lab |
-| `--extend` | Extend reservation duration |
+| `--extend` | Extend reservation by specified hours (max: 24h) |
 | `--add-user` | Add secondary user (GitHub username) |
+| `--interactive/--no-interactive` | Force interactive mode on/off (auto-detected by default) |
 
 **Examples**:
 ```bash
@@ -575,16 +648,21 @@ Warnings appear as files in your home directory and via `wall` messages.
 ### System Components
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────────┐
-│  GPU Dev    │────▶│  SQS Queue   │────▶│  Lambda Processor   │
-│    CLI      │     │              │     │                     │
-└─────────────┘     └──────────────┘     └──────────┬──────────┘
-       │                                            │
-       │                                            ▼
-       │            ┌──────────────┐     ┌─────────────────────┐
-       └───────────▶│  DynamoDB    │◀────│    EKS Cluster      │
-                    │ Reservations │     │   (GPU Nodes)       │
-                    └──────────────┘     └─────────────────────┘
+┌─────────────┐  HTTPS  ┌────────────────┐     ┌─────────────────────┐
+│  GPU Dev    │────────▶│  API Service   │────▶│  PostgreSQL + PGMQ  │
+│    CLI      │         │  (FastAPI)     │     │                     │
+└─────────────┘         └────────────────┘     └──────────┬──────────┘
+                                                           │
+                                                           │ Polls Queue
+                       ┌──────────────────────────────────┘
+                       ▼
+            ┌──────────────────┐         ┌─────────────────────┐
+            │  Job Processor   │────────▶│    EKS Cluster      │
+            │  Pod (K8s)       │         │   (GPU Nodes)       │
+            │                  │         │                     │
+            │  - Polls PGMQ    │         │  - Creates Pods     │
+            │  - Creates Pods  │         │  - SSH Access       │
+            └──────────────────┘         └─────────────────────┘
 ```
 
 ### Infrastructure

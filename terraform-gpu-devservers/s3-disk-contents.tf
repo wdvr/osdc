@@ -37,31 +37,6 @@ resource "aws_s3_bucket_versioning" "disk_contents" {
   }
 }
 
-# IAM policy for Lambda to access disk contents bucket
-resource "aws_iam_role_policy" "lambda_s3_disk_contents_policy" {
-  name = "${local.workspace_prefix}-lambda-s3-disk-contents-policy"
-  role = aws_iam_role.reservation_processor_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject",
-          "s3:GetObject",
-          "s3:DeleteObject",
-          "s3:ListBucket"
-        ]
-        Resource = [
-          aws_s3_bucket.disk_contents.arn,
-          "${aws_s3_bucket.disk_contents.arn}/*"
-        ]
-      }
-    ]
-  })
-}
-
 # Output bucket name for reference
 output "disk_contents_bucket_name" {
   description = "S3 bucket name for disk contents storage"

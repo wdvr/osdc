@@ -516,6 +516,15 @@ resource "aws_security_group" "gpu_dev_sg" {
     }
   }
 
+  # NodePort range for LoadBalancers (API service, etc.)
+  ingress {
+    from_port   = 30000
+    to_port     = 32767
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "NodePort range for Kubernetes LoadBalancer services"
+  }
+
   # NodePort range for Jupyter ALB access
   dynamic "ingress" {
     for_each = local.effective_domain_name != "" ? [1] : []
