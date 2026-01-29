@@ -67,7 +67,8 @@ def select_gpu_type_interactive(
     table.add_column("Est. Wait Time", style="magenta")
 
     choices = []
-    for gpu_type, info in availability_info.items():
+    # Sort alphabetically by gpu_type
+    for gpu_type, info in sorted(availability_info.items()):
         available = info.get("available", 0)
         total = info.get("total", 0)
         queue_length = info.get("queue_length", 0)
@@ -204,14 +205,12 @@ def select_duration_interactive() -> Optional[float]:
 
     # Common duration choices - cleaner labels
     choices = [
-        questionary.Choice("15 minutes", 0.25),
-        questionary.Choice("30 minutes", 0.5),
-        questionary.Choice("1 hour", 1.0),
-        questionary.Choice("2 hours", 2.0),
-        questionary.Choice("4 hours", 4.0),
-        questionary.Choice("8 hours (default)", 8.0),
-        questionary.Choice("12 hours", 12.0),
-        questionary.Choice("24 hours (max)", 24.0),
+        questionary.Choice("1 hour", 1),
+        questionary.Choice("2 hours", 2),
+        questionary.Choice("4 hours", 4),
+        questionary.Choice("8 hours (default)", 8),
+        questionary.Choice("12 hours", 12),
+        questionary.Choice("24 hours (max)", 24),
         questionary.Choice("Custom duration", "custom"),
     ]
 
@@ -223,13 +222,13 @@ def select_duration_interactive() -> Optional[float]:
         if answer == "custom":
             # Ask for custom duration
             custom_duration = questionary.text(
-                "Enter duration in hours (decimal allowed, max 24):",
+                "Enter duration in hours (integer, max 24):",
                 validate=lambda x: _validate_duration(x),
                 style=custom_style,
             ).ask()
 
             if custom_duration:
-                return float(custom_duration)
+                return int(custom_duration)
             else:
                 return None
 
@@ -372,7 +371,11 @@ def select_reservation_interactive(
             )
 
             # Create choice for interactive selection
-            choice_label = f"{reservation_id[:8]} - {gpu_display} ({status})"
+            res_name = reservation.get("name", "")
+            if res_name:
+                choice_label = f"{reservation_id[:8]} - {res_name} - {gpu_display} ({status})"
+            else:
+                choice_label = f"{reservation_id[:8]} - {gpu_display} ({status})"
             choices.append(questionary.Choice(
                 title=choice_label, value=reservation_id))
 
@@ -420,14 +423,14 @@ def select_reservation_interactive(
 def _validate_duration(duration_str: str) -> bool:
     """Validate duration input"""
     try:
-        duration = float(duration_str)
-        if duration < 0.0833:  # Less than 5 minutes
-            return "Minimum duration is 5 minutes (0.0833 hours)"
+        duration = int(duration_str)
+        if duration < 1:
+            return "Minimum duration is 1 hour"
         if duration > 24:
             return "Maximum duration is 24 hours"
         return True
     except ValueError:
-        return "Please enter a valid number"
+        return "Please enter a valid integer"
 
 
 def ask_name_interactive() -> Optional[str]:

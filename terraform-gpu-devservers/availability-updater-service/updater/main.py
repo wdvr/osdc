@@ -133,6 +133,29 @@ def update_gpu_availability_for_type(
                     "No CPU ASGs found - this may be normal if CPU nodes "
                     "not yet deployed"
                 )
+
+            # IMPORTANT: Update database with zero values when no ASG exists
+            # This prevents showing stale capacity for GPU types without nodes
+            pod_name = (
+                os.environ.get("HOSTNAME")
+                or os.environ.get("POD_NAME")
+                or "availability-updater-unknown"
+            )
+
+            logger.info(
+                f"Setting {gpu_type} availability to zero (no ASG found)"
+            )
+            update_gpu_availability(
+                gpu_type=gpu_type,
+                total_gpus=0,
+                available_gpus=0,
+                max_reservable=0,
+                full_nodes_available=0,
+                running_instances=0,
+                desired_capacity=0,
+                gpus_per_instance=gpus_per_instance,
+                updated_by=pod_name
+            )
             return
 
         asg_names = [asg["AutoScalingGroupName"] for asg in matching_asgs]
@@ -587,12 +610,12 @@ def run_disk_reconciliation():
         stats = reconcile_all_disks(ec2)
 
         logger.info("=== Disk Reconciliation Complete ===")
-        
+
         # Check if run was skipped due to concurrent execution
         if stats.get('skipped_concurrent_run'):
             logger.info("Run skipped: Another reconciliation was already running")
             return True  # Not an error, just skipped
-        
+
         logger.info(f"AWS Volumes: {stats['aws_volumes']}")
         logger.info(f"DB Records: {stats['db_records']}")
         logger.info(f"Synced (no changes): {stats['synced']}")

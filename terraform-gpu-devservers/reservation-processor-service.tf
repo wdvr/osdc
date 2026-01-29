@@ -560,7 +560,7 @@ resource "kubernetes_deployment" "reservation_processor" {
           # Job orchestration configuration
           env {
             name  = "WORKER_IMAGE"
-            value = local.reservation_processor_latest_uri
+            value = local.reservation_processor_runtime_latest_uri
           }
 
           env {

@@ -46,6 +46,21 @@ def _make_cursor_link(pod_name: str) -> str:
     return f"cursor://vscode-remote/ssh-remote+{pod_name}/home/dev"
 
 
+def _extract_ip_from_reservation(reservation: dict) -> str:
+    """Extract IP:Port from reservation data (each pod has unique port on shared node IP)"""
+    # The API returns node_ip and node_port from the database
+    # Multiple pods can share the same node_ip, but each has a unique node_port
+    node_ip = reservation.get("node_ip")
+    node_port = reservation.get("node_port")
+    
+    if node_ip and node_port:
+        return f"{node_ip}:{node_port}"
+    elif node_ip:
+        return node_ip
+    
+    return "N/A"
+
+
 def get_version() -> str:
     """Get CLI version for inclusion in API requests"""
     return __version__
@@ -566,6 +581,9 @@ class ReservationManager:
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
+            # Normalize gpu_type to lowercase for consistency
+            gpu_type = gpu_type.lower()
+            
             reservation_id = str(uuid.uuid4())
             created_at = datetime.utcnow().isoformat()
 
@@ -668,6 +686,9 @@ class ReservationManager:
     ) -> Optional[List[str]]:
         """Create multiple GPU reservations for multinode setup"""
         try:
+            # Normalize gpu_type to lowercase for consistency
+            gpu_type = gpu_type.lower()
+            
             # Determine GPU config
             gpu_configs = {
                 "t4": {"max_gpus": 4},
@@ -1895,6 +1916,18 @@ class ReservationManager:
                                     f"\n[green]✅ Reservation complete![/green]")
                                 console.print(
                                     f"[cyan]📋 Reservation ID:[/cyan] {reservation_id}")
+                                
+                                # Show reservation name if available
+                                res_name = reservation.get("name")
+                                if res_name:
+                                    console.print(
+                                        f"[cyan]📝 Reservation Name:[/cyan] {res_name}")
+                                
+                                # Show IP:Port (unique for each pod on the node)
+                                ip_port = _extract_ip_from_reservation(reservation)
+                                console.print(
+                                    f"[cyan]🌐 IP:Port:[/cyan] {ip_port}")
+                                
                                 console.print(
                                     f"[cyan]⏰ Valid for:[/cyan] {duration_hours} hours")
 
