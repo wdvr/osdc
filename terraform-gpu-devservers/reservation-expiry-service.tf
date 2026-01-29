@@ -56,21 +56,33 @@ locals {
   )))
 
   reservation_expiry_image_tag  = "v1-${substr(local.reservation_expiry_hash, 0, 8)}"
-  reservation_expiry_image_uri  = "${aws_ecr_repository.reservation_expiry_service.repository_url}:${local.reservation_expiry_image_tag}"
-  reservation_expiry_latest_uri = "${aws_ecr_repository.reservation_expiry_service.repository_url}:latest"
+  # Use localhost:5000 for build (via port-forward), registry-native DNS for runtime
+  reservation_expiry_image_uri         = "localhost:5000/reservation-expiry:${local.reservation_expiry_image_tag}"
+  reservation_expiry_latest_uri        = "localhost:5000/reservation-expiry:latest"
+  # Runtime image URIs for Kubernetes (internal cluster DNS)
+  reservation_expiry_runtime_uri        = "${local.registry_native_dns}/reservation-expiry:${local.reservation_expiry_image_tag}"
+  reservation_expiry_runtime_latest_uri = "${local.registry_native_dns}/reservation-expiry:latest"
 }
 
 resource "null_resource" "reservation_expiry_build" {
+  depends_on = [
+    null_resource.setup_docker_certs,
+    kubernetes_deployment.registry_native,
+    kubernetes_service.registry_native,
+  ]
+
   triggers = {
     expiry_hash = local.reservation_expiry_hash
-    ecr_repo    = aws_ecr_repository.reservation_expiry_service.repository_url
+    registry    = local.registry_native_dns
   }
 
   provisioner "local-exec" {
     command = <<-EOF
       set -e
 
-      echo "Building and pushing reservation expiry Docker image..."
+      echo "==================================================================="
+      echo "Building Reservation Expiry Service"
+      echo "==================================================================="
 
       # Get current architecture
       ARCH=$(uname -m)
@@ -85,42 +97,63 @@ resource "null_resource" "reservation_expiry_build" {
         echo "Building for linux/amd64 platform"
       fi
 
-      # Build from terraform-gpu-devservers directory (parent of reservation-expiry-service)
-      # This allows Docker to access both reservation-expiry-service/ and shared/
+      # Setup port-forward to registry on unique port
+      REGISTRY_PORT=5004
+      echo ""
+      echo "Setting up port-forward to registry on port $REGISTRY_PORT..."
+      
+      # Kill any existing port-forward on this port
+      lsof -ti:$REGISTRY_PORT | xargs kill -9 2>/dev/null || true
+      sleep 1
+      
+# Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
+kubectl port-forward --address 0.0.0.0 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/reservation-expiry-port-forward.log 2>&1 &
+      PORT_FORWARD_PID=$!
+      echo "Started port-forward (PID: $PORT_FORWARD_PID)"
+      
+      # Wait for port-forward to be ready
+      echo "Waiting for registry to be accessible..."
+      for i in {1..30}; do
+        if curl -sf --max-time 2 --insecure https://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+          echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "ERROR: Registry not accessible after 30 seconds"
+          kill $PORT_FORWARD_PID 2>/dev/null || true
+          exit 1
+        fi
+        sleep 1
+      done
+
+      # Build and push (using host.docker.internal for Docker Desktop compatibility)
+      echo ""
+      echo "Building Docker image..."
       cd ${path.module}
-
-      # Login to ECR
-      echo "Logging into ECR..."
-      aws ecr get-login-password --region ${local.current_config.aws_region} | \
-        docker login --username AWS --password-stdin ${aws_ecr_repository.reservation_expiry_service.repository_url}
-
-      # Build image with correct platform from parent directory
-      # Use -f to specify Dockerfile location and set build context to current directory
-      echo "Building Docker image for platform: $PLATFORM"
       docker build --platform=$PLATFORM \
         -f reservation-expiry-service/Dockerfile \
-        -t ${local.reservation_expiry_image_uri} \
+        -t host.docker.internal:$REGISTRY_PORT/reservation-expiry:${local.reservation_expiry_image_tag} \
         .
+      docker tag host.docker.internal:$REGISTRY_PORT/reservation-expiry:${local.reservation_expiry_image_tag} host.docker.internal:$REGISTRY_PORT/reservation-expiry:latest
 
-      # Also tag as latest
-      docker tag ${local.reservation_expiry_image_uri} ${local.reservation_expiry_latest_uri}
+      echo "Pushing to registry..."
+      docker push host.docker.internal:$REGISTRY_PORT/reservation-expiry:${local.reservation_expiry_image_tag}
+      docker push host.docker.internal:$REGISTRY_PORT/reservation-expiry:latest
 
-      # Push both tags
-      echo "Pushing Docker image..."
-      docker push ${local.reservation_expiry_image_uri}
-      docker push ${local.reservation_expiry_latest_uri}
-
-      echo "Reservation expiry image successfully built and pushed!"
-      echo "Image URI: ${local.reservation_expiry_image_uri}"
+      # Cleanup port-forward
+      echo ""
+      echo "Cleaning up port-forward..."
+      kill $PORT_FORWARD_PID 2>/dev/null || true
+      
+      echo ""
+      echo "✓ Reservation expiry image successfully built and pushed!"
+      echo "  Build port: $REGISTRY_PORT"
+      echo "  Runtime URI: ${local.reservation_expiry_runtime_uri}"
+      echo "==================================================================="
     EOF
 
     working_dir = path.module
   }
-
-  depends_on = [
-    aws_ecr_repository.reservation_expiry_service,
-    aws_ecr_lifecycle_policy.reservation_expiry_service
-  ]
 }
 
 # ============================================================================
@@ -441,7 +474,7 @@ resource "kubernetes_cron_job_v1" "reservation_expiry" {
 
             container {
               name              = "expiry"
-              image             = local.reservation_expiry_latest_uri
+              image             = local.reservation_expiry_runtime_latest_uri
               image_pull_policy = "Always"
 
               # Environment variables from ConfigMap
@@ -507,7 +540,7 @@ resource "kubernetes_cron_job_v1" "reservation_expiry" {
 output "reservation_expiry_status" {
   description = "Reservation expiry CronJob status"
   value = {
-    image      = local.reservation_expiry_latest_uri
+    image      = local.reservation_expiry_runtime_latest_uri
     namespace  = kubernetes_namespace.controlplane.metadata[0].name
     cronjob    = "reservation-expiry"
     schedule   = "*/5 * * * *"

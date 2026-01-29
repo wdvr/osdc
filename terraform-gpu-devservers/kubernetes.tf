@@ -1,8 +1,10 @@
 # Kubernetes resources for GPU development pods
 
-# Local variable for internal registry DNS name (Route53 private hosted zone)
+# Local variables for internal registry DNS names (Route53 private hosted zone)
 locals {
-  registry_ghcr_dns = "registry-ghcr.internal.${var.prefix}.local:5000"
+  registry_ghcr_dns       = "registry-ghcr.internal.${var.prefix}.local:5000"
+  registry_dockerhub_dns  = "registry-dockerhub.internal.${var.prefix}.local:5000"
+  registry_native_dns     = "registry.internal.${var.prefix}.local:5000"
 }
 
 # AWS Auth ConfigMap to allow Lambda roles to access EKS
@@ -662,7 +664,7 @@ resource "kubernetes_stateful_set" "postgres_primary" {
 
         init_container {
           name  = "init-config"
-          image = "busybox:1.36"
+          image = "busybox:1.36"  # Direct pull - can migrate to cache after registry-dockerhub is stable
 
           security_context {
             run_as_user = 999
@@ -1267,6 +1269,12 @@ resource "kubernetes_deployment" "registry_ghcr" {
       }
 
       spec {
+        # Set fsGroup so mounted volume is writable by registry container
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
         # Prefer running on CPU management nodes
         node_selector = {
           NodeType = "cpu"
@@ -1283,7 +1291,7 @@ resource "kubernetes_deployment" "registry_ghcr" {
         # Init container to inject credentials into config
         init_container {
           name  = "inject-credentials"
-          image = "busybox:1.36"
+          image = "busybox:1.36"  # Must use direct pull for registry bootstrap
 
           command = ["/bin/sh", "-c"]
           args = [<<-EOT
@@ -1424,6 +1432,510 @@ resource "kubernetes_service" "registry_ghcr" {
     selector = {
       app      = "registry-cache"
       upstream = "ghcr"
+    }
+
+    port {
+      name        = "registry"
+      port        = 5000
+      target_port = 5000
+    }
+  }
+}
+
+# =============================================================================
+# Registry Pull-Through Cache for Docker Hub
+# =============================================================================
+# Caches images from docker.io to improve pull times and avoid rate limits
+# Usage: Instead of busybox:1.36, use:
+#        registry-dockerhub.internal.pytorch-gpu-dev.local:5000/library/busybox:1.36
+# The DNS name is resolved via Route53 private hosted zone → internal NLB → registry pod
+
+# ConfigMap for Docker Hub registry cache configuration
+# Note: Docker Hub pull-through cache doesn't require authentication for public images
+resource "kubernetes_config_map" "registry_dockerhub_config" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-dockerhub-config"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  data = {
+    "config.yml" = <<-EOT
+      version: 0.1
+      log:
+        level: info
+        fields:
+          service: registry
+      storage:
+        filesystem:
+          rootdirectory: /var/lib/registry
+        cache:
+          blobdescriptor: inmemory
+        delete:
+          enabled: true
+      http:
+        addr: :5000
+        headers:
+          X-Content-Type-Options: [nosniff]
+      proxy:
+        remoteurl: https://registry-1.docker.io
+    EOT
+  }
+}
+
+# PersistentVolumeClaim for Docker Hub registry cache storage
+resource "kubernetes_persistent_volume_claim" "registry_dockerhub_pvc" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_storage_class.gp3,
+  ]
+
+  wait_until_bound = false
+
+  metadata {
+    name      = "registry-dockerhub-data"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  spec {
+    access_modes       = ["ReadWriteOnce"]
+    storage_class_name = kubernetes_storage_class.gp3.metadata[0].name
+
+    resources {
+      requests = {
+        storage = "50Gi"
+      }
+    }
+  }
+}
+
+# Deployment for Docker Hub pull-through cache
+resource "kubernetes_deployment" "registry_dockerhub" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_config_map.registry_dockerhub_config,
+    kubernetes_persistent_volume_claim.registry_dockerhub_pvc,
+  ]
+
+  metadata {
+    name      = "registry-dockerhub"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app      = "registry-cache"
+        upstream = "dockerhub"
+      }
+    }
+
+    strategy {
+      type = "Recreate"  # Required for RWO PVC
+    }
+
+    template {
+      metadata {
+        labels = {
+          app      = "registry-cache"
+          upstream = "dockerhub"
+        }
+      }
+
+      spec {
+        # Set fsGroup so mounted volume is writable by registry container
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        # Prefer running on CPU management nodes
+        node_selector = {
+          NodeType = "cpu"
+        }
+
+        # Tolerate CPU-only node taint
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        container {
+          name  = "registry"
+          image = "registry:2"
+
+          port {
+            container_port = 5000
+            name           = "registry"
+          }
+
+          volume_mount {
+            name       = "config"
+            mount_path = "/etc/docker/registry"
+          }
+
+          volume_mount {
+            name       = "data"
+            mount_path = "/var/lib/registry"
+          }
+
+          resources {
+            requests = {
+              cpu    = "100m"
+              memory = "128Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/"
+              port = 5000
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 10
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/"
+              port = 5000
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+          }
+        }
+
+        volume {
+          name = "config"
+          config_map {
+            name = kubernetes_config_map.registry_dockerhub_config.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.registry_dockerhub_pvc.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+}
+
+# Service for Docker Hub pull-through cache
+# Uses internal Network Load Balancer so nodes can reach it via VPC DNS
+resource "kubernetes_service" "registry_dockerhub" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-dockerhub"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+    annotations = {
+      # Use internal NLB (not internet-facing)
+      "service.beta.kubernetes.io/aws-load-balancer-internal" = "true"
+      "service.beta.kubernetes.io/aws-load-balancer-type"     = "nlb"
+      # Cross-zone load balancing for reliability
+      "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
+    }
+  }
+
+  spec {
+    type = "LoadBalancer"
+
+    selector = {
+      app      = "registry-cache"
+      upstream = "dockerhub"
+    }
+
+    port {
+      name        = "registry"
+      port        = 5000
+      target_port = 5000
+    }
+  }
+}
+
+# =============================================================================
+# Native In-Cluster Registry (for internal images)
+# =============================================================================
+# This registry hosts all internal service images (built by Terraform)
+# Unlike pull-through caches, this is a true registry that stores images
+# Used for: api-service, reservation-processor, ssh-proxy, etc.
+
+# TLS secret for registry-native (self-signed certificate)
+resource "kubernetes_secret" "registry_native_tls" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-native-tls"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+  }
+
+  type = "kubernetes.io/tls"
+
+  data = {
+    "tls.crt" = file("${path.module}/.certs/registry.crt")
+    "tls.key" = file("${path.module}/.certs/registry.key")
+  }
+}
+
+# ConfigMap for native registry configuration
+resource "kubernetes_config_map" "registry_native_config" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-native-config"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+  }
+
+  data = {
+    "config.yml" = <<-EOT
+      version: 0.1
+      log:
+        level: info
+        fields:
+          service: registry
+      storage:
+        filesystem:
+          rootdirectory: /var/lib/registry
+        cache:
+          blobdescriptor: inmemory
+        delete:
+          enabled: true
+      http:
+        addr: :5000
+        tls:
+          certificate: /etc/docker/registry/tls/tls.crt
+          key: /etc/docker/registry/tls/tls.key
+        headers:
+          X-Content-Type-Options: [nosniff]
+      # No proxy configuration - this is a native registry for storing images
+    EOT
+  }
+}
+
+# PersistentVolumeClaim for native registry storage
+resource "kubernetes_persistent_volume_claim" "registry_native_pvc" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_storage_class.gp3,
+  ]
+
+  wait_until_bound = false
+
+  metadata {
+    name      = "registry-native-data"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+  }
+
+  spec {
+    access_modes       = ["ReadWriteOnce"]
+    storage_class_name = kubernetes_storage_class.gp3.metadata[0].name
+
+    resources {
+      requests = {
+        storage = "100Gi"  # Larger for storing all service images
+      }
+    }
+  }
+}
+
+# Deployment for native registry
+resource "kubernetes_deployment" "registry_native" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_secret.registry_native_tls,
+    kubernetes_config_map.registry_native_config,
+    kubernetes_persistent_volume_claim.registry_native_pvc,
+  ]
+
+  metadata {
+    name      = "registry-native"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app = "registry-native"
+      }
+    }
+
+    strategy {
+      type = "Recreate"  # Required for RWO PVC
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "registry-native"
+        }
+      }
+
+      spec {
+        # Set fsGroup so mounted volume is writable by registry container
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        # Prefer running on CPU management nodes
+        node_selector = {
+          NodeType = "cpu"
+        }
+
+        # Tolerate CPU-only node taint
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        container {
+          name  = "registry"
+          image = "registry:2"
+
+          port {
+            container_port = 5000
+            name           = "registry"
+          }
+
+          volume_mount {
+            name       = "config"
+            mount_path = "/etc/docker/registry"
+            read_only  = true
+          }
+
+          volume_mount {
+            name       = "tls"
+            mount_path = "/etc/docker/registry/tls"
+            read_only  = true
+          }
+
+          volume_mount {
+            name       = "data"
+            mount_path = "/var/lib/registry"
+          }
+
+          resources {
+            requests = {
+              cpu    = "200m"
+              memory = "256Mi"
+            }
+            limits = {
+              cpu    = "1000m"
+              memory = "1Gi"
+            }
+          }
+
+          liveness_probe {
+            http_get {
+              path   = "/"
+              port   = 5000
+              scheme = "HTTPS"
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 10
+          }
+
+          readiness_probe {
+            http_get {
+              path   = "/"
+              port   = 5000
+              scheme = "HTTPS"
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+          }
+        }
+
+        volume {
+          name = "config"
+          config_map {
+            name = kubernetes_config_map.registry_native_config.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "tls"
+          secret {
+            secret_name = kubernetes_secret.registry_native_tls.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.registry_native_pvc.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+}
+
+# Service for native registry
+# Uses internal Network Load Balancer so nodes can reach it via VPC DNS
+resource "kubernetes_service" "registry_native" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-native"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+    annotations = {
+      # Use internal NLB (not internet-facing)
+      "service.beta.kubernetes.io/aws-load-balancer-internal" = "true"
+      "service.beta.kubernetes.io/aws-load-balancer-type"     = "nlb"
+      # Cross-zone load balancing for reliability
+      "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
+    }
+  }
+
+  spec {
+    type = "LoadBalancer"
+
+    selector = {
+      app = "registry-native"
     }
 
     port {
@@ -1797,7 +2309,7 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
           initContainers = [
             {
               name            = "pull-gpu-dev-image"
-              image           = local.latest_image_uri  # Use stable 'latest' tag
+              image           = local.runtime_latest_image_uri  # Use stable 'latest' tag
               imagePullPolicy = "Always"
               command         = ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
             }

@@ -54,21 +54,33 @@ locals {
   )))
 
   api_service_image_tag  = "v1-${substr(local.api_service_hash, 0, 8)}"
-  api_service_image_uri  = "${aws_ecr_repository.api_service.repository_url}:${local.api_service_image_tag}"
-  api_service_latest_uri = "${aws_ecr_repository.api_service.repository_url}:latest"
+  # Use localhost:5000 for build (via port-forward), registry-native DNS for runtime
+  api_service_image_uri         = "localhost:5000/api-service:${local.api_service_image_tag}"
+  api_service_latest_uri        = "localhost:5000/api-service:latest"
+  # Runtime image URIs for Kubernetes (internal cluster DNS)
+  api_service_runtime_uri        = "${local.registry_native_dns}/api-service:${local.api_service_image_tag}"
+  api_service_runtime_latest_uri = "${local.registry_native_dns}/api-service:latest"
 }
 
 resource "null_resource" "api_service_build" {
+  depends_on = [
+    null_resource.setup_docker_certs,
+    kubernetes_deployment.registry_native,
+    kubernetes_service.registry_native,
+  ]
+
   triggers = {
     api_service_hash = local.api_service_hash
-    ecr_repo         = aws_ecr_repository.api_service.repository_url
+    registry         = local.registry_native_dns
   }
 
   provisioner "local-exec" {
     command = <<-EOF
       set -e
 
-      echo "Building and pushing API service Docker image..."
+      echo "==================================================================="
+      echo "Building API Service"
+      echo "==================================================================="
 
       # Get current architecture
       ARCH=$(uname -m)
@@ -83,37 +95,60 @@ resource "null_resource" "api_service_build" {
         echo "Building for linux/amd64 platform"
       fi
 
-      # Change to api-service directory
+      # Setup port-forward to registry on unique port
+      REGISTRY_PORT=5001
+      echo ""
+      echo "Setting up port-forward to registry on port $REGISTRY_PORT..."
+      
+      # Kill any existing port-forward on this port
+      lsof -ti:$REGISTRY_PORT | xargs kill -9 2>/dev/null || true
+      sleep 1
+      
+      # Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
+      kubectl port-forward --address 0.0.0.0 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/api-service-port-forward.log 2>&1 &
+      PORT_FORWARD_PID=$!
+      echo "Started port-forward (PID: $PORT_FORWARD_PID)"
+      
+      # Wait for port-forward to be ready
+      echo "Waiting for registry to be accessible..."
+      for i in {1..30}; do
+        if curl -sf --max-time 2 --insecure https://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+          echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "ERROR: Registry not accessible after 30 seconds"
+          kill $PORT_FORWARD_PID 2>/dev/null || true
+          exit 1
+        fi
+        sleep 1
+      done
+
+      # Build and push (using host.docker.internal for Docker Desktop compatibility)
+      echo ""
+      echo "Building Docker image..."
       cd ${path.module}/api-service
+      docker build --platform=$PLATFORM -t host.docker.internal:$REGISTRY_PORT/api-service:${local.api_service_image_tag} .
+      docker tag host.docker.internal:$REGISTRY_PORT/api-service:${local.api_service_image_tag} host.docker.internal:$REGISTRY_PORT/api-service:latest
 
-      # Login to ECR
-      echo "Logging into ECR..."
-      aws ecr get-login-password --region ${local.current_config.aws_region} | \
-        docker login --username AWS --password-stdin ${aws_ecr_repository.api_service.repository_url}
+      echo "Pushing to registry..."
+      docker push host.docker.internal:$REGISTRY_PORT/api-service:${local.api_service_image_tag}
+      docker push host.docker.internal:$REGISTRY_PORT/api-service:latest
 
-      # Build image with correct platform
-      echo "Building Docker image for platform: $PLATFORM"
-      docker build --platform=$PLATFORM -t ${local.api_service_image_uri} .
-
-      # Also tag as latest
-      docker tag ${local.api_service_image_uri} ${local.api_service_latest_uri}
-
-      # Push both tags
-      echo "Pushing Docker image..."
-      docker push ${local.api_service_image_uri}
-      docker push ${local.api_service_latest_uri}
-
-      echo "API service image successfully built and pushed!"
-      echo "Image URI: ${local.api_service_image_uri}"
+      # Cleanup port-forward
+      echo ""
+      echo "Cleaning up port-forward..."
+      kill $PORT_FORWARD_PID 2>/dev/null || true
+      
+      echo ""
+      echo "✓ API service image successfully built and pushed!"
+      echo "  Build port: $REGISTRY_PORT"
+      echo "  Runtime URI: ${local.api_service_runtime_uri}"
+      echo "==================================================================="
     EOF
 
     working_dir = path.module
   }
-
-  depends_on = [
-    aws_ecr_repository.api_service,
-    aws_ecr_lifecycle_policy.api_service
-  ]
 }
 
 # ============================================================================
@@ -272,7 +307,7 @@ resource "kubernetes_deployment" "api_service" {
 
         container {
           name  = "api-service"
-          image = local.api_service_latest_uri
+          image = local.api_service_runtime_latest_uri
           image_pull_policy = "Always"
 
           port {

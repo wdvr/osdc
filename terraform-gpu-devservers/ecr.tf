@@ -73,19 +73,27 @@ locals {
     for file in local.docker_files : filemd5("${path.module}/docker/${file}")
   ]))
 
-  ecr_repository_url  = aws_ecr_repository.gpu_dev_image.repository_url
   image_tag          = "latest-${substr(local.docker_context_hash, 0, 8)}"
-  full_image_uri     = "${local.ecr_repository_url}:${local.image_tag}"
-  # Stable latest tag for pods - survives OOM restarts even if hash-tagged images are cleaned up
-  latest_image_uri   = "${local.ecr_repository_url}:latest"
+  # Use localhost:5000 for build (via port-forward), registry-native DNS for runtime
+  full_image_uri     = "localhost:5000/gpu-dev-base:${local.image_tag}"
+  latest_image_uri   = "localhost:5000/gpu-dev-base:latest"
+  # Runtime image URIs for Kubernetes (internal cluster DNS)
+  runtime_image_uri        = "${local.registry_native_dns}/gpu-dev-base:${local.image_tag}"
+  runtime_latest_image_uri = "${local.registry_native_dns}/gpu-dev-base:latest"
 }
 
 # Docker build and push using null_resource with proper architecture handling
 resource "null_resource" "docker_build_and_push" {
+  depends_on = [
+    null_resource.setup_docker_certs,
+    kubernetes_deployment.registry_native,
+    kubernetes_service.registry_native,
+  ]
+
   # Trigger rebuild when Docker context changes
   triggers = {
     docker_context_hash = local.docker_context_hash
-    ecr_repository_url  = local.ecr_repository_url
+    registry           = local.registry_native_dns
   }
 
   # Local provisioner to build and push Docker image
@@ -93,7 +101,9 @@ resource "null_resource" "docker_build_and_push" {
     command = <<-EOF
       set -e
 
-      echo "Building and pushing Docker image..."
+      echo "==================================================================="
+      echo "Building GPU Dev Base Image"
+      echo "==================================================================="
 
       # Get current architecture
       ARCH=$(uname -m)
@@ -108,37 +118,60 @@ resource "null_resource" "docker_build_and_push" {
         echo "Building for linux/amd64 platform"
       fi
 
-      # Change to docker directory
+      # Setup port-forward to registry on unique port
+      REGISTRY_PORT=5005
+      echo ""
+      echo "Setting up port-forward to registry on port $REGISTRY_PORT..."
+      
+      # Kill any existing port-forward on this port
+      lsof -ti:$REGISTRY_PORT | xargs kill -9 2>/dev/null || true
+      sleep 1
+      
+# Start kubectl port-forward in background (force IPv4 with 127.0.0.1)
+kubectl port-forward --address 0.0.0.0 -n gpu-controlplane svc/registry-native $REGISTRY_PORT:5000 > /tmp/gpu-dev-base-port-forward.log 2>&1 &
+      PORT_FORWARD_PID=$!
+      echo "Started port-forward (PID: $PORT_FORWARD_PID)"
+      
+      # Wait for port-forward to be ready
+echo "Waiting for registry to be accessible..."
+for i in {1..30}; do
+  if curl -sf --max-time 2 --insecure https://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+    echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
+    break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "ERROR: Registry not accessible after 30 seconds"
+          kill $PORT_FORWARD_PID 2>/dev/null || true
+          exit 1
+        fi
+        sleep 1
+      done
+
+      # Build and push (using host.docker.internal for Docker Desktop compatibility)
+      echo ""
+      echo "Building Docker image..."
       cd ${path.module}/docker
+      docker build --platform=$PLATFORM -t host.docker.internal:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} .
+      docker tag host.docker.internal:$REGISTRY_PORT/gpu-dev-base:${local.image_tag} host.docker.internal:$REGISTRY_PORT/gpu-dev-base:latest
 
-      # Login to ECR
-      echo "Logging into ECR..."
-      aws ecr get-login-password --region ${local.current_config.aws_region} | docker login --username AWS --password-stdin ${local.ecr_repository_url}
+      echo "Pushing to registry..."
+      docker push host.docker.internal:$REGISTRY_PORT/gpu-dev-base:${local.image_tag}
+      docker push host.docker.internal:$REGISTRY_PORT/gpu-dev-base:latest
 
-      # Build image with correct platform
-      echo "Building Docker image for platform: $PLATFORM"
-      docker build --platform=$PLATFORM -t ${local.full_image_uri} .
-
-      # Also tag as latest
-      docker tag ${local.full_image_uri} ${local.ecr_repository_url}:latest
-
-      # Push both tags
-      echo "Pushing Docker image..."
-      docker push ${local.full_image_uri}
-      docker push ${local.ecr_repository_url}:latest
-
-      echo "Docker image successfully built and pushed!"
-      echo "Image URI: ${local.full_image_uri}"
+      # Cleanup port-forward
+      echo ""
+      echo "Cleaning up port-forward..."
+      kill $PORT_FORWARD_PID 2>/dev/null || true
+      
+      echo ""
+      echo "✓ GPU dev base image successfully built and pushed!"
+      echo "  Build port: $REGISTRY_PORT"
+      echo "  Runtime URI: ${local.runtime_latest_image_uri}"
+      echo "==================================================================="
     EOF
 
     working_dir = path.module
   }
-
-  # Ensure ECR repository exists before building
-  depends_on = [
-    aws_ecr_repository.gpu_dev_image,
-    aws_ecr_repository_policy.gpu_dev_image_policy
-  ]
 }
 
 # Trigger DaemonSet rollout to pull new image on all nodes after Docker rebuild
@@ -163,7 +196,7 @@ resource "null_resource" "rollout_image_prepuller" {
 
 # Output the image URI for use in other resources
 output "gpu_dev_image_uri" {
-  value       = local.full_image_uri
-  description = "URI of the custom GPU dev server Docker image"
+  value       = local.runtime_latest_image_uri
+  description = "URI of the custom GPU dev server Docker image (runtime)"
   depends_on  = [null_resource.docker_build_and_push]
 }
