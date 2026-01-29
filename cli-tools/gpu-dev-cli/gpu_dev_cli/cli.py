@@ -103,6 +103,21 @@ def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
         return str(timestamp_str)[:19] if len(str(timestamp_str)) > 10 else str(timestamp_str)
 
 
+def _extract_ip_from_reservation(reservation: dict) -> str:
+    """Extract IP:Port from reservation data (each pod has unique port on shared node IP)"""
+    # The API returns node_ip and node_port from the database
+    # Multiple pods can share the same node_ip, but each has a unique node_port
+    node_ip = reservation.get("node_ip")
+    node_port = reservation.get("node_port")
+    
+    if node_ip and node_port:
+        return f"{node_ip}:{node_port}"
+    elif node_ip:
+        return node_ip
+    
+    return "N/A"
+
+
 def _format_expires_with_remaining(expires_at) -> str:
     """Format expiration time showing both absolute time and remaining time (for list view)"""
     if not expires_at or expires_at == "N/A":
@@ -311,14 +326,23 @@ def _show_single_reservation(connection_info: dict) -> None:
             oom_time_display = format_timestamp(last_oom_at) if last_oom_at else "Unknown"
             oom_section = f"\n[red]⚠️  OOM Events:[/red] [red]{oom_count} OOM(s) detected (last: {oom_time_display})[/red]"
 
+        # Extract reservation name and IP:Port
+        res_name = connection_info.get("name", "")
+        res_name_section = f"[blue]Reservation Name:[/blue] {res_name}\n" if res_name else ""
+        
+        ip_port = _extract_ip_from_reservation(connection_info)
+        ip_section = f"[blue]IP:Port:[/blue] {ip_port}\n"
+        
         panel_content = (
             f"[green]Reservation Details[/green]\n\n"
-            f"[blue]Quick Connect:[/blue] {connect_command}\n"
+            + res_name_section
+            + f"[blue]Quick Connect:[/blue] {connect_command}\n"
             f"[blue]SSH Command:[/blue] {ssh_command_display}\n"
             + vscode_info
             + jupyter_info
             + f"[blue]Pod Name:[/blue] {connection_info['pod_name']}\n"
-            f"[blue]GPUs:[/blue] {gpu_info}\n"
+            + ip_section
+            + f"[blue]GPUs:[/blue] {gpu_info}\n"
             f"[blue]Instance Type:[/blue] {instance_type}\n"
             + secondary_users_info
             + f"[blue]Storage:[/blue] {disk_status}\n"
@@ -1623,9 +1647,12 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
             # Create table with enhanced columns for queue info
             table = Table(title="GPU Reservations")
             table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("Name", style="yellow", no_wrap=True)
             table.add_column("User", style="green")
             table.add_column("GPUs", style="magenta")
             table.add_column("Status")
+            table.add_column("Pod Name", style="dim", no_wrap=True)
+            table.add_column("IP:Port", style="blue", no_wrap=True)
             table.add_column("Storage", style="dim", no_wrap=True)
             table.add_column("Queue Info", style="cyan")
             table.add_column("Created", style="blue")
@@ -1780,6 +1807,16 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         # No color for unknown statuses
                         status_display = str(res_status)
 
+                    # Extract reservation name, pod name, and IP address
+                    res_name = reservation.get("name", "")
+                    res_name_display = res_name[:15] if res_name else "-"  # Truncate long names
+                    
+                    pod_name = reservation.get("pod_name", "")
+                    pod_name_display = pod_name if pod_name else "-"
+                    
+                    # Extract IP address
+                    ip_address = _extract_ip_from_reservation(reservation)
+                    
                     # Extract CLI and Lambda versions if details flag is set
                     cli_version_display = ""
                     lambda_version_display = ""
@@ -1794,9 +1831,12 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                     row_data = [
                         f"[dim]{str(reservation_id)[:8]}[/dim]" if dim_row else str(
                             reservation_id)[:8],
+                        f"[dim]{res_name_display}[/dim]" if dim_row else res_name_display,
                         f"[dim]{user_display}[/dim]" if dim_row else user_display,
                         f"[dim]{gpu_display}[/dim]" if dim_row else gpu_display,
                         status_display,
+                        f"[dim]{pod_name_display}[/dim]" if dim_row else pod_name_display,
+                        f"[dim]{ip_address}[/dim]" if dim_row else ip_address,
                         f"[dim]{storage_display}[/dim]" if dim_row else storage_display,
                         f"[dim]{queue_info}[/dim]" if dim_row else queue_info,
                         f"[dim]{created_formatted}[/dim]" if dim_row else created_formatted,
@@ -2556,14 +2596,7 @@ def _show_availability() -> None:
             }
 
             # Sort GPU types by architecture priority, then by name
-            sorted_gpu_types = sorted(
-                availability_info.items(),
-                key=lambda x: (
-                    arch_priority.get(
-                        gpu_architectures.get(x[0], "Unknown"), 99),
-                    x[0]
-                )
-            )
+            sorted_gpu_types = sorted(availability_info.items())
 
             table = Table(
                 title="GPU Availability by Type (numbers are GPUs, not nodes)")
@@ -2699,15 +2732,8 @@ def _show_availability_watch(interval: int) -> None:
                             "CPU (arm64)": 6,
                         }
 
-                        # Sort GPU types by architecture priority, then by name
-                        sorted_gpu_types = sorted(
-                            availability_info.items(),
-                            key=lambda x: (
-                                arch_priority.get(
-                                    gpu_architectures.get(x[0], "Unknown"), 99),
-                                x[0]
-                            )
-                        )
+                        # Sort GPU types alphabetically
+                        sorted_gpu_types = sorted(availability_info.items())
 
                         table = Table(
                             title="GPU Availability by Type (numbers are GPUs, not nodes)")
