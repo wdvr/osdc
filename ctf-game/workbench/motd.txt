@@ -1,0 +1,36 @@
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                                                                               ║
+║   ██████╗████████╗███████╗     ██████╗  █████╗ ███╗   ███╗███████╗           ║
+║  ██╔════╝╚══██╔══╝██╔════╝    ██╔════╝ ██╔══██╗████╗ ████║██╔════╝           ║
+║  ██║        ██║   █████╗      ██║  ███╗███████║██╔████╔██║█████╗             ║
+║  ██║        ██║   ██╔══╝      ██║   ██║██╔══██║██║╚██╔╝██║██╔══╝             ║
+║  ╚██████╗   ██║   ██║         ╚██████╔╝██║  ██║██║ ╚═╝ ██║███████╗           ║
+║   ╚═════╝   ╚═╝   ╚═╝          ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝           ║
+║                                                                               ║
+║                    Welcome to the Hacker's Workbench                          ║
+║                                                                               ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║                                                                               ║
+║  YOUR MISSION:                                                                ║
+║  Navigate through 5 layers of security to capture all flags.                  ║
+║  Work together with your team. Share discoveries. Think creatively.           ║
+║                                                                               ║
+║  TARGETS:                                                                     ║
+║  • Layer 1: layer1-web:8080     (Web Service - Information Disclosure)        ║
+║  • Layer 2: layer2-shell:9000   (Restricted Shell)                            ║
+║  • Layer 3: layer3-priv:22      (SSH - Privilege Escalation)                  ║
+║  • Layer 4: layer4-pivot:7777   (HTTP Gateway)                                ║
+║  • Layer 5: layer5-agent:6666   (AI Agent - Prompt Injection)                 ║
+║                                                                               ║
+║  COMMANDS:                                                                    ║
+║  cat ~/hints.txt    - Get hints for each layer                                ║
+║  cat ~/tools.txt    - See available tools                                     ║
+║                                                                               ║
+║  FLAG FORMAT: FLAG{...}                                                       ║
+║  Submit flags at: http://scoreboard:8000                                      ║
+║                                                                               ║
+║  Good luck, hacker!                                                           ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+

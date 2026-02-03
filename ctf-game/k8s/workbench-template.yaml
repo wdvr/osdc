@@ -1,0 +1,33 @@
+---
+# Player Workbench Pod Template
+# Use: kubectl apply -f - < workbench-player1.yaml
+# Or modify the name for each player/team
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: workbench-PLAYER_NAME
+  namespace: ctf-game
+  labels:
+    app: workbench
+    player: PLAYER_NAME
+spec:
+  containers:
+  - name: workbench
+    image: ctf-game/workbench:latest
+    imagePullPolicy: IfNotPresent
+    stdin: true
+    tty: true
+    resources:
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+    securityContext:
+      # Players need some capabilities for tools
+      capabilities:
+        add:
+          - NET_RAW  # For ping/nmap
+  restartPolicy: Never

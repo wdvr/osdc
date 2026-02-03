@@ -1,0 +1,108 @@
+# Docker Compose for local testing of CTF game
+# Usage: docker-compose up -d
+
+version: '3.8'
+
+networks:
+  ctf-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+services:
+  # Layer 1: Web Service
+  layer1-web:
+    build: ./layers/layer1-web
+    container_name: layer1-web
+    networks:
+      ctf-network:
+        ipv4_address: 172.28.1.1
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  # Layer 2: Restricted Shell
+  layer2-shell:
+    build: ./layers/layer2-shell
+    container_name: layer2-shell
+    networks:
+      ctf-network:
+        ipv4_address: 172.28.1.2
+    ports:
+      - "9000:9000"
+    restart: unless-stopped
+
+  # Layer 3: Privilege Escalation
+  layer3-priv:
+    build: ./layers/layer3-privesc
+    container_name: layer3-priv
+    networks:
+      ctf-network:
+        ipv4_address: 172.28.1.3
+    ports:
+      - "2222:22"
+    cap_add:
+      - SYS_PTRACE
+    restart: unless-stopped
+
+  # Layer 4: Pivot Server
+  layer4-pivot:
+    build: ./layers/layer4-pivot
+    container_name: layer4-pivot
+    networks:
+      ctf-network:
+        ipv4_address: 172.28.1.4
+    ports:
+      - "7777:7777"
+    environment:
+      - AGENT_ENDPOINT=http://layer5-agent:6666
+      - PIVOT_KEY=ESCALATION-COMPLETE-2024
+    depends_on:
+      - layer5-agent
+    restart: unless-stopped
+
+  # Layer 5: AI Agent
+  layer5-agent:
+    build: ./layers/layer5-agent
+    container_name: layer5-agent
+    networks:
+      ctf-network:
+        ipv4_address: 172.28.1.5
+    ports:
+      - "6666:6666"
+    environment:
+      - FINAL_SECRET=FLAG{pr0mpt_1nj3ct10n_m4st3r_h4ck3r}
+    restart: unless-stopped
+
+  # Scoreboard
+  scoreboard:
+    build: ./scoreboard
+    container_name: scoreboard
+    networks:
+      ctf-network:
+        ipv4_address: 172.28.1.10
+    ports:
+      - "8000:8000"
+    environment:
+      - FLAG1=FLAG{1nf0_d1scl0sur3_1s_r34l}
+      - FLAG2=FLAG{r3str1ct3d_sh3ll_3sc4p3}
+      - FLAG3=FLAG{pr1v1l3g3_3sc4l4t10n_m4st3r}
+      - FLAG4=FLAG{p1v0t_p01nt_d1sc0v3r3d}
+      - FLAG5=FLAG{pr0mpt_1nj3ct10n_m4st3r_h4ck3r}
+    restart: unless-stopped
+
+  # Player Workbench (example - run multiple for multiple players)
+  workbench:
+    build: ./workbench
+    container_name: workbench
+    networks:
+      ctf-network:
+        ipv4_address: 172.28.2.1
+    stdin_open: true
+    tty: true
+    cap_add:
+      - NET_RAW  # For ping/nmap
+    depends_on:
+      - layer1-web
+      - scoreboard

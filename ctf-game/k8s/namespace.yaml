@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ctf-game
+  labels:
+    app: ctf-game
+    purpose: hackday

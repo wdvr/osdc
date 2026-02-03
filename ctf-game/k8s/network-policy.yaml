@@ -1,0 +1,55 @@
+---
+# Network Policy for CTF Game
+# Allows only internal communication within the ctf-game namespace
+# Players can only access services within the CTF network
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ctf-game-isolation
+  namespace: ctf-game
+spec:
+  podSelector: {}  # Apply to all pods in namespace
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow all traffic within the namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ctf-game
+  egress:
+  # Allow all traffic within the namespace
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ctf-game
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+---
+# Allow external access to scoreboard
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-scoreboard-ingress
+  namespace: ctf-game
+spec:
+  podSelector:
+    matchLabels:
+      app: scoreboard
+  policyTypes:
+  - Ingress
+  ingress:
+  - ports:
+    - port: 8000

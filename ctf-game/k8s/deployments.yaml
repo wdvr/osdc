@@ -1,0 +1,233 @@
+---
+# Layer 1: Web Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: layer1-web
+  namespace: ctf-game
+  labels:
+    app: layer1-web
+    layer: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: layer1-web
+  template:
+    metadata:
+      labels:
+        app: layer1-web
+        layer: "1"
+    spec:
+      containers:
+      - name: layer1-web
+        image: ctf-game/layer1-web:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# Layer 2: Restricted Shell
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: layer2-shell
+  namespace: ctf-game
+  labels:
+    app: layer2-shell
+    layer: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: layer2-shell
+  template:
+    metadata:
+      labels:
+        app: layer2-shell
+        layer: "2"
+    spec:
+      containers:
+      - name: layer2-shell
+        image: ctf-game/layer2-shell:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9000
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# Layer 3: Privilege Escalation
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: layer3-priv
+  namespace: ctf-game
+  labels:
+    app: layer3-priv
+    layer: "3"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: layer3-priv
+  template:
+    metadata:
+      labels:
+        app: layer3-priv
+        layer: "3"
+    spec:
+      containers:
+      - name: layer3-priv
+        image: ctf-game/layer3-priv:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 22
+        - containerPort: 8888
+        resources:
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+        securityContext:
+          # Need elevated privileges for the CTF privesc challenge
+          privileged: false
+          capabilities:
+            add:
+              - SYS_PTRACE
+
+---
+# Layer 4: Pivot Server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: layer4-pivot
+  namespace: ctf-game
+  labels:
+    app: layer4-pivot
+    layer: "4"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: layer4-pivot
+  template:
+    metadata:
+      labels:
+        app: layer4-pivot
+        layer: "4"
+    spec:
+      containers:
+      - name: layer4-pivot
+        image: ctf-game/layer4-pivot:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 7777
+        env:
+        - name: AGENT_ENDPOINT
+          value: "http://layer5-agent:6666"
+        - name: PIVOT_KEY
+          value: "ESCALATION-COMPLETE-2024"
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# Layer 5: AI Agent
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: layer5-agent
+  namespace: ctf-game
+  labels:
+    app: layer5-agent
+    layer: "5"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: layer5-agent
+  template:
+    metadata:
+      labels:
+        app: layer5-agent
+        layer: "5"
+    spec:
+      containers:
+      - name: layer5-agent
+        image: ctf-game/layer5-agent:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6666
+        env:
+        - name: FINAL_SECRET
+          value: "FLAG{pr0mpt_1nj3ct10n_m4st3r_h4ck3r}"
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# Scoreboard
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scoreboard
+  namespace: ctf-game
+  labels:
+    app: scoreboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scoreboard
+  template:
+    metadata:
+      labels:
+        app: scoreboard
+    spec:
+      containers:
+      - name: scoreboard
+        image: ctf-game/scoreboard:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        env:
+        - name: FLAG1
+          value: "FLAG{1nf0_d1scl0sur3_1s_r34l}"
+        - name: FLAG2
+          value: "FLAG{r3str1ct3d_sh3ll_3sc4p3}"
+        - name: FLAG3
+          value: "FLAG{pr1v1l3g3_3sc4l4t10n_m4st3r}"
+        - name: FLAG4
+          value: "FLAG{p1v0t_p01nt_d1sc0v3r3d}"
+        - name: FLAG5
+          value: "FLAG{pr0mpt_1nj3ct10n_m4st3r_h4ck3r}"
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+          requests:
+            memory: "64Mi"
+            cpu: "50m"

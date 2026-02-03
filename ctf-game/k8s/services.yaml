@@ -1,0 +1,106 @@
+---
+# Layer 1: Web Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: layer1-web
+  namespace: ctf-game
+  labels:
+    app: layer1-web
+spec:
+  selector:
+    app: layer1-web
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+
+---
+# Layer 2: Restricted Shell
+apiVersion: v1
+kind: Service
+metadata:
+  name: layer2-shell
+  namespace: ctf-game
+  labels:
+    app: layer2-shell
+spec:
+  selector:
+    app: layer2-shell
+  ports:
+  - port: 9000
+    targetPort: 9000
+    name: shell
+
+---
+# Layer 3: Privilege Escalation (SSH)
+apiVersion: v1
+kind: Service
+metadata:
+  name: layer3-priv
+  namespace: ctf-game
+  labels:
+    app: layer3-priv
+spec:
+  selector:
+    app: layer3-priv
+  ports:
+  - port: 22
+    targetPort: 22
+    name: ssh
+  - port: 8888
+    targetPort: 8888
+    name: http
+
+---
+# Layer 4: Pivot Server
+apiVersion: v1
+kind: Service
+metadata:
+  name: layer4-pivot
+  namespace: ctf-game
+  labels:
+    app: layer4-pivot
+spec:
+  selector:
+    app: layer4-pivot
+  ports:
+  - port: 7777
+    targetPort: 7777
+    name: http
+
+---
+# Layer 5: AI Agent
+apiVersion: v1
+kind: Service
+metadata:
+  name: layer5-agent
+  namespace: ctf-game
+  labels:
+    app: layer5-agent
+spec:
+  selector:
+    app: layer5-agent
+  ports:
+  - port: 6666
+    targetPort: 6666
+    name: http
+
+---
+# Scoreboard - NodePort for external access
+apiVersion: v1
+kind: Service
+metadata:
+  name: scoreboard
+  namespace: ctf-game
+  labels:
+    app: scoreboard
+spec:
+  type: NodePort
+  selector:
+    app: scoreboard
+  ports:
+  - port: 8000
+    targetPort: 8000
+    nodePort: 30800
+    name: http

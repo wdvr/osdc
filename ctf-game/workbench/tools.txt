@@ -1,0 +1,88 @@
+═══════════════════════════════════════════════════════════════════════════════
+                           AVAILABLE TOOLS
+═══════════════════════════════════════════════════════════════════════════════
+
+NETWORKING
+──────────
+  curl        HTTP client - GET/POST requests
+              curl -X POST -H "Content-Type: application/json" -d '{"key":"val"}' URL
+
+  wget        Download files
+              wget http://example.com/file
+
+  nc          Netcat - raw TCP connections
+              nc hostname port
+
+  nmap        Port scanner (use sparingly!)
+              nmap -p 1-1000 hostname
+
+  telnet      Telnet client
+              telnet hostname port
+
+  socat       Socket relay
+              socat TCP-LISTEN:8080 TCP:remote:80
+
+
+HTTP TOOLS
+──────────
+  http        HTTPie - prettier curl
+              http GET http://example.com
+              http POST http://example.com key=value
+
+  jq          JSON processor
+              curl ... | jq '.data'
+
+
+SSH
+───
+  ssh         SSH client
+              ssh user@hostname -p port
+
+
+TEXT PROCESSING
+───────────────
+  vim/nano    Text editors
+  less        File pager
+  grep        Search text
+  xxd         Hex dump
+              echo "text" | xxd
+
+
+PYTHON
+──────
+  python3     Python interpreter
+  pwntools    CTF toolkit (import pwn)
+              python3 -c "from pwn import *; ..."
+
+
+MISC
+────
+  tmux        Terminal multiplexer (for multiple windows)
+              tmux new -s mysession
+
+  git         Version control
+
+
+QUICK RECIPES
+─────────────
+
+# Explore a web service:
+curl http://target/ | jq .
+curl http://target/robots.txt
+curl http://target/debug
+
+# Connect to TCP service:
+nc target 9000
+
+# SSH with password:
+ssh user@target
+
+# POST JSON data:
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"message": "hello"}' \
+     http://target/api
+
+# With auth header:
+curl -H "Authorization: Bearer TOKEN" http://target/
+
+═══════════════════════════════════════════════════════════════════════════════
