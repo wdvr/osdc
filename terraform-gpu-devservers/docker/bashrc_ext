@@ -5,6 +5,12 @@
 # User identification (set by Lambda on startup)
 export GPU_DEV_USER_ID="dev"
 
+# Show MOTD once per session, only for interactive terminals (skip for Claude Code, scripts, etc.)
+if [ -z "$GPU_DEV_MOTD_SHOWN" ] && [ -t 0 ] && [ -t 1 ] && [ -f /etc/motd ]; then
+    cat /etc/motd
+    export GPU_DEV_MOTD_SHOWN=1
+fi
+
 # Function to check for GPU reservation expiry warnings and startup script status
 check_warnings() {
     # Check for startup script still running
