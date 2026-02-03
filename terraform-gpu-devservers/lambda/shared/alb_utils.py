@@ -290,6 +290,62 @@ def delete_alb_mapping(reservation_id: str) -> bool:
         return False
 
 
+def cleanup_orphaned_target_groups() -> Dict[str, Any]:
+    """
+    Clean up orphaned Jupyter target groups that have no associated ALB listener rules.
+    This handles cases where target groups were created but listener rule creation failed.
+
+    Returns:
+        Dict with cleanup statistics
+    """
+    stats = {"checked": 0, "deleted": 0, "errors": 0, "in_use": 0}
+
+    try:
+        # Get all Jupyter target groups
+        paginator = elbv2_client.get_paginator("describe_target_groups")
+
+        for page in paginator.paginate():
+            for tg in page.get("TargetGroups", []):
+                tg_name = tg.get("TargetGroupName", "")
+                tg_arn = tg.get("TargetGroupArn", "")
+
+                # Only process jupyter-* target groups
+                if not tg_name.startswith("jupyter-"):
+                    continue
+
+                stats["checked"] += 1
+
+                try:
+                    # Check if target group has any listener rules attached
+                    # If LoadBalancerArns is empty, the target group is orphaned
+                    if not tg.get("LoadBalancerArns"):
+                        logger.info(f"Found orphaned target group: {tg_name} ({tg_arn})")
+                        try:
+                            elbv2_client.delete_target_group(TargetGroupArn=tg_arn)
+                            logger.info(f"Deleted orphaned target group: {tg_name}")
+                            stats["deleted"] += 1
+                        except ClientError as delete_error:
+                            if "in use" in str(delete_error).lower():
+                                stats["in_use"] += 1
+                                logger.warning(f"Target group {tg_name} still in use, skipping")
+                            else:
+                                stats["errors"] += 1
+                                logger.error(f"Failed to delete {tg_name}: {delete_error}")
+                    else:
+                        stats["in_use"] += 1
+                except Exception as e:
+                    stats["errors"] += 1
+                    logger.error(f"Error checking target group {tg_name}: {e}")
+
+        logger.info(f"Orphaned target group cleanup complete: {stats}")
+        return stats
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup orphaned target groups: {e}")
+        stats["errors"] += 1
+        return stats
+
+
 def get_instance_id_from_pod(k8s_client, pod_name: str, namespace: str = "gpu-dev") -> Optional[str]:
     """
     Get EC2 instance ID from pod's node
