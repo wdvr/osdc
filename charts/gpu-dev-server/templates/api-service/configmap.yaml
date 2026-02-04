@@ -1,0 +1,15 @@
+{{- if .Values.apiService.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-service-config
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: api-service
+data:
+  QUEUE_NAME: {{ .Values.apiService.config.queueName | quote }}
+  API_KEY_TTL_HOURS: {{ .Values.apiService.config.apiKeyTtlHours | quote }}
+  ALLOWED_AWS_ROLE: {{ .Values.apiService.config.allowedAwsRole | quote }}
+  AWS_REGION: {{ .Values.cloudProvider.region | quote }}
+{{- end }}

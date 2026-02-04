@@ -1,0 +1,65 @@
+{{- if .Values.reservationProcessor.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reservation-processor
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: reservation-processor
+spec:
+  replicas: {{ .Values.reservationProcessor.replicas }}
+  selector:
+    matchLabels:
+      app: reservation-processor
+  template:
+    metadata:
+      labels:
+        app: reservation-processor
+    spec:
+      serviceAccountName: reservation-processor-sa
+      {{- with .Values.reservationProcessor.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.reservationProcessor.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: reservation-processor
+          image: "{{ .Values.reservationProcessor.image.repository }}:{{ .Values.reservationProcessor.image.tag }}"
+          imagePullPolicy: {{ .Values.reservationProcessor.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: reservation-processor-config
+          env:
+            - name: POSTGRES_HOST
+              value: {{ include "gpu-dev-server.postgresHost" . }}
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.auth.username | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.auth.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gpu-dev-server.postgresSecretName" . }}
+                  key: {{ .Values.postgres.auth.existingSecretKey }}
+            - name: WORKER_IMAGE
+              value: "{{ .Values.reservationProcessor.image.repository }}:{{ .Values.reservationProcessor.image.tag }}"
+            - name: KUBE_NAMESPACE
+              value: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+            - name: SERVICE_ACCOUNT
+              value: "reservation-processor-sa"
+          resources:
+            {{- toYaml .Values.reservationProcessor.resources | nindent 12 }}
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "python"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3
+{{- end }}

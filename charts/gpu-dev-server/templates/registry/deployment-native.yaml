@@ -1,0 +1,95 @@
+{{- if .Values.registry.native.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-native
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: registry-native
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry-native
+  template:
+    metadata:
+      labels:
+        app: registry-native
+    spec:
+      {{- with .Values.registry.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: registry
+          image: "{{ .Values.registry.native.image.repository }}:{{ .Values.registry.native.image.tag }}"
+          ports:
+            - containerPort: 5000
+              name: registry
+          env:
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+          volumeMounts:
+            - name: registry-data
+              mountPath: /var/lib/registry
+            {{- if .Values.registry.native.tls.enabled }}
+            - name: registry-certs
+              mountPath: /certs
+              readOnly: true
+            {{- end }}
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: registry-data
+          persistentVolumeClaim:
+            claimName: registry-native-data
+        {{- if .Values.registry.native.tls.enabled }}
+        - name: registry-certs
+          secret:
+            secretName: registry-native-tls
+        {{- end }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-native-data
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: registry-native
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ include "gpu-dev-server.storageClass" . }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.registry.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-native
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: registry-native
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5000
+      targetPort: 5000
+      protocol: TCP
+      name: registry
+  selector:
+    app: registry-native
+{{- end }}

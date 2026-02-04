@@ -1,0 +1,39 @@
+{{- if .Values.reservationProcessor.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reservation-processor-config
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: reservation-processor
+data:
+  # PGMQ Configuration
+  QUEUE_NAME: {{ .Values.reservationProcessor.config.queueName | quote }}
+  POLL_INTERVAL_SECONDS: {{ .Values.reservationProcessor.config.pollIntervalSeconds | quote }}
+  VISIBILITY_TIMEOUT_SECONDS: {{ .Values.reservationProcessor.config.visibilityTimeoutSeconds | quote }}
+  BATCH_SIZE: {{ .Values.reservationProcessor.config.batchSize | quote }}
+  # Cloud Configuration
+  REGION: {{ .Values.cloudProvider.region | quote }}
+  {{- if eq .Values.cloudProvider.name "aws" }}
+  EKS_CLUSTER_NAME: {{ .Values.cloudProvider.aws.eksClusterName | quote }}
+  PRIMARY_AVAILABILITY_ZONE: {{ .Values.cloudProvider.aws.primaryAvailabilityZone | quote }}
+  EFS_SECURITY_GROUP_ID: {{ .Values.cloudProvider.aws.efsSecurityGroupId | quote }}
+  EFS_SUBNET_IDS: {{ .Values.cloudProvider.aws.efsSubnetIds | quote }}
+  CCACHE_SHARED_EFS_ID: {{ .Values.cloudProvider.aws.ccacheSharedEfsId | quote }}
+  ECR_REPOSITORY_URL: {{ .Values.cloudProvider.aws.ecrRepositoryUrl | quote }}
+  {{- end }}
+  {{- if eq .Values.cloudProvider.name "gcp" }}
+  GKE_CLUSTER_NAME: {{ .Values.cloudProvider.gcp.gkeClusterName | quote }}
+  GCP_ZONE: {{ .Values.cloudProvider.gcp.zone | quote }}
+  GCP_PROJECT_ID: {{ .Values.cloudProvider.gcp.projectId | quote }}
+  {{- end }}
+  # Reservation Configuration
+  MAX_RESERVATION_HOURS: {{ .Values.reservationProcessor.config.maxReservationHours | quote }}
+  DEFAULT_TIMEOUT_HOURS: {{ .Values.reservationProcessor.config.defaultTimeoutHours | quote }}
+  # Container Configuration
+  GPU_DEV_CONTAINER_IMAGE: {{ .Values.reservationProcessor.config.gpuDevContainerImage | quote }}
+  # Version Configuration
+  PROCESSOR_VERSION: {{ .Values.reservationProcessor.config.processorVersion | quote }}
+  MIN_CLI_VERSION: {{ .Values.reservationProcessor.config.minCliVersion | quote }}
+{{- end }}

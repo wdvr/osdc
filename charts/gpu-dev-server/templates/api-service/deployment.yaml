@@ -1,0 +1,71 @@
+{{- if .Values.apiService.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: api-service
+spec:
+  replicas: {{ .Values.apiService.replicas }}
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      serviceAccountName: api-service-sa
+      {{- with .Values.apiService.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.apiService.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api-service
+          image: "{{ .Values.apiService.image.repository }}:{{ .Values.apiService.image.tag }}"
+          imagePullPolicy: {{ .Values.apiService.image.pullPolicy }}
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: api-service-config
+          env:
+            - name: POSTGRES_HOST
+              value: {{ include "gpu-dev-server.postgresHost" . }}
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.auth.username | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.auth.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gpu-dev-server.postgresSecretName" . }}
+                  key: {{ .Values.postgres.auth.existingSecretKey }}
+          resources:
+            {{- toYaml .Values.apiService.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+{{- end }}

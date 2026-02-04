@@ -1,0 +1,40 @@
+{{- if .Values.apiService.enabled }}
+---
+# Internal ClusterIP service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: api-service
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+  selector:
+    app: api-service
+---
+# Public LoadBalancer service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service-public
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: api-service
+spec:
+  type: {{ .Values.apiService.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.apiService.service.port }}
+      targetPort: {{ .Values.apiService.service.targetPort }}
+      protocol: TCP
+  selector:
+    app: api-service
+{{- end }}
