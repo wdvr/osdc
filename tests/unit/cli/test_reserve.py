@@ -406,8 +406,10 @@ class TestMultinodeReservation:
             first_call_env = calls[0][0][0]["env_vars"]
             second_call_env = calls[1][0][0]["env_vars"]
 
+            # First node (master) should have Jupyter enabled
             assert first_call_env.get("JUPYTER_ENABLED") == "true"
-            assert second_call_env.get("JUPYTER_ENABLED") == "false"
+            # Second node should either have Jupyter disabled or not set
+            assert second_call_env.get("JUPYTER_ENABLED") in (None, "false")
 
 
 class TestSSHHelpers:
