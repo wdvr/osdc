@@ -33,3 +33,40 @@ package-dir = {"" = "cli-tools/gpu-dev-cli"}
 
 [tool.setuptools.package-data]
 gpu_dev_cli = ["py.typed"]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.2.0",
+    "moto[all]>=5.0.0",
+    "freezegun>=1.2.0",
+    "responses>=0.25.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "unit: Unit tests (fast, mocked)",
+    "e2e: End-to-end tests (require AWS dev cluster)",
+    "slow: Slow tests that can be skipped",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["cli-tools/gpu-dev-cli/gpu_dev_cli", "terraform-gpu-devservers/lambda"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

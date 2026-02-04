@@ -861,6 +861,15 @@ def handler(event, context):
             logger.error(f"Error cleaning up soft-deleted snapshots: {e}")
             deleted_snapshot_count = 0
 
+        # Clean up orphaned disks (in_use=True but pod/reservation gone)
+        # This handles cases where nodes went offline unexpectedly
+        try:
+            orphaned_disks_cleaned = cleanup_orphaned_disks()
+            logger.info(f"Cleaned up {orphaned_disks_cleaned} orphaned disks")
+        except Exception as e:
+            logger.error(f"Error cleaning up orphaned disks: {e}")
+            orphaned_disks_cleaned = 0
+
         return {
             "statusCode": 200,
             "body": json.dumps(
@@ -873,6 +882,7 @@ def handler(event, context):
                     "deleted_snapshots": deleted_snapshot_count,
                     "tagged_snapshots": tagged_snapshot_count,
                     "synced_disks": synced_disk_count,
+                    "orphaned_disks_cleaned": orphaned_disks_cleaned,
                 }
             ),
         }
@@ -1015,6 +1025,108 @@ def find_disk_by_reservation(user_id: str, reservation_id: str) -> str | None:
     except Exception as e:
         logger.warning(f"Error looking up disk by reservation: {e}")
         return None
+
+
+def cleanup_orphaned_disks() -> int:
+    """
+    Find and clean up disks marked as in_use where the associated pod/reservation is gone.
+    This handles cases where a node went offline and the pod was never properly cleaned up.
+    Returns count of disks cleaned up.
+    """
+    cleaned_count = 0
+
+    try:
+        disks_table = dynamodb.Table(DISKS_TABLE)
+        reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+
+        # Scan for disks marked as in_use
+        response = disks_table.scan(
+            FilterExpression="in_use = :true",
+            ExpressionAttributeValues={":true": True}
+        )
+
+        in_use_disks = response.get('Items', [])
+
+        # Handle pagination
+        while 'LastEvaluatedKey' in response:
+            response = disks_table.scan(
+                FilterExpression="in_use = :true",
+                ExpressionAttributeValues={":true": True},
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            in_use_disks.extend(response.get('Items', []))
+
+        if not in_use_disks:
+            logger.debug("No disks marked as in_use found")
+            return 0
+
+        logger.info(f"Found {len(in_use_disks)} disks marked as in_use, checking for orphans")
+
+        for disk in in_use_disks:
+            user_id = disk.get('user_id')
+            disk_name = disk.get('disk_name')
+            attached_reservation = disk.get('attached_to_reservation')
+
+            if not user_id or not disk_name:
+                continue
+
+            # If no reservation attached, it's orphaned - clean it up
+            if not attached_reservation:
+                logger.info(f"Disk '{disk_name}' for user {user_id} has no attached reservation - cleaning up")
+                try:
+                    mark_disk_not_in_use(user_id, disk_name)
+                    cleaned_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to clean up orphaned disk '{disk_name}': {e}")
+                continue
+
+            # Check if the attached reservation still exists and is active
+            try:
+                res_response = reservations_table.get_item(
+                    Key={'reservation_id': attached_reservation}
+                )
+
+                if 'Item' not in res_response:
+                    # Reservation doesn't exist - disk is orphaned
+                    logger.info(f"Disk '{disk_name}' attached to non-existent reservation {attached_reservation[:8]} - cleaning up")
+                    mark_disk_not_in_use(user_id, disk_name)
+                    cleaned_count += 1
+                    continue
+
+                reservation = res_response['Item']
+                status = reservation.get('status', '')
+
+                # If reservation is in a terminal state, clean up the disk
+                if status in ['expired', 'cancelled', 'failed']:
+                    logger.info(f"Disk '{disk_name}' attached to {status} reservation {attached_reservation[:8]} - cleaning up")
+                    mark_disk_not_in_use(user_id, disk_name)
+                    cleaned_count += 1
+                    continue
+
+                # If reservation is active/preparing, check if pod actually exists
+                if status in ['active', 'preparing']:
+                    pod_name = reservation.get('pod_name')
+                    if pod_name and not check_pod_exists(pod_name):
+                        # Pod is gone but reservation shows active - node likely went offline
+                        logger.info(f"Disk '{disk_name}' attached to reservation {attached_reservation[:8]} with missing pod {pod_name} - cleaning up")
+                        mark_disk_not_in_use(user_id, disk_name)
+                        cleaned_count += 1
+
+                        # Also expire the reservation since pod is gone
+                        try:
+                            expire_reservation_due_to_missing_pod(reservation)
+                            logger.info(f"Also expired reservation {attached_reservation[:8]} due to missing pod")
+                        except Exception as expire_error:
+                            logger.warning(f"Failed to expire reservation {attached_reservation[:8]}: {expire_error}")
+
+            except Exception as res_error:
+                logger.warning(f"Error checking reservation for disk '{disk_name}': {res_error}")
+
+        return cleaned_count
+
+    except Exception as e:
+        logger.error(f"Error in cleanup_orphaned_disks: {e}")
+        return cleaned_count
 
 
 def handle_oom_event(reservation: dict, oom_info: dict) -> bool:
@@ -1193,9 +1305,10 @@ def warn_user_expiring(reservation: dict[str, Any], warning_minutes: int) -> Non
 
 
 def expire_reservation_due_to_missing_pod(reservation: dict[str, Any]) -> None:
-    """Mark reservation as expired when pod is missing (likely manually deleted)"""
+    """Mark reservation as expired when pod is missing (likely manually deleted or node went offline)"""
     try:
         reservation_id = reservation["reservation_id"]
+        user_id = reservation.get("user_id")
 
         logger.info(
             f"Marking reservation {reservation_id} as expired due to missing pod"
@@ -1219,6 +1332,20 @@ def expire_reservation_due_to_missing_pod(reservation: dict[str, Any]) -> None:
         logger.info(
             f"Successfully marked reservation {reservation_id} as expired due to missing pod"
         )
+
+        # Clean up disk in_use flag immediately (don't wait for next expiry run)
+        disk_name = reservation.get("disk_name")
+
+        # Fallback: if disk_name not in reservation, look it up from disks table
+        if user_id and not disk_name:
+            disk_name = find_disk_by_reservation(user_id, reservation_id)
+
+        if user_id and disk_name:
+            try:
+                mark_disk_not_in_use(user_id, disk_name)
+                logger.info(f"Cleared disk '{disk_name}' in_use flag for missing-pod reservation {reservation_id[:8]}")
+            except Exception as disk_error:
+                logger.warning(f"Failed to clear disk in_use flag for {reservation_id[:8]}: {disk_error}")
 
     except Exception as e:
         logger.error(

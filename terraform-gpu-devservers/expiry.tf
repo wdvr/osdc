@@ -172,9 +172,9 @@ resource "null_resource" "reservation_expiry_build" {
       rm -rf package *.zip
       mkdir -p package
 
-      # Install dependencies with specific Python version
-      python3 -m pip install --upgrade pip
-      python3 -m pip install -r requirements.txt --target package/ --force-reinstall
+      # Install dependencies using Docker for Linux x86_64 compatibility
+      docker run --rm --platform linux/amd64 --entrypoint pip -v "$(pwd):/var/task" -w /var/task public.ecr.aws/lambda/python:3.13 \
+        install -r requirements.txt --target package/ --upgrade
 
       # Copy source code and shared modules
       cp index.py package/

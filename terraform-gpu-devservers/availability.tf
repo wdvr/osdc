@@ -224,10 +224,10 @@ resource "null_resource" "availability_updater_build" {
       rm -rf package *.zip
       mkdir -p package
 
-      # Install dependencies if requirements.txt exists
+      # Install dependencies using Docker for Linux x86_64 compatibility
       if [ -f requirements.txt ]; then
-        python3 -m pip install --upgrade pip
-        python3 -m pip install -r requirements.txt --target package/ --force-reinstall
+        docker run --rm --platform linux/amd64 --entrypoint pip -v "$(pwd):/var/task" -w /var/task public.ecr.aws/lambda/python:3.13 \
+          install -r requirements.txt --target package/ --upgrade
       fi
 
       # Copy source code and shared modules

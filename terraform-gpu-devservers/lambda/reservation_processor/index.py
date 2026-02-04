@@ -3417,12 +3417,18 @@ def get_pod_resource_requests(gpu_count: int, gpu_type: str, is_multinode: bool 
 
 
 def _pod_uses_efa(gpu_count: int, gpu_type: str, is_multinode: bool = False) -> bool:
-    """Check if pod will use EFA based on configuration"""
+    """Check if pod will use EFA based on configuration.
+
+    EFA is enabled for full-node allocations on high-end GPU types (H100, H200, B200, A100)
+    that have EFA hardware available. This enables RDMA/high-bandwidth networking for
+    both single-node and multi-node workloads.
+    """
     config = GPU_CONFIG.get(gpu_type, GPU_CONFIG_DEFAULT)
+    # GPU types that support EFA (have EFA hardware on their instance types)
+    efa_supported_types = {"h100", "h200", "b200", "a100"}
     return (
-        gpu_type != "t4-small" and
-        is_multinode and
-        gpu_count == config["max_gpus"]
+        gpu_type in efa_supported_types and
+        gpu_count == config["max_gpus"]  # Full node allocation only
     )
 
 
