@@ -1,0 +1,61 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: postgres
+data:
+  # Primary configuration
+  primary-postgresql.conf: |
+    listen_addresses = '*'
+    port = 5432
+    max_connections = 200
+    shared_buffers = 256MB
+    work_mem = 16MB
+    maintenance_work_mem = 128MB
+    wal_level = replica
+    max_wal_senders = 10
+    max_replication_slots = 10
+    hot_standby = on
+    synchronous_commit = on
+    archive_mode = off
+    log_destination = 'stderr'
+    logging_collector = off
+    log_min_messages = warning
+    log_min_error_statement = error
+
+  # Replica configuration
+  replica-postgresql.conf: |
+    listen_addresses = '*'
+    port = 5432
+    max_connections = 200
+    shared_buffers = 128MB
+    work_mem = 8MB
+    maintenance_work_mem = 64MB
+    hot_standby = on
+    hot_standby_feedback = on
+    log_destination = 'stderr'
+    logging_collector = off
+    log_min_messages = warning
+    log_min_error_statement = error
+
+  # Primary pg_hba.conf
+  primary-pg_hba.conf: |
+    # TYPE  DATABASE        USER            ADDRESS                 METHOD
+    local   all             all                                     trust
+    host    all             all             127.0.0.1/32            trust
+    host    all             all             ::1/128                 trust
+    host    all             all             0.0.0.0/0               md5
+    host    replication     replicator      0.0.0.0/0               md5
+
+  # Replica pg_hba.conf
+  replica-pg_hba.conf: |
+    # TYPE  DATABASE        USER            ADDRESS                 METHOD
+    local   all             all                                     trust
+    host    all             all             127.0.0.1/32            trust
+    host    all             all             ::1/128                 trust
+    host    all             all             0.0.0.0/0               md5
+{{- end }}
