@@ -1,0 +1,45 @@
+{{- if .Values.reservationExpiry.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: reservation-expiry-role
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+rules:
+  # Node access - for checking GPU availability and node status
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Pod access - for managing and monitoring reservation pods
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status", "pods/exec"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Service access - for deleting NodePort services for SSH access
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "delete"]
+  # PersistentVolumeClaim access - for managing volumes
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "delete"]
+  # Event access - for monitoring pod events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: reservation-expiry-binding
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reservation-expiry-role
+subjects:
+  - kind: ServiceAccount
+    name: reservation-expiry-sa
+    namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+{{- end }}

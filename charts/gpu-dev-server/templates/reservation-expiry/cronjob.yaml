@@ -1,0 +1,59 @@
+{{- if .Values.reservationExpiry.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reservation-expiry
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: reservation-expiry
+spec:
+  schedule: {{ .Values.reservationExpiry.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: reservation-expiry
+    spec:
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app: reservation-expiry
+        spec:
+          serviceAccountName: reservation-expiry-sa
+          restartPolicy: OnFailure
+          {{- with .Values.reservationExpiry.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.reservationExpiry.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: expiry
+              image: "{{ .Values.reservationExpiry.image.repository }}:{{ .Values.reservationExpiry.image.tag }}"
+              imagePullPolicy: {{ .Values.reservationExpiry.image.pullPolicy }}
+              envFrom:
+                - configMapRef:
+                    name: reservation-expiry-config
+              env:
+                - name: POSTGRES_HOST
+                  value: {{ include "gpu-dev-server.postgresHost" . }}
+                - name: POSTGRES_PORT
+                  value: "5432"
+                - name: POSTGRES_USER
+                  value: {{ .Values.postgres.auth.username | quote }}
+                - name: POSTGRES_DB
+                  value: {{ .Values.postgres.auth.database | quote }}
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "gpu-dev-server.postgresSecretName" . }}
+                      key: {{ .Values.postgres.auth.existingSecretKey }}
+              resources:
+                {{- toYaml .Values.reservationExpiry.resources | nindent 16 }}
+{{- end }}

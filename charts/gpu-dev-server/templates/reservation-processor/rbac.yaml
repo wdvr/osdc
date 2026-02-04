@@ -1,0 +1,53 @@
+{{- if .Values.reservationProcessor.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: reservation-processor-role
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+rules:
+  # Node access - for checking GPU availability and node status
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Pod access - for creating, managing, and monitoring reservation pods
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status", "pods/exec"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Service access - for creating NodePort services for SSH access
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # PersistentVolumeClaim access - for managing volumes
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ConfigMap and Secret access - for pod configurations
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Event access - for monitoring pod events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Job access - for creating and monitoring worker jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs", "jobs/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: reservation-processor-binding
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reservation-processor-role
+subjects:
+  - kind: ServiceAccount
+    name: reservation-processor-sa
+    namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+{{- end }}

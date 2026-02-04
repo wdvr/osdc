@@ -1,0 +1,38 @@
+# AWS-specific overrides for GPU Dev Server
+# Usage: helm install gpu-dev ./charts/gpu-dev-server -f values-aws.yaml
+
+cloudProvider:
+  name: "aws"
+  region: "us-east-2"  # Override as needed
+  aws:
+    eksClusterName: ""  # Set to your EKS cluster name
+    primaryAvailabilityZone: ""  # e.g., us-east-2a
+    efsSecurityGroupId: ""
+    efsSubnetIds: ""
+    ccacheSharedEfsId: ""
+    ecrRepositoryUrl: ""
+
+# AWS uses gp3 storage class
+storage:
+  class: "gp3"
+
+# Service account annotations for IRSA (IAM Roles for Service Accounts)
+apiService:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: ""  # arn:aws:iam::ACCOUNT:role/PREFIX-api-service-role
+
+reservationProcessor:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: ""  # arn:aws:iam::ACCOUNT:role/PREFIX-reservation-processor-role
+
+availabilityUpdater:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: ""  # arn:aws:iam::ACCOUNT:role/PREFIX-availability-updater-role
+
+reservationExpiry:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: ""  # arn:aws:iam::ACCOUNT:role/PREFIX-reservation-expiry-role
