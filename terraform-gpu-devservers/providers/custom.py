@@ -1,33 +1,68 @@
 """
 Custom Cloud Provider Template
 
-This is a template for implementing custom cloud providers.
-Copy this file and implement all abstract methods.
+This module provides a template for implementing custom providers for:
+- On-premises data centers
+- Private clouds (OpenStack, VMware vSphere)
+- Alternative cloud providers (DigitalOcean, Linode, etc.)
+- Hybrid environments
 
-To use a custom provider:
-1. Copy this file and rename (e.g., mycloud.py)
-2. Implement all methods marked with NotImplementedError
-3. Update providers/__init__.py to include your provider
-4. Set environment variable: CLOUD_PROVIDER=mycloud
+IMPLEMENTATION GUIDE
+====================
 
-Required Methods to Implement:
-- Volume operations: create, delete, attach, detach, get, list
-- Snapshot operations: create, delete, get, list, wait_for
-- Object storage: upload, download
+1. Copy this file and rename it for your environment
+2. Implement each abstract method
+3. Register your provider in __init__.py
+4. Set CLOUD_PROVIDER environment variable
 
-Optional Methods (have default no-op implementations):
-- DNS: create_dns_record, delete_dns_record
-- Compute: get_nodes_by_gpu_type, get_node_availability
+STORAGE INTEGRATION PATTERNS
+============================
+
+LVM (Linux Volume Manager):
+    - Create logical volumes in volume groups
+    - Use thin provisioning for snapshots
+    - Mount via device mapper
+
+Ceph RBD:
+    - Create RBD images in pools
+    - Use librbd or rbd CLI
+    - Map via rbd-nbd or krbd
+
+iSCSI:
+    - Create LUNs on storage array
+    - Map to initiator
+    - Discover and login to targets
+
+NFS:
+    - Create directories/quotas on NFS server
+    - Export via /etc/exports or storage array
+
+OBJECT STORAGE PATTERNS
+=======================
+
+MinIO:
+    - S3-compatible API
+    - Use boto3 with custom endpoint
+
+Ceph RadosGW:
+    - S3-compatible API
+    - Use boto3 with custom endpoint
+
+Local filesystem:
+    - Use local directory as object store
+    - Simple for testing
 """
 
 import logging
-from typing import Dict, List, Optional, Any
+import os
+from typing import Any
 
 from .base import (
+    AuthProvider,
     CloudProvider,
-    VolumeInfo,
-    SnapshotInfo,
     NodeInfo,
+    SnapshotInfo,
+    VolumeInfo,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,173 +70,174 @@ logger = logging.getLogger(__name__)
 
 class CustomProvider(CloudProvider):
     """
-    Template for custom cloud provider implementation.
+    Template for custom cloud provider implementations.
 
-    Replace all NotImplementedError blocks with your cloud's API calls.
+    To implement:
+    1. Replace each NotImplementedError with actual implementation
+    2. Configure via environment variables
+    3. Add any additional helper methods needed
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """
-        Initialize your custom provider.
-
-        Args:
-            config: Provider-specific configuration dict.
-                    Can include API keys, endpoints, regions, etc.
-
-        Example:
-            config = {
-                "api_endpoint": "https://api.mycloud.com",
-                "api_key": os.environ.get("MYCLOUD_API_KEY"),
-                "region": "us-west",
-            }
-        """
-        self.config = config or {}
-        # Initialize your cloud SDK clients here
-        # self.client = MyCloudSDK(...)
+    def __init__(self):
+        # Configuration from environment
+        self.storage_backend = os.environ.get("CUSTOM_STORAGE_BACKEND", "lvm")
+        self.object_store_path = os.environ.get("CUSTOM_OBJECT_STORE", "/var/lib/gpu-dev/objects")
 
     def name(self) -> str:
         return "custom"
 
-    # =========================================================================
-    # BLOCK STORAGE - REQUIRED
-    # =========================================================================
+    # === Block Storage ===
 
     def create_volume(
         self,
         size_gb: int,
         availability_zone: str,
         volume_type: str = "ssd",
-        tags: Optional[Dict[str, str]] = None,
-        snapshot_id: Optional[str] = None,
+        tags: dict[str, str] | None = None,
+        snapshot_id: str | None = None,
     ) -> VolumeInfo:
         """
         Create a block storage volume.
 
-        Args:
-            size_gb: Volume size in gigabytes
-            availability_zone: Zone/region for the volume
-            volume_type: Type of storage (ssd, hdd, etc.)
-            tags: Key-value tags for the volume
-            snapshot_id: Optional snapshot to create volume from
-
-        Returns:
-            VolumeInfo with the created volume details
-
-        Implementation Notes:
-            - Map volume_type to your cloud's storage types
-            - Apply tags/labels as supported by your cloud
-            - If snapshot_id provided, create volume from snapshot
+        Example LVM implementation:
+            import subprocess
+            import uuid
+            vol_name = f"gpudev-{uuid.uuid4().hex[:8]}"
+            cmd = ['lvcreate', '-L', f'{size_gb}G', '-n', vol_name, 'vg_gpudev']
+            if snapshot_id:
+                cmd.extend(['--snapshot', snapshot_id])
+            subprocess.run(cmd, check=True)
+            return VolumeInfo(volume_id=vol_name, ...)
         """
         raise NotImplementedError(
-            "Implement volume creation for your cloud provider. "
-            "Return VolumeInfo(volume_id, size_gb, availability_zone, status, tags)"
+            f"Custom storage ({self.storage_backend}) not implemented. "
+            "Implement create_volume() for your storage backend."
         )
 
     def delete_volume(self, volume_id: str) -> bool:
         """
         Delete a block storage volume.
 
-        Args:
-            volume_id: ID of the volume to delete
-
-        Returns:
-            True if deleted successfully, False otherwise
+        Example LVM implementation:
+            subprocess.run(['lvremove', '-f', f'vg_gpudev/{volume_id}'], check=True)
+            return True
         """
-        raise NotImplementedError("Implement volume deletion for your cloud provider")
+        raise NotImplementedError(
+            f"Custom storage ({self.storage_backend}) not implemented. "
+            "Implement delete_volume() for your storage backend."
+        )
 
     def attach_volume(
         self, volume_id: str, instance_id: str, device_path: str
     ) -> bool:
         """
-        Attach volume to a compute instance.
+        Attach volume to instance.
 
-        Args:
-            volume_id: ID of the volume
-            instance_id: ID of the compute instance
-            device_path: Device path on the instance (e.g., /dev/xvdf)
-
-        Returns:
-            True if attached successfully
-
-        Note:
-            Some clouds may ignore device_path and auto-assign
+        For Kubernetes-based workloads, this typically means:
+        1. Make the volume accessible on the node (iSCSI login, RBD map, etc.)
+        2. Create a PersistentVolume pointing to the device
+        3. Let Kubernetes handle the pod mounting
         """
-        raise NotImplementedError("Implement volume attachment for your cloud provider")
+        raise NotImplementedError(
+            f"Custom storage ({self.storage_backend}) not implemented. "
+            "Implement attach_volume() for your storage backend."
+        )
 
     def detach_volume(self, volume_id: str) -> bool:
         """
-        Detach volume from its instance.
+        Detach volume from instance.
 
-        Args:
-            volume_id: ID of the volume to detach
-
-        Returns:
-            True if detached successfully
+        Ensure the volume is properly unmounted before detaching.
+        For iSCSI: logout from target
+        For RBD: unmap the device
+        For NFS: unmount the share
         """
-        raise NotImplementedError("Implement volume detachment for your cloud provider")
+        raise NotImplementedError(
+            f"Custom storage ({self.storage_backend}) not implemented. "
+            "Implement detach_volume() for your storage backend."
+        )
 
-    def get_volume(self, volume_id: str) -> Optional[VolumeInfo]:
+    def get_volume(self, volume_id: str) -> VolumeInfo | None:
         """
-        Get information about a specific volume.
+        Get volume information.
 
-        Args:
-            volume_id: ID of the volume
-
-        Returns:
-            VolumeInfo if found, None otherwise
+        Example LVM implementation:
+            result = subprocess.run(
+                ['lvs', '--noheadings', '-o', 'lv_size,lv_attr', f'vg_gpudev/{volume_id}'],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                return None
+            # Parse output and return VolumeInfo
         """
-        raise NotImplementedError("Implement volume get for your cloud provider")
+        raise NotImplementedError(
+            f"Custom storage ({self.storage_backend}) not implemented. "
+            "Implement get_volume() for your storage backend."
+        )
 
     def list_volumes(
-        self, filters: Optional[Dict[str, str]] = None
-    ) -> List[VolumeInfo]:
+        self, filters: dict[str, str] | None = None
+    ) -> list[VolumeInfo]:
         """
         List volumes matching filters.
 
-        Args:
-            filters: Key-value filters to match (typically by tags)
-
-        Returns:
-            List of VolumeInfo matching the filters
+        Note: For backends without native tagging, store tags in a local database
+        or use naming conventions to encode metadata.
         """
-        raise NotImplementedError("Implement volume listing for your cloud provider")
+        raise NotImplementedError(
+            f"Custom storage ({self.storage_backend}) not implemented. "
+            "Implement list_volumes() for your storage backend."
+        )
 
-    # =========================================================================
-    # SNAPSHOTS - REQUIRED
-    # =========================================================================
+    # === Snapshots ===
 
     def create_snapshot(
         self,
         volume_id: str,
         description: str = "",
-        tags: Optional[Dict[str, str]] = None,
+        tags: dict[str, str] | None = None,
     ) -> SnapshotInfo:
         """
         Create a snapshot of a volume.
 
-        Args:
-            volume_id: ID of the volume to snapshot
-            description: Optional description
-            tags: Key-value tags for the snapshot
-
-        Returns:
-            SnapshotInfo with snapshot details
+        Example LVM implementation:
+            import uuid
+            snap_name = f"snap-{uuid.uuid4().hex[:8]}"
+            subprocess.run([
+                'lvcreate', '--snapshot',
+                '-L', '10G',  # COW pool size
+                '-n', snap_name,
+                f'vg_gpudev/{volume_id}'
+            ], check=True)
+            return SnapshotInfo(snapshot_id=snap_name, ...)
         """
-        raise NotImplementedError("Implement snapshot creation for your cloud provider")
+        raise NotImplementedError(
+            f"Custom snapshots ({self.storage_backend}) not implemented. "
+            "Implement create_snapshot() for your storage backend."
+        )
 
     def delete_snapshot(self, snapshot_id: str) -> bool:
         """Delete a snapshot."""
-        raise NotImplementedError("Implement snapshot deletion for your cloud provider")
+        raise NotImplementedError(
+            f"Custom snapshots ({self.storage_backend}) not implemented. "
+            "Implement delete_snapshot() for your storage backend."
+        )
 
-    def get_snapshot(self, snapshot_id: str) -> Optional[SnapshotInfo]:
+    def get_snapshot(self, snapshot_id: str) -> SnapshotInfo | None:
         """Get snapshot information."""
-        raise NotImplementedError("Implement snapshot get for your cloud provider")
+        raise NotImplementedError(
+            f"Custom snapshots ({self.storage_backend}) not implemented. "
+            "Implement get_snapshot() for your storage backend."
+        )
 
     def list_snapshots(
-        self, filters: Optional[Dict[str, str]] = None
-    ) -> List[SnapshotInfo]:
+        self, filters: dict[str, str] | None = None
+    ) -> list[SnapshotInfo]:
         """List snapshots matching filters."""
-        raise NotImplementedError("Implement snapshot listing for your cloud provider")
+        raise NotImplementedError(
+            f"Custom snapshots ({self.storage_backend}) not implemented. "
+            "Implement list_snapshots() for your storage backend."
+        )
 
     def wait_for_snapshot(
         self, snapshot_id: str, timeout_seconds: int = 600
@@ -209,110 +245,159 @@ class CustomProvider(CloudProvider):
         """
         Wait for snapshot to complete.
 
-        Args:
-            snapshot_id: ID of the snapshot
-            timeout_seconds: Maximum time to wait
-
-        Returns:
-            True if completed, False if timeout or error
+        For LVM/ZFS snapshots, this is typically instant.
+        For storage arrays, poll the API until complete.
         """
         raise NotImplementedError(
-            "Implement snapshot wait for your cloud provider. "
-            "Poll get_snapshot() until status indicates completion."
+            f"Custom snapshots ({self.storage_backend}) not implemented. "
+            "Implement wait_for_snapshot() for your storage backend."
         )
 
-    # =========================================================================
-    # COMPUTE - OPTIONAL (K8s handles most of this)
-    # =========================================================================
+    # === Compute ===
 
-    def get_nodes_by_gpu_type(self, gpu_type: str) -> List[NodeInfo]:
+    def get_nodes_by_gpu_type(self, gpu_type: str) -> list[NodeInfo]:
         """
-        Get compute nodes by GPU type.
+        Get nodes/instances by GPU type.
 
-        Default implementation returns empty list.
-        Override if your cloud has a native way to query this.
-        Typically, Kubernetes API is used instead.
+        For Kubernetes-based deployments, query K8s API:
+            from kubernetes import client
+            v1 = client.CoreV1Api()
+            nodes = v1.list_node(label_selector=f'gpu-type={gpu_type}')
         """
-        return []
+        raise NotImplementedError(
+            "Custom compute not implemented. "
+            "Query via Kubernetes API instead."
+        )
 
-    def get_node_availability(self) -> Dict[str, Dict[str, int]]:
+    def get_node_availability(self) -> dict[str, dict[str, int]]:
         """
-        Get GPU availability per type.
+        Get GPU availability by type.
 
-        Default returns empty dict.
-        Handled by availability updater service via K8s API.
+        This is typically handled by the availability-updater-service
+        which queries Kubernetes for GPU allocations.
         """
-        return {}
+        raise NotImplementedError(
+            "Handled by availability updater service."
+        )
 
-    # =========================================================================
-    # OBJECT STORAGE - REQUIRED
-    # =========================================================================
+    # === Object Storage ===
 
     def upload_to_object_storage(
         self,
         bucket: str,
         key: str,
         content: bytes,
-        metadata: Optional[Dict[str, str]] = None,
+        metadata: dict[str, str] | None = None,
     ) -> str:
         """
-        Upload content to object storage (S3-compatible).
+        Upload content to object storage.
 
-        Args:
-            bucket: Bucket/container name
-            key: Object key/path
-            content: Binary content to upload
-            metadata: Optional metadata
+        Example MinIO/S3-compatible implementation:
+            import boto3
+            s3 = boto3.client('s3', endpoint_url=os.environ['MINIO_ENDPOINT'])
+            s3.put_object(Bucket=bucket, Key=key, Body=content, Metadata=metadata or {})
+            return f's3://{bucket}/{key}'
 
-        Returns:
-            URL or path to the uploaded object
+        Example filesystem implementation:
+            import os
+            path = os.path.join(self.object_store_path, bucket, key)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as f:
+                f.write(content)
+            return f'file://{path}'
         """
         raise NotImplementedError(
-            "Implement object storage upload for your cloud provider"
+            "Custom object storage not implemented. "
+            "Implement upload_to_object_storage() for your storage backend."
         )
 
     def download_from_object_storage(
         self, bucket: str, key: str
-    ) -> Optional[bytes]:
+    ) -> bytes | None:
         """
         Download content from object storage.
 
-        Args:
-            bucket: Bucket/container name
-            key: Object key/path
-
-        Returns:
-            Binary content if found, None otherwise
+        Example filesystem implementation:
+            path = os.path.join(self.object_store_path, bucket, key)
+            if os.path.exists(path):
+                with open(path, 'rb') as f:
+                    return f.read()
+            return None
         """
         raise NotImplementedError(
-            "Implement object storage download for your cloud provider"
+            "Custom object storage not implemented. "
+            "Implement download_from_object_storage() for your storage backend."
         )
 
-    # =========================================================================
-    # DNS - OPTIONAL (can use external-dns instead)
-    # =========================================================================
 
-    def create_dns_record(
-        self,
-        subdomain: str,
-        target: str,
-        record_type: str = "A",
-    ) -> bool:
-        """
-        Create DNS record. Optional - default no-op.
+class CustomAuthProvider(AuthProvider):
+    """
+    Template for custom authentication provider.
 
-        Override if your cloud has integrated DNS management.
-        """
-        logger.info(f"DNS record creation not implemented: {subdomain} -> {target}")
-        return True
+    Common patterns:
 
-    def delete_dns_record(
-        self,
-        subdomain: str,
-        record_type: str = "A",
-    ) -> bool:
+    LDAP/Active Directory:
+        from ldap3 import Server, Connection, ALL
+        server = Server('ldap://ad.example.com', get_info=ALL)
+        conn = Connection(server, user=bind_dn, password=bind_pw)
+        conn.bind()
+        conn.search('dc=example,dc=com', f'(uid={username})', attributes=['memberOf'])
+
+    OIDC (Keycloak, Okta):
+        from jose import jwt
+        payload = jwt.decode(token, key, algorithms=['RS256'], audience='gpu-dev')
+        return {'user_id': payload['sub'], 'email': payload['email'], ...}
+
+    SAML:
+        from onelogin.saml2.auth import OneLogin_Saml2_Auth
+        auth = OneLogin_Saml2_Auth(request_data, saml_settings)
+        auth.process_response()
+        return {'user_id': auth.get_nameid(), ...}
+    """
+
+    def __init__(self):
+        self.backend = os.environ.get("CUSTOM_AUTH_BACKEND", "oidc")
+
+    def verify_token(self, token: str) -> dict[str, Any] | None:
         """
-        Delete DNS record. Optional - default no-op.
+        Verify authentication token.
+
+        Example OIDC implementation:
+            from jose import jwt
+            try:
+                payload = jwt.decode(
+                    token,
+                    self.public_key,
+                    algorithms=['RS256'],
+                    audience=os.environ.get('OIDC_AUDIENCE')
+                )
+                return {
+                    'user_id': payload['sub'],
+                    'email': payload.get('email'),
+                    'groups': payload.get('groups', [])
+                }
+            except jwt.JWTError:
+                return None
         """
-        logger.info(f"DNS record deletion not implemented: {subdomain}")
-        return True
+        raise NotImplementedError(
+            f"Custom auth ({self.backend}) not implemented. "
+            "Implement verify_token() for your auth backend."
+        )
+
+    def get_user_info(self, token: str) -> dict[str, Any] | None:
+        """Get user information from token."""
+        raise NotImplementedError(
+            f"Custom auth ({self.backend}) not implemented. "
+            "Implement get_user_info() for your auth backend."
+        )
+
+    def create_api_key(
+        self, user_id: str, scopes: list[str], ttl_hours: int = 24
+    ) -> str:
+        """
+        Create an API key for a user.
+
+        This is typically handled by the API service using database-backed
+        API keys rather than cloud provider tokens.
+        """
+        raise NotImplementedError("Use API service for API key creation")
