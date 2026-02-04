@@ -245,7 +245,6 @@ class TestResourceNaming:
                         config = Config()
 
                         assert config.prefix == "pytorch-gpu-dev"
-                        assert "pytorch-gpu-dev" in config.queue_name
-                        assert "pytorch-gpu-dev" in config.reservations_table
-                        assert "pytorch-gpu-dev" in config.disks_table
+                        # Note: queue_name removed - dev branch uses PGMQ (PostgreSQL queue)
+                        # instead of SQS, managed by API service not CLI
                         assert "pytorch-gpu-dev" in config.cluster_name
