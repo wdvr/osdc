@@ -259,8 +259,7 @@ locals {
         { id = null, instance_count = 1 }                    # A100 on-demand (1 instance)
       ]
       h100 = [
-        { id = "cr-0a7caa7414866615a", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
-        { id = null, instance_count = 2 }                    # H100 on-demand (2 instances)
+        { id = "cr-0a0a39a4c51068e30", instance_count = 4 }, # H100 reservation us-east-2c (p5.48xlarge)
       ]
       h200 = [
         { id = "cr-0f6d0766f5d3339e6", instance_count = 2 }, # H200 reservation us-east-2c (p5e.48xlarge)
@@ -319,7 +318,7 @@ locals {
       "cr-0f6d0766f5d3339e6" = "tertiary"  # us-east-2c (p5e.48xlarge)
       "cr-06c9c978dea756a26" = "tertiary"  # us-east-2c
       # H100 capacity reservation
-      "cr-0a7caa7414866615a" = "tertiary"  # us-east-2c (p5.48xlarge)
+      "cr-0a0a39a4c51068e30" = "tertiary"  # us-east-2c (p5.48xlarge)
       # A100 capacity reservation
       "cr-01cc0f00f28b095af" = "primary"   # us-east-2a
     }
