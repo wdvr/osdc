@@ -3,8 +3,19 @@
 import os
 import json
 import boto3
+from botocore.exceptions import ClientError
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+# Upgrade message shown when backend infrastructure has changed
+CLI_UPGRADE_MESSAGE = """
+The GPU Dev service has been updated and requires a newer CLI version.
+
+Please upgrade:
+  pip install --upgrade git+https://github.com/pytorch/osdc.git@release
+
+For more info: https://github.com/pytorch/osdc
+""".strip()
 
 
 class Config:
@@ -101,6 +112,13 @@ class Config:
         try:
             response = self.sqs_client.get_queue_url(QueueName=self.queue_name)
             return response["QueueUrl"]
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "AWS.SimpleQueueService.NonExistentQueue":
+                raise RuntimeError(CLI_UPGRADE_MESSAGE)
+            raise RuntimeError(
+                f"Cannot access SQS queue {self.queue_name}. Check AWS permissions: {e}"
+            )
         except Exception as e:
             raise RuntimeError(
                 f"Cannot access SQS queue {self.queue_name}. Check AWS permissions: {e}"
