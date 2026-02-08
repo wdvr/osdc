@@ -1,23 +1,20 @@
 """Minimal reservation management for GPU Dev CLI"""
 
-import json
 import os
-import select
 import signal
-import sys
 import time
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional, List, Dict, Any, Union
 
-from botocore.exceptions import ClientError
 from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
 
 from .config import Config
 from .name_generator import sanitize_name
+from .api_client import APIClient
 from . import __version__
 
 console = Console()
@@ -49,9 +46,179 @@ def _make_cursor_link(pod_name: str) -> str:
     return f"cursor://vscode-remote/ssh-remote+{pod_name}/home/dev"
 
 
+def _extract_ip_from_reservation(reservation: dict) -> str:
+    """Extract IP:Port from reservation data (each pod has unique port on shared node IP)"""
+    # The API returns node_ip and node_port from the database
+    # Multiple pods can share the same node_ip, but each has a unique node_port
+    node_ip = reservation.get("node_ip")
+    node_port = reservation.get("node_port")
+    
+    if node_ip and node_port:
+        return f"{node_ip}:{node_port}"
+    elif node_ip:
+        return node_ip
+    
+    return "N/A"
+
+
 def get_version() -> str:
-    """Get CLI version for inclusion in SQS messages"""
+    """Get CLI version for inclusion in API requests"""
     return __version__
+
+
+def _map_gpu_to_instance_type(gpu_type: str, gpu_count: int) -> str:
+    """
+    Map GPU type and count to AWS EC2 instance type (K8s node type)
+    
+    This returns the node type that pods will be scheduled on, not the pod size.
+    Pods can request any GPU count up to the node's max capacity.
+    
+    Args:
+        gpu_type: GPU type (h100, a100, etc.)
+        gpu_count: Number of GPUs requested
+        
+    Returns:
+        AWS instance type string (e.g., "p5.48xlarge")
+        
+    Raises:
+        ValueError: If unsupported GPU type or count exceeds node capacity
+    """
+    # GPU Configuration matching terraform and Lambda
+    # Maps to the K8s node type, not pod size
+    GPU_CONFIG = {
+        "t4": {"instance_type": "g4dn.12xlarge", "max_gpus": 4},
+        "t4-small": {"instance_type": "g4dn.2xlarge", "max_gpus": 1},
+        "l4": {"instance_type": "g6.12xlarge", "max_gpus": 4},
+        "a10g": {"instance_type": "g5.12xlarge", "max_gpus": 4},
+        "a100": {"instance_type": "p4d.24xlarge", "max_gpus": 8},
+        "h100": {"instance_type": "p5.48xlarge", "max_gpus": 8},
+        "h200": {"instance_type": "p5e.48xlarge", "max_gpus": 8},
+        "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8},
+        "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0},
+        "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0},
+    }
+    
+    gpu_type_lower = gpu_type.lower()
+    
+    if gpu_type_lower not in GPU_CONFIG:
+        raise ValueError(
+            f"Unsupported GPU type: {gpu_type}. "
+            f"Supported types: {', '.join(GPU_CONFIG.keys())}"
+        )
+    
+    config = GPU_CONFIG[gpu_type_lower]
+    max_gpus = config["max_gpus"]
+    
+    if gpu_count > max_gpus:
+        raise ValueError(
+            f"GPU count {gpu_count} exceeds maximum {max_gpus} for {gpu_type} "
+            f"({config['instance_type']}). "
+            f"For more GPUs, use multinode reservations."
+        )
+    
+    if gpu_count < 1 and max_gpus > 0:
+        raise ValueError(f"GPU count must be at least 1 for GPU instances")
+    
+    return config["instance_type"]
+
+
+def _get_default_image(gpu_type: str) -> str:
+    """
+    Get default Docker image for GPU type
+    
+    Args:
+        gpu_type: GPU type (h100, a100, etc.)
+        
+    Returns:
+        Default Docker image string
+    """
+    # For now, use the same PyTorch image for all GPU types
+    # This can be made configurable later
+    return "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime"
+
+
+def _transform_to_api_format(message: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transform CLI parameters to API format for job submission
+    
+    Args:
+        message: CLI parameters with gpu_type, gpu_count, etc.
+        
+    Returns:
+        New API format with image, instance_type, etc.
+        
+    Raises:
+        ValueError: If required fields are missing
+        
+    Note:
+        This function is only for job submission (reservation creation).
+        Actions (cancel, extend, etc.) are handled by dedicated API endpoints
+        in the APIClient class.
+    """
+    # This is a reservation creation message
+    if "gpu_type" not in message or "gpu_count" not in message:
+        raise ValueError(
+            "Message is missing required fields 'gpu_type' and 'gpu_count'. "
+            "This doesn't appear to be a valid reservation message."
+        )
+    
+    gpu_type = message["gpu_type"]
+    gpu_count = message["gpu_count"]
+    
+    # Map to instance type
+    instance_type = _map_gpu_to_instance_type(gpu_type, gpu_count)
+    
+    # Get Docker image (use dockerimage if provided, otherwise default)
+    image = message.get("dockerimage", _get_default_image(gpu_type))
+    
+    # Build new API format
+    api_message = {
+        "image": image,
+        "instance_type": instance_type,
+        "duration_hours": int(message["duration_hours"]),
+    }
+    
+    # Optional fields
+    if message.get("disk_name"):
+        api_message["disk_name"] = message["disk_name"]
+    
+    # Build env_vars dict from various sources
+    env_vars = {}
+    
+    # CRITICAL: Add GPU configuration for the Job Processor
+    # The instance_type tells us what node type, but we need to know
+    # how many GPUs the pod should actually request
+    env_vars["GPU_TYPE"] = gpu_type
+    env_vars["GPU_COUNT"] = str(gpu_count)
+    
+    # Add metadata as env vars for the job processor to use
+    if message.get("reservation_id"):
+        env_vars["RESERVATION_ID"] = message["reservation_id"]
+    if message.get("user_id"):
+        env_vars["USER_ID"] = message["user_id"]
+    if message.get("github_user"):
+        env_vars["GITHUB_USER"] = message["github_user"]
+    if message.get("name"):
+        env_vars["POD_NAME"] = message["name"]
+    if message.get("jupyter_enabled"):
+        env_vars["JUPYTER_ENABLED"] = "true" if message["jupyter_enabled"] else "false"
+    if message.get("recreate_env"):
+        env_vars["RECREATE_ENV"] = "true" if message["recreate_env"] else "false"
+    if message.get("preserve_entrypoint"):
+        env_vars["PRESERVE_ENTRYPOINT"] = "true" if message["preserve_entrypoint"] else "false"
+    
+    # Add any custom env vars if they exist in the message
+    if message.get("env_vars"):
+        env_vars.update(message["env_vars"])
+    
+    if env_vars:
+        api_message["env_vars"] = env_vars
+    
+    # Command (if provided)
+    if message.get("command"):
+        api_message["command"] = message["command"]
+    
+    return api_message
 
 
 def _add_agent_forwarding_to_ssh(ssh_command: str) -> str:
@@ -388,12 +555,12 @@ def get_ssh_config_path(reservation_id: str, name: Optional[str] = None) -> str:
 
 
 class ReservationManager:
-    """Minimal GPU reservations manager - AWS-only"""
+    """GPU reservations manager using API service"""
 
     def __init__(self, config: Config):
         self.config = config
-        self.reservations_table = config.dynamodb.Table(
-            config.reservations_table)
+        # Initialize API client for all operations
+        self.api_client = APIClient(config)
 
     def create_reservation(
         self,
@@ -414,6 +581,9 @@ class ReservationManager:
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
+            # Normalize gpu_type to lowercase for consistency
+            gpu_type = gpu_type.lower()
+            
             reservation_id = str(uuid.uuid4())
             created_at = datetime.utcnow().isoformat()
 
@@ -428,7 +598,7 @@ class ReservationManager:
             # If no name provided, let Lambda generate (processed_name stays None)
 
             # Create initial reservation record for polling
-            # Convert float to Decimal for DynamoDB compatibility
+            # Convert float to Decimal for numeric precision
             duration_decimal = Decimal(str(duration_hours))
 
             initial_reservation = {
@@ -450,8 +620,8 @@ class ReservationManager:
             if github_user:
                 initial_reservation["github_user"] = github_user
 
-            # Send processing request to SQS queue (Lambda will create the initial record)
-            # Use float for SQS message (JSON serializable)
+            # Prepare job submission request for API
+            # Use float for JSON serializable message
             message = {
                 "reservation_id": reservation_id,
                 "user_id": user_id,
@@ -487,11 +657,10 @@ class ReservationManager:
             if node_labels:
                 message["node_labels"] = node_labels
 
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
-
+            # Transform to API format and submit
+            api_message = _transform_to_api_format(message)
+            self.api_client.submit_job(api_message)
+            # API returns job_id which should match our reservation_id
             return reservation_id
 
         except Exception as e:
@@ -517,6 +686,9 @@ class ReservationManager:
     ) -> Optional[List[str]]:
         """Create multiple GPU reservations for multinode setup"""
         try:
+            # Normalize gpu_type to lowercase for consistency
+            gpu_type = gpu_type.lower()
+            
             # Determine GPU config
             gpu_configs = {
                 "t4": {"max_gpus": 4},
@@ -593,11 +765,9 @@ class ReservationManager:
                 if node_labels:
                     message["node_labels"] = node_labels
 
-                # Send to SQS queue
-                queue_url = self.config.get_queue_url()
-                self.config.sqs_client.send_message(
-                    QueueUrl=queue_url, MessageBody=json.dumps(message)
-                )
+                # Transform to API format and submit
+                api_message = _transform_to_api_format(message)
+                self.api_client.submit_job(api_message)
 
             return reservation_ids
 
@@ -611,72 +781,44 @@ class ReservationManager:
         user_filter: Optional[str] = None,
         statuses_to_include: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """List GPU reservations with flexible filtering"""
+        """List GPU reservations via API with flexible filtering"""
         try:
-            all_reservations = []
-
-            if user_filter:
-                # Query by specific user with pagination
-                response = self.reservations_table.query(
-                    IndexName="UserIndex",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_filter},
-                )
-                all_reservations = response.get("Items", [])
-
-                # Handle pagination for UserIndex query
-                while "LastEvaluatedKey" in response:
-                    response = self.reservations_table.query(
-                        IndexName="UserIndex",
-                        KeyConditionExpression="user_id = :user_id",
-                        ExpressionAttributeValues={":user_id": user_filter},
-                        ExclusiveStartKey=response["LastEvaluatedKey"]
-                    )
-                    all_reservations.extend(response.get("Items", []))
-            else:
-                # Get all reservations (scan with pagination for admin use)
-                all_reservations = []
-                response = self.reservations_table.scan()
-                all_reservations.extend(response.get("Items", []))
-
-                # Handle pagination
-                while "LastEvaluatedKey" in response:
-                    response = self.reservations_table.scan(
-                        ExclusiveStartKey=response["LastEvaluatedKey"]
-                    )
-                    all_reservations.extend(response.get("Items", []))
-
-            # Filter by status if specified
+            # Build status filter for API
+            status_filter = None
             if statuses_to_include:
-                filtered_reservations = [
-                    reservation
-                    for reservation in all_reservations
-                    if reservation.get("status") in statuses_to_include
-                ]
-                return filtered_reservations
-
-            return all_reservations
+                status_filter = ",".join(statuses_to_include)
+            
+            # Note: API currently only supports filtering by current user
+            # user_filter="all" functionality would need admin API endpoint
+            if user_filter and user_filter != "all":
+                console.print(
+                    "[yellow]⚠️  Filtering by specific user not yet supported "
+                    "via API. Showing your reservations.[/yellow]"
+                )
+            
+            # Call API with pagination
+            # For now, request a large limit (500) to get most reservations
+            # TODO: Implement proper pagination with multiple API calls if needed
+            response = self.api_client.list_jobs(
+                status_filter=status_filter,
+                limit=500,
+                offset=0
+            )
+            
+            reservations = response.get("jobs", [])
+            
+            # API returns snake_case format
+            return reservations
 
         except Exception as e:
             console.print(f"[red]❌ Error listing reservations: {str(e)}[/red]")
             return []
 
     def cancel_reservation(self, reservation_id: str, user_id: str) -> bool:
-        """Cancel a GPU reservation by sending cancellation message to queue"""
+        """Cancel a GPU reservation via API"""
         try:
-            # Send cancellation request to SQS queue for processing
-            message = {
-                "type": "cancellation",
-                "reservation_id": reservation_id,
-                "user_id": user_id,
-                "requested_at": datetime.utcnow().isoformat(),
-                "version": get_version(),
-            }
-
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Call API cancel endpoint
+            self.api_client.cancel_job(reservation_id)
 
             console.print(
                 f"[yellow]⏳ Cancellation request submitted for reservation {reservation_id[:8]}...[/yellow]"
@@ -701,87 +843,46 @@ class ReservationManager:
     def get_connection_info(
         self, reservation_id: str, user_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Get SSH connection information for a reservation"""
+        """Get SSH connection information for a reservation via API"""
         try:
-            # Query by user first (efficient), then filter by reservation_id prefix
-            response = self.reservations_table.query(
-                IndexName="UserIndex",
-                KeyConditionExpression="user_id = :user_id",
-                ExpressionAttributeValues={":user_id": user_id},
-            )
-            all_reservations = response.get("Items", [])
-
-            # Handle pagination for UserIndex query
-            while "LastEvaluatedKey" in response:
-                response = self.reservations_table.query(
-                    IndexName="UserIndex",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
-                )
-                all_reservations.extend(response.get("Items", []))
-
-            # Filter by reservation_id prefix in memory
-            matching_reservations = [
-                res for res in all_reservations
-                if res.get("reservation_id", "").startswith(reservation_id)
-            ]
-
-            if len(matching_reservations) == 0:
-                return None
-            elif len(matching_reservations) > 1:
-                return None  # Ambiguous - need longer prefix
-
-            reservation = matching_reservations[0]
-
-            return {
-                "ssh_command": reservation.get("ssh_command", "ssh user@pending"),
-                "pod_name": reservation.get("pod_name", "pending"),
-                "namespace": reservation.get("namespace", "default"),
-                "gpu_count": reservation["gpu_count"],
-                "status": reservation["status"],
-                "launched_at": reservation.get("launched_at"),
-                "expires_at": reservation.get("expires_at"),
-                "created_at": reservation.get("created_at"),
-                "reservation_id": reservation["reservation_id"],
-                "name": reservation.get("name"),
-                "instance_type": reservation.get("instance_type", "unknown"),
-                "gpu_type": reservation.get("gpu_type", "unknown"),
-                "failure_reason": reservation.get("failure_reason", ""),
-                "current_detailed_status": reservation.get("current_detailed_status", ""),
-                "status_history": reservation.get("status_history", []),
-                "pod_logs": reservation.get("pod_logs", ""),
-                "jupyter_url": reservation.get("jupyter_url", ""),
-                "jupyter_port": reservation.get("jupyter_port", ""),
-                "jupyter_token": reservation.get("jupyter_token", ""),
-                "jupyter_enabled": reservation.get("jupyter_enabled", False),
-                "jupyter_error": reservation.get("jupyter_error", ""),
-                "ebs_volume_id": reservation.get("ebs_volume_id", ""),
-                "secondary_users": reservation.get("secondary_users", []),
-                "warning": reservation.get("warning", ""),
-            }
+            # Try to get the job directly by ID first
+            try:
+                job_detail = self.api_client.get_job_status(reservation_id)
+                # API returns the job detail directly
+                return job_detail
+            except RuntimeError as e:
+                # If exact ID not found, try prefix matching by listing all jobs
+                if "not found" in str(e).lower() or "404" in str(e):
+                    # Fetch all user's jobs and filter by prefix
+                    response = self.api_client.list_jobs(limit=500)
+                    all_jobs = response.get("jobs", [])
+                    
+                    matching_jobs = [
+                        job for job in all_jobs
+                        if job.get("job_id", "").startswith(reservation_id) or
+                           job.get("reservation_id", "").startswith(reservation_id)
+                    ]
+                    
+                    if len(matching_jobs) == 0:
+                        return None
+                    elif len(matching_jobs) > 1:
+                        return None  # Ambiguous - need longer prefix
+                    
+                    return matching_jobs[0]
+                else:
+                    raise
 
         except Exception as e:
             console.print(
-                f"[red]❌ Error getting connection info: {str(e)}[/red]")
+                f"[red]❌ Error getting connection info: {str(e)}[/red]"
+            )
             return None
 
     def enable_jupyter(self, reservation_id: str, user_id: str) -> bool:
         """Enable Jupyter Lab for an active reservation"""
         try:
-            # Send message to Lambda to start Jupyter service in pod
-            # Lambda will handle both the pod changes and DynamoDB updates
-            message = {
-                "action": "enable_jupyter",
-                "reservation_id": reservation_id,
-                "user_id": user_id,
-                "version": get_version(),
-            }
-
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Call API enable jupyter endpoint
+            self.api_client.enable_jupyter(reservation_id)
 
             console.print(
                 f"[yellow]⏳ Jupyter enable request submitted for reservation {reservation_id[:8]}...[/yellow]"
@@ -801,19 +902,8 @@ class ReservationManager:
     def disable_jupyter(self, reservation_id: str, user_id: str) -> bool:
         """Disable Jupyter Lab for an active reservation"""
         try:
-            # Send message to Lambda to stop Jupyter service in pod
-            # Lambda will handle both the pod changes and DynamoDB updates
-            message = {
-                "action": "disable_jupyter",
-                "reservation_id": reservation_id,
-                "user_id": user_id,
-                "version": get_version(),
-            }
-
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Call API disable jupyter endpoint
+            self.api_client.disable_jupyter(reservation_id)
 
             console.print(
                 f"[yellow]⏳ Jupyter disable request submitted for reservation {reservation_id[:8]}...[/yellow]"
@@ -843,20 +933,8 @@ class ReservationManager:
                 )
                 return False
 
-            # Send message to Lambda to add user SSH keys to pod
-            # Lambda will handle fetching GitHub keys and updating the pod
-            message = {
-                "action": "add_user",
-                "reservation_id": reservation_id,
-                "user_id": user_id,
-                "github_username": github_username,
-                "version": get_version(),
-            }
-
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Call API add user endpoint
+            self.api_client.add_user(reservation_id, github_username)
 
             console.print(
                 f"[yellow]⏳ Adding user {github_username} to reservation {reservation_id[:8]}...[/yellow]"
@@ -876,54 +954,19 @@ class ReservationManager:
     def extend_reservation(self, reservation_id: str, user_id: str, extension_hours: float) -> bool:
         """Extend an active reservation by the specified number of hours"""
         try:
-            # Capture current expiration BEFORE sending extension request to avoid race condition
-            response = self.reservations_table.query(
-                IndexName="UserIndex",
-                KeyConditionExpression="user_id = :user_id",
-                ExpressionAttributeValues={":user_id": user_id},
-            )
-            all_reservations = response.get("Items", [])
-
-            # Handle pagination for UserIndex query
-            while "LastEvaluatedKey" in response:
-                response = self.reservations_table.query(
-                    IndexName="UserIndex",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
-                )
-                all_reservations.extend(response.get("Items", []))
-
-            matching_reservations = [
-                res for res in all_reservations
-                if res.get("reservation_id", "").startswith(reservation_id)
-            ]
-
-            initial_expires_at = None
-            if matching_reservations:
-                initial_expires_at = matching_reservations[0].get("expires_at", "")
-
-            # Send message to Lambda to extend reservation
-            # Lambda will handle both the expiration timestamp update and any necessary pod updates
-            message = {
-                "action": "extend_reservation",
-                "reservation_id": reservation_id,
-                "extension_hours": extension_hours,
-                "version": get_version(),
-            }
-
-            queue_url = self.config.get_queue_url()
-            self.config.sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(message)
-            )
+            # Send extend request via API
+            # Job processor will handle the expiration timestamp update and pod updates
+            self.api_client.extend_job(reservation_id, int(extension_hours))
 
             console.print(
                 f"[yellow]⏳ Extension request submitted for reservation {reservation_id[:8]}...[/yellow]"
             )
 
             # Poll for 3 minutes to show the outcome
+            # Pass None for initial_expires_at - polling function will capture it on first iteration
+            # This minimizes race condition window by capturing AFTER the extend request is sent
             return self._poll_extend_action_result(
-                reservation_id, user_id, extension_hours, timeout_minutes=3, initial_expires_at=initial_expires_at
+                reservation_id, user_id, extension_hours, timeout_minutes=3, initial_expires_at=None
             )
 
         except Exception as e:
@@ -932,48 +975,38 @@ class ReservationManager:
             return False
 
     def get_gpu_availability_by_type(self) -> Optional[Dict[str, Dict[str, Any]]]:
-        """Get GPU availability information by GPU type from real-time availability table"""
+        """Get GPU availability information by GPU type via API"""
         try:
-            # Try to get real-time availability from the availability table
-            availability_table_name = self.config.availability_table
-            availability_table = self.config.dynamodb.Table(
-                availability_table_name)
-
-            # Scan the whole availability table with pagination
-            response = availability_table.scan()
+            # Call API to get availability
+            response = self.api_client.get_gpu_availability()
+            availability_data = response.get("availability", {})
+            
+            # Transform API response to match expected format
             availability_info = {}
-            all_items = response.get("Items", [])
-
-            # Handle pagination for availability table
-            while "LastEvaluatedKey" in response:
-                response = availability_table.scan(
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
-                )
-                all_items.extend(response.get("Items", []))
-
-            for item in all_items:
-                gpu_type = item["gpu_type"]
-                queue_length = self._get_queue_length_for_gpu_type(gpu_type)
-                estimated_wait = queue_length * 15 if queue_length > 0 else 0
-
+            for gpu_type, data in availability_data.items():
+                # Calculate estimated wait based on queue
+                queued = data.get("queued", 0)
+                estimated_wait = queued * 15 if queued > 0 else 0
+                
                 availability_info[gpu_type] = {
-                    "available": int(item.get("available_gpus", 0)),
-                    "total": int(item.get("total_gpus", 0)),
-                    "max_reservable": int(item.get("max_reservable", 0)),
-                    "full_nodes_available": int(item.get("full_nodes_available", 0)),
-                    "gpus_per_instance": int(item.get("gpus_per_instance", 0)),
-                    "queue_length": queue_length,
+                    "available": data.get("available", 0),
+                    "total": data.get("total", 0),
+                    "max_reservable": data.get("max_per_node", 0),
+                    "full_nodes_available": data.get("available", 0) // data.get("max_per_node", 1) if data.get("max_per_node", 1) > 0 else 0,
+                    "gpus_per_instance": data.get("max_per_node", 0),
+                    "queue_length": data.get("queued", 0),
                     "estimated_wait_minutes": estimated_wait,
-                    "running_instances": int(item.get("running_instances", 0)),
-                    "desired_capacity": int(item.get("desired_capacity", 0)),
-                    "last_updated": item.get("last_updated_timestamp", 0),
+                    "running_instances": data.get("in_use", 0) // data.get("max_per_node", 1) if data.get("max_per_node", 1) > 0 else 0,
+                    "desired_capacity": 0,  # Not available from API yet
+                    "last_updated": 0,  # Could use timestamp from response
                 }
-
+            
             return availability_info
 
         except Exception as e:
             console.print(
-                f"[red]❌ Error getting GPU availability: {str(e)}[/red]")
+                f"[red]❌ Error getting GPU availability: {str(e)}[/red]"
+            )
             return None
 
     def _get_static_gpu_config(
@@ -1002,78 +1035,10 @@ class ReservationManager:
             "last_updated": 0,
         }
 
-    def _get_queue_length_for_gpu_type(self, gpu_type: str) -> int:
-        """Get the number of queued reservations for a specific GPU type"""
-        try:
-            total_count = 0
-
-            # Count queued reservations for this GPU type
-            for status in ["queued", "pending"]:
-                try:
-                    response = self.reservations_table.query(
-                        IndexName="StatusGpuTypeIndex",
-                        KeyConditionExpression="#status = :status AND gpu_type = :gpu_type",
-                        ExpressionAttributeNames={"#status": "status"},
-                        ExpressionAttributeValues={
-                            ":status": status,
-                            ":gpu_type": gpu_type,
-                        },
-                    )
-                    total_count += len(response.get("Items", []))
-
-                    # Handle pagination for StatusGpuTypeIndex query
-                    while "LastEvaluatedKey" in response:
-                        response = self.reservations_table.query(
-                            IndexName="StatusGpuTypeIndex",
-                            KeyConditionExpression="#status = :status AND gpu_type = :gpu_type",
-                            ExpressionAttributeNames={"#status": "status"},
-                            ExpressionAttributeValues={
-                                ":status": status,
-                                ":gpu_type": gpu_type,
-                            },
-                            ExclusiveStartKey=response["LastEvaluatedKey"]
-                        )
-                        total_count += len(response.get("Items", []))
-                except Exception as query_error:
-                    # Fallback to scanning if the composite index doesn't exist yet
-                    console.print(
-                        f"[dim]Fallback: scanning for {status} {gpu_type} reservations[/dim]"
-                    )
-                    response = self.reservations_table.scan(
-                        FilterExpression="contains(#status, :status) AND contains(gpu_type, :gpu_type)",
-                        ExpressionAttributeNames={"#status": "status"},
-                        ExpressionAttributeValues={
-                            ":status": status,
-                            ":gpu_type": gpu_type,
-                        },
-                    )
-                    total_count += len(response.get("Items", []))
-
-                    # Handle pagination for fallback scan
-                    while "LastEvaluatedKey" in response:
-                        response = self.reservations_table.scan(
-                            FilterExpression="contains(#status, :status) AND contains(gpu_type, :gpu_type)",
-                            ExpressionAttributeNames={"#status": "status"},
-                            ExpressionAttributeValues={
-                                ":status": status,
-                                ":gpu_type": gpu_type,
-                            },
-                            ExclusiveStartKey=response["LastEvaluatedKey"]
-                        )
-                        total_count += len(response.get("Items", []))
-
-            return total_count
-
-        except Exception as e:
-            console.print(
-                f"[red]❌ Error getting queue length for {gpu_type}: {str(e)}[/red]"
-            )
-            return 0
-
     def _poll_jupyter_action_result(
         self, reservation_id: str, user_id: str, action: str, timeout_minutes: int = 3
     ) -> bool:
-        """Poll reservation table for Jupyter action result"""
+        """Poll reservation via API for Jupyter action result"""
         try:
             start_time = time.time()
             timeout_seconds = timeout_minutes * 60
@@ -1088,40 +1053,27 @@ class ReservationManager:
 
                 while time.time() - start_time < timeout_seconds:
                     try:
-                        # Get current reservation state - query by user first, then filter by prefix
-                        response = self.reservations_table.query(
-                            IndexName="UserIndex",
-                            KeyConditionExpression="user_id = :user_id",
-                            ExpressionAttributeValues={":user_id": user_id},
-                        )
-                        all_reservations = response.get("Items", [])
-
-                        # Handle pagination for UserIndex query
-                        while "LastEvaluatedKey" in response:
-                            response = self.reservations_table.query(
-                                IndexName="UserIndex",
-                                KeyConditionExpression="user_id = :user_id",
-                                ExpressionAttributeValues={
-                                    ":user_id": user_id},
-                                ExclusiveStartKey=response["LastEvaluatedKey"]
-                            )
-                            all_reservations.extend(response.get("Items", []))
-
-                        # Filter by reservation_id prefix in memory
-                        items = [
-                            res for res in all_reservations
-                            if res.get("reservation_id", "").startswith(reservation_id)
-                        ]
-                        if len(items) == 0:
-                            spinner.text = f"🔄 Waiting for reservation data..."
-                            live.update(spinner)
-                            time.sleep(2)
-                            continue
-                        elif len(items) > 1:
-                            spinner.text = f"🔄 Multiple reservations found for {reservation_id}, using first match..."
-                            live.update(spinner)
-
-                        reservation = items[0]
+                        # Get current reservation state via API
+                        try:
+                            reservation = self.api_client.get_job_status(reservation_id)
+                        except RuntimeError as e:
+                            # If ID not found (404), might be short prefix - try listing
+                            if "not found" in str(e).lower() or "404" in str(e):
+                                response = self.api_client.list_jobs(limit=500)
+                                jobs = response.get("jobs", [])
+                                matching = [
+                                    j for j in jobs
+                                    if j.get("job_id", "").startswith(reservation_id) or
+                                       j.get("reservation_id", "").startswith(reservation_id)
+                                ]
+                                if not matching:
+                                    spinner.text = f"🔄 Waiting for reservation data..."
+                                    live.update(spinner)
+                                    time.sleep(2)
+                                    continue
+                                reservation = matching[0]
+                            else:
+                                raise
 
                         # Capture initial state on first iteration
                         if initial_state is None:
@@ -1198,7 +1150,7 @@ class ReservationManager:
     def _poll_add_user_result(
         self, reservation_id: str, user_id: str, github_username: str, timeout_minutes: int = 3
     ) -> bool:
-        """Poll reservation table for add user action result"""
+        """Poll reservation via API for add user action result"""
         try:
             start_time = time.time()
             timeout_seconds = timeout_minutes * 60
@@ -1212,40 +1164,30 @@ class ReservationManager:
 
                 while time.time() - start_time < timeout_seconds:
                     try:
-                        # Get current reservation state - query by user first, then filter by prefix
-                        response = self.reservations_table.query(
-                            IndexName="UserIndex",
-                            KeyConditionExpression="user_id = :user_id",
-                            ExpressionAttributeValues={":user_id": user_id},
-                        )
-                        all_reservations = response.get("Items", [])
-
-                        # Handle pagination for UserIndex query
-                        while "LastEvaluatedKey" in response:
-                            response = self.reservations_table.query(
-                                IndexName="UserIndex",
-                                KeyConditionExpression="user_id = :user_id",
-                                ExpressionAttributeValues={
-                                    ":user_id": user_id},
-                                ExclusiveStartKey=response["LastEvaluatedKey"]
-                            )
-                            all_reservations.extend(response.get("Items", []))
-
-                        # Filter by reservation_id prefix in memory
-                        items = [
-                            res for res in all_reservations
-                            if res.get("reservation_id", "").startswith(reservation_id)
-                        ]
-                        if len(items) == 0:
-                            spinner.text = f"🔄 Waiting for reservation data..."
-                            live.update(spinner)
-                            time.sleep(2)
-                            continue
-                        elif len(items) > 1:
-                            spinner.text = f"🔄 Multiple reservations found for {reservation_id}, using first match..."
-                            live.update(spinner)
-
-                        reservation = items[0]
+                        # Get current reservation state via API
+                        try:
+                            reservation = self.api_client.get_job_status(reservation_id)
+                        except RuntimeError as e:
+                            # If ID not found (404), might be short prefix - try listing
+                            if "not found" in str(e).lower() or "404" in str(e):
+                                response = self.api_client.list_jobs(limit=500)
+                                jobs = response.get("jobs", [])
+                                matching = [
+                                    j for j in jobs
+                                    if j.get("job_id", "").startswith(reservation_id) or
+                                       j.get("reservation_id", "").startswith(reservation_id)
+                                ]
+                                if not matching:
+                                    spinner.text = f"🔄 Waiting for reservation data..."
+                                    live.update(spinner)
+                                    time.sleep(2)
+                                    continue
+                                elif len(matching) > 1:
+                                    spinner.text = f"🔄 Multiple reservations found for {reservation_id}, using first match..."
+                                    live.update(spinner)
+                                reservation = matching[0]
+                            else:
+                                raise
 
                         # Capture initial state on first iteration
                         if initial_secondary_users is None:
@@ -1300,7 +1242,7 @@ class ReservationManager:
     def _poll_extend_action_result(
         self, reservation_id: str, user_id: str, extension_hours: float, timeout_minutes: int = 3, initial_expires_at: str = None
     ) -> bool:
-        """Poll reservation table for extend action result"""
+        """Poll reservation via API for extend action result"""
         try:
             start_time = time.time()
             timeout_seconds = timeout_minutes * 60
@@ -1312,45 +1254,36 @@ class ReservationManager:
                 )
                 live.update(spinner)
 
-                # Use pre-captured initial_expires_at if provided (to avoid race condition)
+                # Use pre-captured initial_expires_at if provided, otherwise capture on first poll
+                # Capturing on first poll (after extend request is sent) minimizes race condition window
                 initial_expiration = initial_expires_at
 
                 while time.time() - start_time < timeout_seconds:
                     try:
-                        # Get current reservation state - query by user first, then filter by prefix
-                        response = self.reservations_table.query(
-                            IndexName="UserIndex",
-                            KeyConditionExpression="user_id = :user_id",
-                            ExpressionAttributeValues={":user_id": user_id},
-                        )
-                        all_reservations = response.get("Items", [])
-
-                        # Handle pagination for UserIndex query
-                        while "LastEvaluatedKey" in response:
-                            response = self.reservations_table.query(
-                                IndexName="UserIndex",
-                                KeyConditionExpression="user_id = :user_id",
-                                ExpressionAttributeValues={
-                                    ":user_id": user_id},
-                                ExclusiveStartKey=response["LastEvaluatedKey"]
-                            )
-                            all_reservations.extend(response.get("Items", []))
-
-                        # Filter by reservation_id prefix in memory
-                        items = [
-                            res for res in all_reservations
-                            if res.get("reservation_id", "").startswith(reservation_id)
-                        ]
-                        if len(items) == 0:
-                            spinner.text = f"🔄 Waiting for reservation data..."
-                            live.update(spinner)
-                            time.sleep(2)
-                            continue
-                        elif len(items) > 1:
-                            spinner.text = f"🔄 Multiple reservations found for {reservation_id}, using first match..."
-                            live.update(spinner)
-
-                        reservation = items[0]
+                        # Get current reservation state via API
+                        try:
+                            reservation = self.api_client.get_job_status(reservation_id)
+                        except RuntimeError as e:
+                            # If ID not found (404), might be short prefix - try listing
+                            if "not found" in str(e).lower() or "404" in str(e):
+                                response = self.api_client.list_jobs(limit=500)
+                                jobs = response.get("jobs", [])
+                                matching = [
+                                    j for j in jobs
+                                    if j.get("job_id", "").startswith(reservation_id) or
+                                       j.get("reservation_id", "").startswith(reservation_id)
+                                ]
+                                if not matching:
+                                    spinner.text = f"🔄 Waiting for reservation data..."
+                                    live.update(spinner)
+                                    time.sleep(2)
+                                    continue
+                                elif len(matching) > 1:
+                                    spinner.text = f"🔄 Multiple reservations found for {reservation_id}, using first match..."
+                                    live.update(spinner)
+                                reservation = matching[0]
+                            else:
+                                raise
 
                         # Capture initial expiration on first iteration
                         if initial_expiration is None:
@@ -1423,62 +1356,32 @@ class ReservationManager:
             return False
 
     def get_cluster_status(self) -> Optional[Dict[str, Any]]:
-        """Get overall GPU cluster status from availability table"""
+        """Get overall GPU cluster status via API"""
         try:
-            # Get reservations with pagination
-            reservations_response = self.reservations_table.scan()
-            reservations = reservations_response.get("Items", [])
-
-            # Handle pagination for admin stats scan
-            while "LastEvaluatedKey" in reservations_response:
-                reservations_response = self.reservations_table.scan(
-                    ExclusiveStartKey=reservations_response["LastEvaluatedKey"]
-                )
-                reservations.extend(reservations_response.get("Items", []))
-
-            # Get total GPUs from availability table
-            availability_info = self.get_gpu_availability_by_type()
-            total_gpus = 0
-            available_gpus = 0
-
-            if availability_info:
-                for gpu_type, info in availability_info.items():
-                    total_gpus += info.get("total", 0)
-                    available_gpus += info.get("available", 0)
-
-            # Calculate stats
-            active_reservations = [
-                r for r in reservations if r.get("status") == "active"
-            ]
-            reserved_gpus = sum(int(r.get("gpu_count", 0))
-                                for r in active_reservations)
-
-            # Get queue length
-            try:
-                queue_url = self.config.get_queue_url()
-                queue_attrs = self.config.sqs_client.get_queue_attributes(
-                    QueueUrl=queue_url, AttributeNames=[
-                        "ApproximateNumberOfMessages"]
-                )
-                queue_length = int(
-                    queue_attrs["Attributes"]["ApproximateNumberOfMessages"]
-                )
-            except:
-                queue_length = len(
-                    [r for r in reservations if r.get("status") == "pending"]
-                )
-
+            # Call API to get cluster status
+            response = self.api_client.get_cluster_status()
+            
+            # Transform API response to match expected CLI format
             return {
-                "total_gpus": total_gpus,
-                "available_gpus": available_gpus,
-                "reserved_gpus": reserved_gpus,
-                "active_reservations": len(active_reservations),
-                "queue_length": queue_length,
+                "total_gpus": response.get("total_gpus", 0),
+                "available_gpus": response.get("available_gpus", 0),
+                "reserved_gpus": response.get("in_use_gpus", 0),
+                "active_reservations": response.get("active_reservations", 0),
+                "queue_length": (
+                    response.get("queued_reservations", 0) +
+                    response.get("pending_reservations", 0)
+                ),
+                # Additional fields from API
+                "queued_gpus": response.get("queued_gpus", 0),
+                "preparing_reservations": response.get("preparing_reservations", 0),
+                "by_gpu_type": response.get("by_gpu_type", {}),
+                "timestamp": response.get("timestamp"),
             }
 
         except Exception as e:
             console.print(
-                f"[red]❌ Error getting cluster status: {str(e)}[/red]")
+                f"[red]❌ Error getting cluster status: {str(e)}[/red]"
+            )
             return None
 
     def _wait_for_reservations_completion(
@@ -1573,10 +1476,8 @@ class ReservationManager:
 
                         for i, res_id in enumerate(reservation_ids):
                             try:
-                                response = self.reservations_table.get_item(
-                                    Key={"reservation_id": res_id})
-                                if "Item" in response:
-                                    reservation = response["Item"]
+                                reservation = self.api_client.get_job_status(res_id)
+                                if reservation:
                                     all_reservations.append(reservation)
 
                                     status = reservation.get(
@@ -1591,7 +1492,7 @@ class ReservationManager:
                                         "estimated_wait_minutes", "?")
                                     gpu_count = reservation.get("gpu_count", 1)
 
-                                    # Debug what we're reading from DynamoDB - only show if status changed
+                                    # Debug status changes - only show if status changed
                                     if verbose:
                                         node_key = f"node_{i+1}_{res_id[:8]}"
                                         current_node_status = f"status={status}, detailed={current_detailed_status}"
@@ -2015,6 +1916,18 @@ class ReservationManager:
                                     f"\n[green]✅ Reservation complete![/green]")
                                 console.print(
                                     f"[cyan]📋 Reservation ID:[/cyan] {reservation_id}")
+                                
+                                # Show reservation name if available
+                                res_name = reservation.get("name")
+                                if res_name:
+                                    console.print(
+                                        f"[cyan]📝 Reservation Name:[/cyan] {res_name}")
+                                
+                                # Show IP:Port (unique for each pod on the node)
+                                ip_port = _extract_ip_from_reservation(reservation)
+                                console.print(
+                                    f"[cyan]🌐 IP:Port:[/cyan] {ip_port}")
+                                
                                 console.print(
                                     f"[cyan]⏰ Valid for:[/cyan] {duration_hours} hours")
 
@@ -2044,6 +1957,10 @@ class ReservationManager:
                                         # User approved Include - show simple commands
                                         console.print(
                                             f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh {pod_name}[/green]")
+                                        # Also show full command with IP:port
+                                        ssh_with_forwarding = _add_agent_forwarding_to_ssh(ssh_command)
+                                        console.print(
+                                            f"[dim]   Direct:[/dim] {ssh_with_forwarding}")
                                         # Create clickable VS Code link
                                         vscode_url = _make_vscode_link(pod_name)
                                         vscode_command = f"code --remote ssh-remote+{pod_name} /home/dev"
@@ -2059,6 +1976,10 @@ class ReservationManager:
                                         # User declined Include - show commands with -F flag
                                         console.print(
                                             f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh -F {config_path} {pod_name}[/green]")
+                                        # Also show full command with IP:port
+                                        ssh_with_forwarding = _add_agent_forwarding_to_ssh(ssh_command)
+                                        console.print(
+                                            f"[dim]   Direct:[/dim] {ssh_with_forwarding}")
                                         console.print(
                                             f"[cyan]💻 VS Code/Cursor:[/cyan] Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config and ~/.cursor/ssh_config")
                                         console.print(
@@ -2160,11 +2081,9 @@ class ReservationManager:
                 success_count = 0
                 for res_id in reservation_ids:
                     try:
-                        response = self.reservations_table.get_item(
-                            Key={"reservation_id": res_id})
-                        if "Item" in response:
-                            user_id = response["Item"].get(
-                                "user_id", "unknown")
+                        job = self.api_client.get_job_status(res_id)
+                        if job:
+                            user_id = job.get("user_id", "unknown")
                             if self.cancel_reservation(res_id, user_id):
                                 success_count += 1
                     except Exception as e:

@@ -1,5 +1,12 @@
 # Kubernetes resources for GPU development pods
 
+# Local variables for internal registry DNS names (Route53 private hosted zone)
+locals {
+  registry_ghcr_dns       = "registry-ghcr.internal.${var.prefix}.local:5000"
+  registry_dockerhub_dns  = "registry-dockerhub.internal.${var.prefix}.local:5000"
+  registry_native_dns     = "registry.internal.${var.prefix}.local:5000"
+}
+
 # AWS Auth ConfigMap to allow Lambda roles to access EKS
 # Use the kubernetes_config_map resource to manage the full ConfigMap
 resource "kubernetes_config_map" "aws_auth" {
@@ -22,30 +29,6 @@ resource "kubernetes_config_map" "aws_auth" {
           "system:bootstrappers",
           "system:nodes"
         ]
-      },
-      # Lambda reservation processor role
-      {
-        rolearn  = aws_iam_role.reservation_processor_role.arn
-        username = "lambda-reservation-processor"
-        groups = [
-          "system:masters" # Full access needed for pod/service creation
-        ]
-      },
-      # Lambda reservation expiry role
-      {
-        rolearn  = aws_iam_role.reservation_expiry_role.arn
-        username = "lambda-reservation-expiry"
-        groups = [
-          "system:masters" # Full access needed for pod cleanup
-        ]
-      },
-      # Lambda availability updater role
-      {
-        rolearn  = aws_iam_role.availability_updater_role.arn
-        username = "lambda-availability-updater"
-        groups = [
-          "system:masters" # Full access needed for node/pod queries
-        ]
       }
     ])
   }
@@ -62,6 +45,1903 @@ resource "kubernetes_namespace" "gpu_dev" {
     labels = {
       name    = "gpu-dev"
       purpose = "gpu-development"
+    }
+  }
+}
+
+# Namespace for control plane infrastructure (PostgreSQL, reservation controller, etc.)
+resource "kubernetes_namespace" "controlplane" {
+  depends_on = [aws_eks_cluster.gpu_dev_cluster]
+
+  metadata {
+    name = "gpu-controlplane"
+    labels = {
+      name    = "gpu-controlplane"
+      purpose = "control-plane-infrastructure"
+    }
+  }
+}
+
+# Service account for PostgreSQL database
+resource "kubernetes_service_account" "postgres_sa" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-service-account"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "postgres"
+    }
+  }
+}
+
+# Role for PostgreSQL - access to secrets, configmaps, and persistent volume claims
+resource "kubernetes_role" "postgres_role" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-role"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+  }
+
+  # Access to secrets (for database credentials)
+  rule {
+    api_groups = [""]
+    resources  = ["secrets"]
+    verbs      = ["get", "list", "watch"]
+  }
+
+  # Access to configmaps (for PostgreSQL configuration)
+  rule {
+    api_groups = [""]
+    resources  = ["configmaps"]
+    verbs      = ["get", "list", "watch"]
+  }
+
+  # Access to persistent volume claims (for data storage)
+  rule {
+    api_groups = [""]
+    resources  = ["persistentvolumeclaims"]
+    verbs      = ["get", "list", "watch"]
+  }
+}
+
+# Role binding for PostgreSQL service account
+resource "kubernetes_role_binding" "postgres_role_binding" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-role-binding"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.postgres_role.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account.postgres_sa.metadata[0].name
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+  }
+}
+
+# Secret for PostgreSQL credentials
+resource "kubernetes_secret" "postgres_credentials" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-credentials"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "postgres"
+    }
+  }
+
+  data = {
+    POSTGRES_USER     = "gpudev"
+    POSTGRES_PASSWORD = random_password.postgres_password.result
+    POSTGRES_DB       = "gpudev"
+  }
+
+  type = "Opaque"
+}
+
+# Generate a random password for PostgreSQL
+resource "random_password" "postgres_password" {
+  length  = 32
+  special = false  # Avoid special chars that might cause escaping issues
+}
+
+# Generate a password for PostgreSQL replication user
+resource "random_password" "postgres_replication_password" {
+  length  = 32
+  special = false
+}
+
+# Secret for PostgreSQL replication credentials
+resource "kubernetes_secret" "postgres_replication_credentials" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-replication-credentials"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "postgres"
+    }
+  }
+
+  data = {
+    REPLICATION_USER     = "replicator"
+    REPLICATION_PASSWORD = random_password.postgres_replication_password.result
+  }
+
+  type = "Opaque"
+}
+
+# ConfigMap for PostgreSQL primary configuration
+resource "kubernetes_config_map" "postgres_primary_config" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-primary-config"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "primary"
+    }
+  }
+
+  data = {
+    "postgresql.conf" = <<-EOT
+      # Connection settings
+      listen_addresses = '*'
+      port = 5432
+      max_connections = 200
+      
+      # Memory settings
+      shared_buffers = 256MB
+      effective_cache_size = 768MB
+      work_mem = 16MB
+      maintenance_work_mem = 128MB
+      
+      # WAL settings for replication
+      wal_level = replica
+      max_wal_senders = 10
+      max_replication_slots = 10
+      wal_keep_size = 1GB
+      hot_standby = on
+      
+      # Checkpoints
+      checkpoint_completion_target = 0.9
+      
+      # Logging
+      log_destination = 'stderr'
+      logging_collector = off
+      log_statement = 'ddl'
+      log_min_duration_statement = 1000
+      
+      # PGMQ optimization
+      shared_preload_libraries = 'pg_partman_bgw'
+    EOT
+
+    "pg_hba.conf" = <<-EOT
+      # TYPE  DATABASE        USER            ADDRESS                 METHOD
+      local   all             all                                     trust
+      host    all             all             127.0.0.1/32            scram-sha-256
+      host    all             all             ::1/128                 scram-sha-256
+      host    all             all             0.0.0.0/0               scram-sha-256
+      host    replication     replicator      0.0.0.0/0               scram-sha-256
+    EOT
+  }
+}
+
+# ConfigMap for PostgreSQL replica configuration
+resource "kubernetes_config_map" "postgres_replica_config" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-replica-config"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "replica"
+    }
+  }
+
+  data = {
+    "postgresql.conf" = <<-EOT
+      # Connection settings
+      listen_addresses = '*'
+      port = 5432
+      max_connections = 200
+      
+      # Memory settings
+      shared_buffers = 256MB
+      effective_cache_size = 768MB
+      work_mem = 16MB
+      maintenance_work_mem = 128MB
+      
+      # Replica settings
+      hot_standby = on
+      hot_standby_feedback = on
+      
+      # Logging
+      log_destination = 'stderr'
+      logging_collector = off
+    EOT
+
+    "pg_hba.conf" = <<-EOT
+      # TYPE  DATABASE        USER            ADDRESS                 METHOD
+      local   all             all                                     trust
+      host    all             all             127.0.0.1/32            scram-sha-256
+      host    all             all             ::1/128                 scram-sha-256
+      host    all             all             0.0.0.0/0               scram-sha-256
+    EOT
+  }
+}
+
+# ConfigMap for PostgreSQL initialization script (creates PGMQ extension and replication user)
+resource "kubernetes_config_map" "postgres_init_script" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-init-script"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "postgres"
+    }
+  }
+
+  data = {
+    "init-pgmq.sh" = <<-EOT
+      #!/bin/bash
+      set -e
+      
+      echo "Creating replication user..."
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        -- Create replication user if not exists
+        DO \$\$
+        BEGIN
+          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$${REPLICATION_USER}') THEN
+            CREATE ROLE $${REPLICATION_USER} WITH REPLICATION LOGIN PASSWORD '$${REPLICATION_PASSWORD}';
+          END IF;
+        END
+        \$\$;
+        
+        -- Create PGMQ extension
+        CREATE EXTENSION IF NOT EXISTS pgmq;
+        
+        -- Create pg_partman extension (used by PGMQ for partition management)
+        CREATE EXTENSION IF NOT EXISTS pg_partman;
+        
+        -- Grant permissions
+        GRANT ALL ON SCHEMA pgmq TO $${POSTGRES_USER};
+        GRANT ALL ON ALL TABLES IN SCHEMA pgmq TO $${POSTGRES_USER};
+        GRANT ALL ON ALL SEQUENCES IN SCHEMA pgmq TO $${POSTGRES_USER};
+      EOSQL
+      
+      echo "PGMQ extension enabled and replication user created."
+    EOT
+  }
+}
+
+# ConfigMap for database schema files
+resource "kubernetes_config_map" "database_schema" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "database-schema"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "postgres"
+    }
+  }
+
+  # Load all SQL files from database/schema directory
+  data = {
+    for file in fileset("${path.module}/database/schema", "*.sql") :
+    file => file("${path.module}/database/schema/${file}")
+  }
+}
+
+# ConfigMap for database fixture files
+resource "kubernetes_config_map" "database_fixtures" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "database-fixtures"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "postgres"
+    }
+  }
+
+  # Load all SQL files from database/fixtures directory
+  data = {
+    for file in fileset("${path.module}/database/fixtures", "*.sql") :
+    file => file("${path.module}/database/fixtures/${file}")
+  }
+}
+
+# Job for database schema migration
+# Name includes hash of schema files to trigger re-migration on changes
+resource "kubernetes_job" "database_schema_migration" {
+  depends_on = [
+    kubernetes_stateful_set.postgres_primary,
+    kubernetes_config_map.database_schema,
+    kubernetes_config_map.database_fixtures,
+  ]
+
+  # Wait for job to complete before continuing
+  wait_for_completion = true
+  
+  # Set timeouts for job completion
+  timeouts {
+    create = "10m"
+    update = "10m"
+  }
+
+  metadata {
+    # Include hash of all schema files in name to trigger re-run on changes
+    name = "db-migration-${substr(md5(join("", [
+      for f in sort(fileset("${path.module}/database/schema", "*.sql")) :
+      filemd5("${path.module}/database/schema/${f}")
+    ])), 0, 8)}"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "database-migration"
+    }
+  }
+
+  spec {
+    # Retry failed migrations (up to 3 retries = 4 total attempts)
+    backoff_limit = 3
+    
+    # Clean up completed/failed jobs after 1 hour
+    ttl_seconds_after_finished = 3600
+    
+    template {
+      metadata {
+        labels = {
+          app = "database-migration"
+        }
+      }
+
+      spec {
+        restart_policy = "OnFailure"
+
+        # Wait for postgres to be ready
+        init_container {
+          name  = "wait-for-postgres"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
+
+          command = ["/bin/bash", "-c"]
+          args = [<<-EOT
+            echo "Waiting for PostgreSQL to be ready..."
+            until pg_isready -h postgres-primary -U gpudev -d gpudev; do
+              echo "PostgreSQL is unavailable - sleeping"
+              sleep 2
+            done
+            echo "PostgreSQL is ready!"
+          EOT
+          ]
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret.postgres_credentials.metadata[0].name
+            }
+          }
+        }
+
+        container {
+          name  = "migrate"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
+
+          command = ["/bin/bash", "-c"]
+          args = [<<-EOT
+            set -e
+            
+            echo "=========================================="
+            echo "Database Schema Migration"
+            echo "=========================================="
+            echo ""
+            
+            # Run schema files in order
+            echo "Applying schema files..."
+            for file in $(ls /schema/*.sql | sort); do
+              if [ -f "$file" ]; then
+                echo "  → $(basename $file)"
+                PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                  -h postgres-primary \
+                  -U "$POSTGRES_USER" \
+                  -d "$POSTGRES_DB" \
+                  -v ON_ERROR_STOP=1 \
+                  -f "$file" || {
+                    echo "ERROR: Failed to apply $(basename $file)"
+                    exit 1
+                  }
+              fi
+            done
+            
+            echo ""
+            echo "Applying fixture data..."
+            
+            # Run fixtures in order
+            for file in $(ls /fixtures/*.sql | sort); do
+              if [ -f "$file" ]; then
+                echo "  → $(basename $file)"
+                PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                  -h postgres-primary \
+                  -U "$POSTGRES_USER" \
+                  -d "$POSTGRES_DB" \
+                  -v ON_ERROR_STOP=1 \
+                  -f "$file" || {
+                    echo "ERROR: Failed to apply $(basename $file)"
+                    exit 1
+                  }
+              fi
+            done
+            
+            echo ""
+            echo "=========================================="
+            echo "Migration completed successfully!"
+            echo "=========================================="
+          EOT
+          ]
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret.postgres_credentials.metadata[0].name
+            }
+          }
+
+          volume_mount {
+            name       = "schema"
+            mount_path = "/schema"
+          }
+
+          volume_mount {
+            name       = "fixtures"
+            mount_path = "/fixtures"
+          }
+
+          resources {
+            requests = {
+              cpu    = "100m"
+              memory = "128Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+          }
+        }
+
+        volume {
+          name = "schema"
+          config_map {
+            name = kubernetes_config_map.database_schema.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "fixtures"
+          config_map {
+            name = kubernetes_config_map.database_fixtures.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+}
+
+# PersistentVolumeClaim for PostgreSQL primary
+resource "kubernetes_persistent_volume_claim" "postgres_primary_pvc" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_storage_class.gp3,  # Storage class defined in monitoring.tf
+  ]
+
+  # Don't wait for PVC to bind - gp3 uses WaitForFirstConsumer mode
+  # PVC will bind when the StatefulSet pod starts
+  wait_until_bound = false
+
+  metadata {
+    name      = "postgres-primary-data"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "primary"
+    }
+  }
+
+  spec {
+    access_modes       = ["ReadWriteOnce"]
+    storage_class_name = kubernetes_storage_class.gp3.metadata[0].name
+
+    resources {
+      requests = {
+        storage = "100Gi"
+      }
+    }
+  }
+}
+
+# PersistentVolumeClaim for PostgreSQL replica
+resource "kubernetes_persistent_volume_claim" "postgres_replica_pvc" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_storage_class.gp3,  # Storage class defined in monitoring.tf
+  ]
+
+  wait_until_bound = false  # PVC uses WaitForFirstConsumer - will bind when pod is created
+
+  metadata {
+    name      = "postgres-replica-data"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "replica"
+    }
+  }
+
+  spec {
+    access_modes       = ["ReadWriteOnce"]
+    storage_class_name = kubernetes_storage_class.gp3.metadata[0].name
+
+    resources {
+      requests = {
+        storage = "100Gi"
+      }
+    }
+  }
+}
+
+# StatefulSet for PostgreSQL Primary with PGMQ
+resource "kubernetes_stateful_set" "postgres_primary" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_config_map.postgres_primary_config,
+    kubernetes_config_map.postgres_init_script,
+    kubernetes_secret.postgres_credentials,
+    kubernetes_secret.postgres_replication_credentials,
+    kubernetes_deployment.registry_ghcr,  # Wait for registry cache to be deployed
+    kubernetes_service.registry_ghcr,
+  ]
+
+  metadata {
+    name      = "postgres-primary"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "primary"
+    }
+  }
+
+  spec {
+    service_name = "postgres-primary-headless"
+    replicas     = 1
+
+    selector {
+      match_labels = {
+        app  = "postgres"
+        role = "primary"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app  = "postgres"
+          role = "primary"
+        }
+      }
+
+      spec {
+        service_account_name = kubernetes_service_account.postgres_sa.metadata[0].name
+
+        # Set fsGroup to postgres UID so volumes are writable
+        security_context {
+          fs_group                = 999
+          fs_group_change_policy  = "OnRootMismatch"
+        }
+
+        # Prefer running on CPU management nodes
+        node_selector = {
+          NodeType = "cpu"
+        }
+
+        # Tolerate CPU-only node taint
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        init_container {
+          name  = "init-config"
+          image = "busybox:1.36"  # Direct pull - can migrate to cache after registry-dockerhub is stable
+
+          security_context {
+            run_as_user = 999
+          }
+
+          command = ["/bin/sh", "-c"]
+          args = [<<-EOT
+            cp /config/postgresql.conf /var/lib/postgresql/data-config/postgresql.conf
+            cp /config/pg_hba.conf /var/lib/postgresql/data-config/pg_hba.conf
+            chmod 600 /var/lib/postgresql/data-config/*.conf
+          EOT
+          ]
+
+          volume_mount {
+            name       = "config"
+            mount_path = "/config"
+          }
+
+          volume_mount {
+            name       = "config-writable"
+            mount_path = "/var/lib/postgresql/data-config"
+          }
+        }
+
+        container {
+          name  = "postgres"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
+
+          port {
+            container_port = 5432
+            name           = "postgres"
+          }
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret.postgres_credentials.metadata[0].name
+            }
+          }
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret.postgres_replication_credentials.metadata[0].name
+            }
+          }
+
+          env {
+            name  = "PGDATA"
+            value = "/var/lib/postgresql/data/pgdata"
+          }
+
+          # PostgreSQL startup args to use our config
+          args = [
+            "-c", "config_file=/var/lib/postgresql/data-config/postgresql.conf",
+            "-c", "hba_file=/var/lib/postgresql/data-config/pg_hba.conf"
+          ]
+
+          volume_mount {
+            name       = "data"
+            mount_path = "/var/lib/postgresql/data"
+          }
+
+          volume_mount {
+            name       = "config-writable"
+            mount_path = "/var/lib/postgresql/data-config"
+          }
+
+          volume_mount {
+            name       = "init-scripts"
+            mount_path = "/docker-entrypoint-initdb.d"
+          }
+
+          resources {
+            requests = {
+              cpu    = "500m"
+              memory = "1Gi"
+            }
+            limits = {
+              cpu    = "2"
+              memory = "4Gi"
+            }
+          }
+
+          liveness_probe {
+            exec {
+              command = ["pg_isready", "-U", "gpudev", "-d", "gpudev"]
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 6
+          }
+
+          readiness_probe {
+            exec {
+              command = ["pg_isready", "-U", "gpudev", "-d", "gpudev"]
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+        }
+
+        volume {
+          name = "data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.postgres_primary_pvc.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "config"
+          config_map {
+            name = kubernetes_config_map.postgres_primary_config.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "config-writable"
+          empty_dir {}
+        }
+
+        volume {
+          name = "init-scripts"
+          config_map {
+            name         = kubernetes_config_map.postgres_init_script.metadata[0].name
+            default_mode = "0755"
+          }
+        }
+      }
+    }
+  }
+}
+
+# Headless Service for PostgreSQL Primary (for StatefulSet DNS)
+resource "kubernetes_service" "postgres_primary_headless" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-primary-headless"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "primary"
+    }
+  }
+
+  spec {
+    type       = "ClusterIP"
+    cluster_ip = "None"
+
+    selector = {
+      app  = "postgres"
+      role = "primary"
+    }
+
+    port {
+      name        = "postgres"
+      port        = 5432
+      target_port = 5432
+    }
+  }
+}
+
+# ClusterIP Service for PostgreSQL Primary (read-write endpoint)
+resource "kubernetes_service" "postgres_primary" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-primary"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "primary"
+    }
+  }
+
+  spec {
+    type = "ClusterIP"
+
+    selector = {
+      app  = "postgres"
+      role = "primary"
+    }
+
+    port {
+      name        = "postgres"
+      port        = 5432
+      target_port = 5432
+    }
+  }
+}
+
+# StatefulSet for PostgreSQL Replica (streaming replication from primary)
+resource "kubernetes_stateful_set" "postgres_replica" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_config_map.postgres_replica_config,
+    kubernetes_secret.postgres_credentials,
+    kubernetes_secret.postgres_replication_credentials,
+    kubernetes_stateful_set.postgres_primary,
+    kubernetes_deployment.registry_ghcr,  # Wait for registry cache to be deployed
+    kubernetes_service.registry_ghcr,
+  ]
+
+  metadata {
+    name      = "postgres-replica"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "replica"
+    }
+  }
+
+  spec {
+    service_name = "postgres-replica-headless"
+    replicas     = 1
+
+    selector {
+      match_labels = {
+        app  = "postgres"
+        role = "replica"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app  = "postgres"
+          role = "replica"
+        }
+      }
+
+      spec {
+        service_account_name = kubernetes_service_account.postgres_sa.metadata[0].name
+
+        # Set fsGroup to postgres UID so volumes are writable
+        security_context {
+          fs_group                = 999
+          fs_group_change_policy  = "OnRootMismatch"
+        }
+
+        # Prefer running on CPU management nodes
+        node_selector = {
+          NodeType = "cpu"
+        }
+
+        # Tolerate CPU-only node taint
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        # Init container to set up streaming replication
+        init_container {
+          name  = "init-replica"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
+
+          security_context {
+            run_as_user = 999
+          }
+
+          command = ["/bin/bash", "-c"]
+          args = [<<-EOT
+            set -e
+            
+            # Check if data directory is empty (fresh replica)
+            if [ -z "$(ls -A /var/lib/postgresql/data/pgdata 2>/dev/null)" ]; then
+              echo "Initializing replica from primary..."
+              
+              # Wait for primary to be ready
+              until pg_isready -h postgres-primary -p 5432 -U gpudev; do
+                echo "Waiting for primary to be ready..."
+                sleep 2
+              done
+              
+              # Create base backup from primary
+              PGPASSWORD=$REPLICATION_PASSWORD pg_basebackup \
+                -h postgres-primary \
+                -p 5432 \
+                -U replicator \
+                -D /var/lib/postgresql/data/pgdata \
+                -Fp -Xs -P -R
+              
+              echo "Base backup complete. Replica initialized."
+            else
+              echo "Data directory exists. Skipping initialization."
+            fi
+            
+            # Copy config files
+            cp /config/postgresql.conf /var/lib/postgresql/data-config/postgresql.conf
+            cp /config/pg_hba.conf /var/lib/postgresql/data-config/pg_hba.conf
+            chmod 600 /var/lib/postgresql/data-config/*.conf
+          EOT
+          ]
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret.postgres_replication_credentials.metadata[0].name
+            }
+          }
+
+          volume_mount {
+            name       = "data"
+            mount_path = "/var/lib/postgresql/data"
+          }
+
+          volume_mount {
+            name       = "config"
+            mount_path = "/config"
+          }
+
+          volume_mount {
+            name       = "config-writable"
+            mount_path = "/var/lib/postgresql/data-config"
+          }
+        }
+
+        container {
+          name  = "postgres"
+          image = "${local.registry_ghcr_dns}/pgmq/pg18-pgmq:v1.8.1"
+
+          port {
+            container_port = 5432
+            name           = "postgres"
+          }
+
+          env {
+            name  = "PGDATA"
+            value = "/var/lib/postgresql/data/pgdata"
+          }
+
+          # PostgreSQL startup args to use our config
+          args = [
+            "-c", "config_file=/var/lib/postgresql/data-config/postgresql.conf",
+            "-c", "hba_file=/var/lib/postgresql/data-config/pg_hba.conf"
+          ]
+
+          volume_mount {
+            name       = "data"
+            mount_path = "/var/lib/postgresql/data"
+          }
+
+          volume_mount {
+            name       = "config-writable"
+            mount_path = "/var/lib/postgresql/data-config"
+          }
+
+          resources {
+            requests = {
+              cpu    = "500m"
+              memory = "1Gi"
+            }
+            limits = {
+              cpu    = "2"
+              memory = "4Gi"
+            }
+          }
+
+          liveness_probe {
+            exec {
+              command = ["pg_isready", "-U", "gpudev", "-d", "gpudev"]
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 6
+          }
+
+          readiness_probe {
+            exec {
+              command = ["pg_isready", "-U", "gpudev", "-d", "gpudev"]
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+        }
+
+        volume {
+          name = "data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.postgres_replica_pvc.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "config"
+          config_map {
+            name = kubernetes_config_map.postgres_replica_config.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "config-writable"
+          empty_dir {}
+        }
+      }
+    }
+  }
+}
+
+# Headless Service for PostgreSQL Replica (for StatefulSet DNS)
+resource "kubernetes_service" "postgres_replica_headless" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-replica-headless"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "replica"
+    }
+  }
+
+  spec {
+    type       = "ClusterIP"
+    cluster_ip = "None"
+
+    selector = {
+      app  = "postgres"
+      role = "replica"
+    }
+
+    port {
+      name        = "postgres"
+      port        = 5432
+      target_port = 5432
+    }
+  }
+}
+
+# ClusterIP Service for PostgreSQL Replica (read-only endpoint)
+resource "kubernetes_service" "postgres_replica" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "postgres-replica"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app  = "postgres"
+      role = "replica"
+    }
+  }
+
+  spec {
+    type = "ClusterIP"
+
+    selector = {
+      app  = "postgres"
+      role = "replica"
+    }
+
+    port {
+      name        = "postgres"
+      port        = 5432
+      target_port = 5432
+    }
+  }
+}
+
+# =============================================================================
+# Registry Pull-Through Cache for ghcr.io
+# =============================================================================
+# Caches images from ghcr.io to avoid authentication issues and improve pull times
+# Usage: Instead of ghcr.io/org/image:tag, use:
+#        registry-ghcr.internal.pytorch-gpu-dev.local:5000/org/image:tag
+# The DNS name is resolved via Route53 private hosted zone → internal NLB → registry pod
+
+# Secret for ghcr.io credentials (GitHub PAT with read:packages scope)
+# To create the PAT: GitHub → Settings → Developer settings → Personal access tokens
+# Create token with ONLY "read:packages" scope
+resource "kubernetes_secret" "registry_ghcr_credentials" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-ghcr-credentials"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  data = {
+    # GitHub username (can be any valid GitHub username with the PAT)
+    GHCR_USERNAME = var.ghcr_username
+    # GitHub PAT with read:packages scope
+    GHCR_TOKEN    = var.ghcr_token
+  }
+
+  type = "Opaque"
+}
+
+# ConfigMap for ghcr.io registry cache configuration (template - credentials injected at runtime)
+resource "kubernetes_config_map" "registry_ghcr_config" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-ghcr-config"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  data = {
+    # Template config - init container will substitute GHCR_USERNAME and GHCR_TOKEN
+    "config.yml.tmpl" = <<-EOT
+      version: 0.1
+      log:
+        level: info
+        fields:
+          service: registry
+      storage:
+        filesystem:
+          rootdirectory: /var/lib/registry
+        cache:
+          blobdescriptor: inmemory
+        delete:
+          enabled: true
+      http:
+        addr: :5000
+        headers:
+          X-Content-Type-Options: [nosniff]
+      proxy:
+        remoteurl: https://ghcr.io
+        username: GHCR_USERNAME_PLACEHOLDER
+        password: GHCR_TOKEN_PLACEHOLDER
+    EOT
+  }
+}
+
+# PersistentVolumeClaim for registry cache storage
+resource "kubernetes_persistent_volume_claim" "registry_ghcr_pvc" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_storage_class.gp3,
+  ]
+
+  wait_until_bound = false
+
+  metadata {
+    name      = "registry-ghcr-data"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  spec {
+    access_modes       = ["ReadWriteOnce"]
+    storage_class_name = kubernetes_storage_class.gp3.metadata[0].name
+
+    resources {
+      requests = {
+        storage = "50Gi"
+      }
+    }
+  }
+}
+
+# Deployment for ghcr.io pull-through cache
+resource "kubernetes_deployment" "registry_ghcr" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_config_map.registry_ghcr_config,
+    kubernetes_secret.registry_ghcr_credentials,
+    kubernetes_persistent_volume_claim.registry_ghcr_pvc,
+  ]
+
+  metadata {
+    name      = "registry-ghcr"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app      = "registry-cache"
+        upstream = "ghcr"
+      }
+    }
+
+    strategy {
+      type = "Recreate"  # Required for RWO PVC
+    }
+
+    template {
+      metadata {
+        labels = {
+          app      = "registry-cache"
+          upstream = "ghcr"
+        }
+      }
+
+      spec {
+        # Set fsGroup so mounted volume is writable by registry container
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        # Prefer running on CPU management nodes
+        node_selector = {
+          NodeType = "cpu"
+        }
+
+        # Tolerate CPU-only node taint
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        # Init container to inject credentials into config
+        init_container {
+          name  = "inject-credentials"
+          image = "busybox:1.36"  # Must use direct pull for registry bootstrap
+
+          command = ["/bin/sh", "-c"]
+          args = [<<-EOT
+            # Read credentials from environment and substitute into config template
+            sed -e "s/GHCR_USERNAME_PLACEHOLDER/$GHCR_USERNAME/" \
+                -e "s/GHCR_TOKEN_PLACEHOLDER/$GHCR_TOKEN/" \
+                /config-template/config.yml.tmpl > /etc/docker/registry/config.yml
+            echo "Registry config generated with credentials"
+          EOT
+          ]
+
+          env {
+            name = "GHCR_USERNAME"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.registry_ghcr_credentials.metadata[0].name
+                key  = "GHCR_USERNAME"
+              }
+            }
+          }
+
+          env {
+            name = "GHCR_TOKEN"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.registry_ghcr_credentials.metadata[0].name
+                key  = "GHCR_TOKEN"
+              }
+            }
+          }
+
+          volume_mount {
+            name       = "config-template"
+            mount_path = "/config-template"
+          }
+
+          volume_mount {
+            name       = "config"
+            mount_path = "/etc/docker/registry"
+          }
+        }
+
+        container {
+          name  = "registry"
+          image = "registry:2"
+
+          port {
+            container_port = 5000
+            name           = "registry"
+          }
+
+          volume_mount {
+            name       = "config"
+            mount_path = "/etc/docker/registry"
+          }
+
+          volume_mount {
+            name       = "data"
+            mount_path = "/var/lib/registry"
+          }
+
+          resources {
+            requests = {
+              cpu    = "100m"
+              memory = "128Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/"
+              port = 5000
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 10
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/"
+              port = 5000
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+          }
+        }
+
+        volume {
+          name = "config-template"
+          config_map {
+            name = kubernetes_config_map.registry_ghcr_config.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "config"
+          empty_dir {}
+        }
+
+        volume {
+          name = "data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.registry_ghcr_pvc.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+}
+
+# Service for ghcr.io pull-through cache
+# Uses internal Network Load Balancer so nodes can reach it via VPC DNS
+resource "kubernetes_service" "registry_ghcr" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-ghcr"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+    annotations = {
+      # Use internal NLB (not internet-facing)
+      "service.beta.kubernetes.io/aws-load-balancer-internal" = "true"
+      "service.beta.kubernetes.io/aws-load-balancer-type"     = "nlb"
+      # Cross-zone load balancing for reliability
+      "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
+    }
+  }
+
+  spec {
+    type = "LoadBalancer"
+
+    selector = {
+      app      = "registry-cache"
+      upstream = "ghcr"
+    }
+
+    port {
+      name        = "registry"
+      port        = 5000
+      target_port = 5000
+    }
+  }
+}
+
+# =============================================================================
+# Registry Pull-Through Cache for Docker Hub
+# =============================================================================
+# Caches images from docker.io to improve pull times and avoid rate limits
+# Usage: Instead of busybox:1.36, use:
+#        registry-dockerhub.internal.pytorch-gpu-dev.local:5000/library/busybox:1.36
+# The DNS name is resolved via Route53 private hosted zone → internal NLB → registry pod
+
+# ConfigMap for Docker Hub registry cache configuration
+# Note: Docker Hub pull-through cache doesn't require authentication for public images
+resource "kubernetes_config_map" "registry_dockerhub_config" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-dockerhub-config"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  data = {
+    "config.yml" = <<-EOT
+      version: 0.1
+      log:
+        level: info
+        fields:
+          service: registry
+      storage:
+        filesystem:
+          rootdirectory: /var/lib/registry
+        cache:
+          blobdescriptor: inmemory
+        delete:
+          enabled: true
+      http:
+        addr: :5000
+        headers:
+          X-Content-Type-Options: [nosniff]
+      proxy:
+        remoteurl: https://registry-1.docker.io
+    EOT
+  }
+}
+
+# PersistentVolumeClaim for Docker Hub registry cache storage
+resource "kubernetes_persistent_volume_claim" "registry_dockerhub_pvc" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_storage_class.gp3,
+  ]
+
+  wait_until_bound = false
+
+  metadata {
+    name      = "registry-dockerhub-data"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  spec {
+    access_modes       = ["ReadWriteOnce"]
+    storage_class_name = kubernetes_storage_class.gp3.metadata[0].name
+
+    resources {
+      requests = {
+        storage = "50Gi"
+      }
+    }
+  }
+}
+
+# Deployment for Docker Hub pull-through cache
+resource "kubernetes_deployment" "registry_dockerhub" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_config_map.registry_dockerhub_config,
+    kubernetes_persistent_volume_claim.registry_dockerhub_pvc,
+  ]
+
+  metadata {
+    name      = "registry-dockerhub"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app      = "registry-cache"
+        upstream = "dockerhub"
+      }
+    }
+
+    strategy {
+      type = "Recreate"  # Required for RWO PVC
+    }
+
+    template {
+      metadata {
+        labels = {
+          app      = "registry-cache"
+          upstream = "dockerhub"
+        }
+      }
+
+      spec {
+        # Set fsGroup so mounted volume is writable by registry container
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        # Prefer running on CPU management nodes
+        node_selector = {
+          NodeType = "cpu"
+        }
+
+        # Tolerate CPU-only node taint
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        container {
+          name  = "registry"
+          image = "registry:2"
+
+          port {
+            container_port = 5000
+            name           = "registry"
+          }
+
+          volume_mount {
+            name       = "config"
+            mount_path = "/etc/docker/registry"
+          }
+
+          volume_mount {
+            name       = "data"
+            mount_path = "/var/lib/registry"
+          }
+
+          resources {
+            requests = {
+              cpu    = "100m"
+              memory = "128Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/"
+              port = 5000
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 10
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/"
+              port = 5000
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+          }
+        }
+
+        volume {
+          name = "config"
+          config_map {
+            name = kubernetes_config_map.registry_dockerhub_config.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.registry_dockerhub_pvc.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+}
+
+# Service for Docker Hub pull-through cache
+# Uses internal Network Load Balancer so nodes can reach it via VPC DNS
+resource "kubernetes_service" "registry_dockerhub" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-dockerhub"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-cache"
+    }
+    annotations = {
+      # Use internal NLB (not internet-facing)
+      "service.beta.kubernetes.io/aws-load-balancer-internal" = "true"
+      "service.beta.kubernetes.io/aws-load-balancer-type"     = "nlb"
+      # Cross-zone load balancing for reliability
+      "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
+    }
+  }
+
+  spec {
+    type = "LoadBalancer"
+
+    selector = {
+      app      = "registry-cache"
+      upstream = "dockerhub"
+    }
+
+    port {
+      name        = "registry"
+      port        = 5000
+      target_port = 5000
+    }
+  }
+}
+
+# =============================================================================
+# Native In-Cluster Registry (for internal images)
+# =============================================================================
+# This registry hosts all internal service images (built by Terraform)
+# Unlike pull-through caches, this is a true registry that stores images
+# Used for: api-service, reservation-processor, ssh-proxy, etc.
+
+# TLS secret for registry-native (self-signed certificate)
+resource "kubernetes_secret" "registry_native_tls" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-native-tls"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+  }
+
+  type = "kubernetes.io/tls"
+
+  data = {
+    "tls.crt" = file("${path.module}/.certs/registry.crt")
+    "tls.key" = file("${path.module}/.certs/registry.key")
+  }
+}
+
+# ConfigMap for native registry configuration
+resource "kubernetes_config_map" "registry_native_config" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-native-config"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+  }
+
+  data = {
+    "config.yml" = <<-EOT
+      version: 0.1
+      log:
+        level: info
+        fields:
+          service: registry
+      storage:
+        filesystem:
+          rootdirectory: /var/lib/registry
+        cache:
+          blobdescriptor: inmemory
+        delete:
+          enabled: true
+      http:
+        addr: :5000
+        tls:
+          certificate: /etc/docker/registry/tls/tls.crt
+          key: /etc/docker/registry/tls/tls.key
+        headers:
+          X-Content-Type-Options: [nosniff]
+      # No proxy configuration - this is a native registry for storing images
+    EOT
+  }
+}
+
+# PersistentVolumeClaim for native registry storage
+resource "kubernetes_persistent_volume_claim" "registry_native_pvc" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_storage_class.gp3,
+  ]
+
+  wait_until_bound = false
+
+  metadata {
+    name      = "registry-native-data"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+  }
+
+  spec {
+    access_modes       = ["ReadWriteOnce"]
+    storage_class_name = kubernetes_storage_class.gp3.metadata[0].name
+
+    resources {
+      requests = {
+        storage = "100Gi"  # Larger for storing all service images
+      }
+    }
+  }
+}
+
+# Deployment for native registry
+resource "kubernetes_deployment" "registry_native" {
+  depends_on = [
+    kubernetes_namespace.controlplane,
+    kubernetes_secret.registry_native_tls,
+    kubernetes_config_map.registry_native_config,
+    kubernetes_persistent_volume_claim.registry_native_pvc,
+  ]
+
+  metadata {
+    name      = "registry-native"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app = "registry-native"
+      }
+    }
+
+    strategy {
+      type = "Recreate"  # Required for RWO PVC
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "registry-native"
+        }
+      }
+
+      spec {
+        # Set fsGroup so mounted volume is writable by registry container
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        # Prefer running on CPU management nodes
+        node_selector = {
+          NodeType = "cpu"
+        }
+
+        # Tolerate CPU-only node taint
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        container {
+          name  = "registry"
+          image = "registry:2"
+
+          port {
+            container_port = 5000
+            name           = "registry"
+          }
+
+          volume_mount {
+            name       = "config"
+            mount_path = "/etc/docker/registry"
+            read_only  = true
+          }
+
+          volume_mount {
+            name       = "tls"
+            mount_path = "/etc/docker/registry/tls"
+            read_only  = true
+          }
+
+          volume_mount {
+            name       = "data"
+            mount_path = "/var/lib/registry"
+          }
+
+          resources {
+            requests = {
+              cpu    = "200m"
+              memory = "256Mi"
+            }
+            limits = {
+              cpu    = "1000m"
+              memory = "1Gi"
+            }
+          }
+
+          liveness_probe {
+            http_get {
+              path   = "/"
+              port   = 5000
+              scheme = "HTTPS"
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 10
+          }
+
+          readiness_probe {
+            http_get {
+              path   = "/"
+              port   = 5000
+              scheme = "HTTPS"
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+          }
+        }
+
+        volume {
+          name = "config"
+          config_map {
+            name = kubernetes_config_map.registry_native_config.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "tls"
+          secret {
+            secret_name = kubernetes_secret.registry_native_tls.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.registry_native_pvc.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+}
+
+# Service for native registry
+# Uses internal Network Load Balancer so nodes can reach it via VPC DNS
+resource "kubernetes_service" "registry_native" {
+  depends_on = [kubernetes_namespace.controlplane]
+
+  metadata {
+    name      = "registry-native"
+    namespace = kubernetes_namespace.controlplane.metadata[0].name
+    labels = {
+      app = "registry-native"
+    }
+    annotations = {
+      # Use internal NLB (not internet-facing)
+      "service.beta.kubernetes.io/aws-load-balancer-internal" = "true"
+      "service.beta.kubernetes.io/aws-load-balancer-type"     = "nlb"
+      # Cross-zone load balancing for reliability
+      "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
+    }
+  }
+
+  spec {
+    type = "LoadBalancer"
+
+    selector = {
+      app = "registry-native"
+    }
+
+    port {
+      name        = "registry"
+      port        = 5000
+      target_port = 5000
     }
   }
 }
@@ -429,7 +2309,7 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
           initContainers = [
             {
               name            = "pull-gpu-dev-image"
-              image           = local.latest_image_uri  # Use stable 'latest' tag
+              image           = local.runtime_latest_image_uri  # Use stable 'latest' tag
               imagePullPolicy = "Always"
               command         = ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
             }

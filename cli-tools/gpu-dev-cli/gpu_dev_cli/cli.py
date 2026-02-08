@@ -3,6 +3,7 @@ GPU Developer CLI - Main entry point
 Reserve and manage GPU development servers
 """
 
+import os
 import click
 from typing import Optional
 from rich.console import Console
@@ -100,6 +101,21 @@ def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
     except (ValueError, TypeError):
         # Fallback to original format
         return str(timestamp_str)[:19] if len(str(timestamp_str)) > 10 else str(timestamp_str)
+
+
+def _extract_ip_from_reservation(reservation: dict) -> str:
+    """Extract IP:Port from reservation data (each pod has unique port on shared node IP)"""
+    # The API returns node_ip and node_port from the database
+    # Multiple pods can share the same node_ip, but each has a unique node_port
+    node_ip = reservation.get("node_ip")
+    node_port = reservation.get("node_port")
+    
+    if node_ip and node_port:
+        return f"{node_ip}:{node_port}"
+    elif node_ip:
+        return node_ip
+    
+    return "N/A"
 
 
 def _format_expires_with_remaining(expires_at) -> str:
@@ -310,14 +326,23 @@ def _show_single_reservation(connection_info: dict) -> None:
             oom_time_display = format_timestamp(last_oom_at) if last_oom_at else "Unknown"
             oom_section = f"\n[red]⚠️  OOM Events:[/red] [red]{oom_count} OOM(s) detected (last: {oom_time_display})[/red]"
 
+        # Extract reservation name and IP:Port
+        res_name = connection_info.get("name", "")
+        res_name_section = f"[blue]Reservation Name:[/blue] {res_name}\n" if res_name else ""
+        
+        ip_port = _extract_ip_from_reservation(connection_info)
+        ip_section = f"[blue]IP:Port:[/blue] {ip_port}\n"
+        
         panel_content = (
             f"[green]Reservation Details[/green]\n\n"
-            f"[blue]Quick Connect:[/blue] {connect_command}\n"
+            + res_name_section
+            + f"[blue]Quick Connect:[/blue] {connect_command}\n"
             f"[blue]SSH Command:[/blue] {ssh_command_display}\n"
             + vscode_info
             + jupyter_info
             + f"[blue]Pod Name:[/blue] {connection_info['pod_name']}\n"
-            f"[blue]GPUs:[/blue] {gpu_info}\n"
+            + ip_section
+            + f"[blue]GPUs:[/blue] {gpu_info}\n"
             f"[blue]Instance Type:[/blue] {instance_type}\n"
             + secondary_users_info
             + f"[blue]Storage:[/blue] {disk_status}\n"
@@ -416,7 +441,7 @@ def _validate_ssh_key_or_exit(config: Config, live: Live) -> bool:
         if validation_result["ssh_user"] and validation_result["configured_user"]:
             rprint("\n[yellow]💡 Fix by updating your config:[/yellow]")
             rprint(
-                "   [cyan]gpu-dev config set github_user {validation_result['ssh_user']}[/cyan]"
+                f"   [cyan]gpu-dev config set github_user {validation_result['ssh_user']}[/cyan]"
             )
         elif not validation_result["configured_user"]:
             rprint("\n[yellow]💡 Fix by configuring your GitHub username:[/yellow]")
@@ -467,7 +492,12 @@ def main(ctx: click.Context) -> None:
         gpu-dev help                            # Show this help message
 
     \b
-    Configuration:
+    Setup & Configuration:
+        gpu-dev setup                           # Initial setup wizard (run once)
+        gpu-dev login                           # Authenticate with API service
+        gpu-dev config show                     # Show current configuration
+        gpu-dev config set github_user <name>  # Set GitHub username
+        gpu-dev config set api_url <url>        # Set API URL
         gpu-dev config ssh-include enable       # Enable SSH config auto-include
         gpu-dev config ssh-include disable      # Disable SSH config auto-include
 
@@ -477,6 +507,147 @@ def main(ctx: click.Context) -> None:
     Use 'gpu-dev <command> --help' for detailed help on each command.
     """
     ctx.ensure_object(dict)
+
+
+@main.command()
+def setup() -> None:
+    """
+    Initial setup wizard for GPU Dev CLI.
+
+    Interactive setup to configure API URL and GitHub username.
+    Run this once after installing the CLI.
+
+    \b
+    What it configures:
+        - API service URL (HTTPS CloudFront endpoint)
+        - GitHub username (for SSH key fetching)
+
+    \b
+    Examples:
+        gpu-dev setup                           # Interactive setup
+    """
+    try:
+        config = load_config()
+        
+        console.print("[cyan]🚀 GPU Dev CLI Setup Wizard[/cyan]\n")
+        
+        # Step 1: Configure API URL
+        console.print("[yellow]Step 1: API Service URL[/yellow]")
+        current_api_url = (
+            os.getenv("GPU_DEV_API_URL") or 
+            config.get("api_url") or
+            "Not set"
+        )
+        console.print(f"  Current: {current_api_url}")
+        
+        if current_api_url == "Not set":
+            console.print("\n[dim]Get the API URL from terraform:[/dim]")
+            console.print("[dim]  cd terraform-gpu-devservers[/dim]")
+            console.print("[dim]  tofu output api_service_url[/dim]")
+        
+        api_url = click.prompt(
+            "\nEnter API service URL (HTTPS CloudFront endpoint)",
+            default=current_api_url if current_api_url != "Not set" else ""
+        )
+        
+        if api_url and api_url.startswith(("http://", "https://")):
+            config.save_config("api_url", api_url.rstrip("/"))
+            console.print(f"[green]✅ API URL configured: {api_url}[/green]")
+        elif api_url:
+            console.print("[red]❌ API URL must start with http:// or https://[/red]")
+            return
+        
+        # Step 2: Configure GitHub username
+        console.print("\n[yellow]Step 2: GitHub Username[/yellow]")
+        current_github = config.get_github_username() or "Not set"
+        console.print(f"  Current: {current_github}")
+        
+        github_user = click.prompt(
+            "\nEnter your GitHub username (for SSH key fetching)",
+            default=current_github if current_github != "Not set" else ""
+        )
+        
+        if github_user:
+            config.save_config("github_user", github_user)
+            console.print(f"[green]✅ GitHub username configured: {github_user}[/green]")
+        
+        # Step 3: Test configuration
+        console.print("\n[yellow]Step 3: Testing Configuration[/yellow]")
+        
+        # Try to initialize API client
+        try:
+            from .api_client import APIClient
+            api_client = APIClient(config)
+            console.print(f"[green]✅ API URL valid: {api_client.api_url}[/green]")
+        except Exception as e:
+            console.print(f"[red]❌ API URL test failed: {e}[/red]")
+            return
+        
+        # Summary
+        console.print("\n[green]✅ Setup Complete![/green]\n")
+        console.print("[dim]Next steps:[/dim]")
+        console.print("  1. Run: [cyan]gpu-dev login[/cyan] (authenticate with API)")
+        console.print("  2. Run: [cyan]gpu-dev reserve --gpus 2 --hours 4[/cyan] (create reservation)")
+        console.print("\n[dim]Configuration saved to: {config.CONFIG_FILE}[/dim]")
+        
+    except click.Abort:
+        console.print("\n[yellow]Setup cancelled.[/yellow]")
+    except Exception as e:
+        console.print(f"[red]❌ Setup error: {str(e)}[/red]")
+        raise click.Abort()
+
+
+@main.command()
+def login() -> None:
+    """
+    Authenticate with the GPU Dev API service.
+
+    Uses your AWS credentials to obtain a time-limited API key for
+    submitting GPU reservations. The API key is cached locally and
+    automatically refreshed when needed.
+
+    Requires GPU_DEV_API_URL environment variable or config setting.
+    Run 'gpu-dev setup' for initial configuration.
+
+    \b
+    Examples:
+        gpu-dev login                           # Authenticate with API
+    """
+    try:
+        # Load config
+        config = load_config()
+
+        # Initialize API client
+        from .api_client import APIClient
+
+        api_client = APIClient(config)
+
+        console.print("[cyan]🔐 Authenticating with GPU Dev API...[/cyan]")
+
+        # Authenticate
+        api_client.authenticate(force=True)
+
+        # Get user identity for display
+        identity = config.get_user_identity()
+        username = identity["arn"].split("/")[-1]
+
+        console.print(f"[green]✅ Authentication successful![/green]")
+        console.print(f"[green]   User: {username}[/green]")
+        expiry = api_client.api_key_expires_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        console.print(f"[green]   API key expires: {expiry}[/green]")
+        console.print("\n[dim]Your API key has been saved locally.[/dim]")
+        console.print(
+            "[dim]It will be automatically used for job submissions.[/dim]"
+        )
+
+    except Exception as e:
+        console.print(f"[red]❌ Authentication failed: {e}[/red]")
+        console.print("\n[yellow]Make sure:[/yellow]")
+        console.print("  1. GPU_DEV_API_URL is set (or configured)")
+        console.print("  2. AWS credentials are valid")
+        console.print("  3. API service is accessible")
+        console.print("\n[dim]Hint: Run 'gpu-dev setup' for initial configuration[/dim]")
+        raise click.Abort()
 
 
 @main.command()
@@ -702,14 +873,15 @@ def reserve(
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
 
+            # Update max_gpus after interactive GPU type selection
+            gpu_type_lower = gpu_type.lower()
+            if gpu_type_lower not in gpu_configs:
+                rprint(f"[red]❌ Invalid GPU type '{gpu_type}'[/red]")
+                return
+            max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
+
             # Interactive GPU count selection
             if gpus is None:
-                gpu_type_lower = gpu_type.lower()
-                if gpu_type_lower not in gpu_configs:
-                    rprint(f"[red]❌ Invalid GPU type '{gpu_type}'[/red]")
-                    return
-
-                max_gpus = gpu_configs[gpu_type_lower]["max_gpus"]
                 gpu_count = select_gpu_count_interactive(
                     gpu_type_lower, max_gpus)
                 if gpu_count is None:
@@ -932,9 +1104,9 @@ def reserve(
                                 dockerfile_dir, dockerfile_name)
                             tar.add(dockerfile_path, arcname='Dockerfile')
 
-                    # Check compressed size limit (SQS has 1 MiB limit, base64 adds ~33% overhead)
+                    # Check compressed size limit (API has message size limits, base64 adds ~33% overhead)
                     compressed_size = os.path.getsize(temp_tar.name)
-                    # ~700KB to allow for base64 overhead and other message fields
+                    # ~700KB to allow for base64 overhead and other request fields
                     max_tar_size = 700 * 1024
                     if compressed_size > max_tar_size:
                         os.unlink(temp_tar.name)
@@ -942,7 +1114,7 @@ def reserve(
                             f"[red]❌ Build context too large: {compressed_size} bytes (max ~700KB compressed)[/red]")
                         return
 
-                    # Base64 encode the tar.gz for SQS message
+                    # Base64 encode the tar.gz for API request
                     import base64
                     with open(temp_tar.name, 'rb') as f:
                         build_context_data = base64.b64encode(
@@ -1475,9 +1647,12 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
             # Create table with enhanced columns for queue info
             table = Table(title="GPU Reservations")
             table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("Name", style="yellow", no_wrap=True)
             table.add_column("User", style="green")
             table.add_column("GPUs", style="magenta")
             table.add_column("Status")
+            table.add_column("Pod Name", style="dim", no_wrap=True)
+            table.add_column("IP:Port", style="blue", no_wrap=True)
             table.add_column("Storage", style="dim", no_wrap=True)
             table.add_column("Queue Info", style="cyan")
             table.add_column("Created", style="blue")
@@ -1632,6 +1807,16 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         # No color for unknown statuses
                         status_display = str(res_status)
 
+                    # Extract reservation name, pod name, and IP address
+                    res_name = reservation.get("name", "")
+                    res_name_display = res_name[:15] if res_name else "-"  # Truncate long names
+                    
+                    pod_name = reservation.get("pod_name", "")
+                    pod_name_display = pod_name if pod_name else "-"
+                    
+                    # Extract IP address
+                    ip_address = _extract_ip_from_reservation(reservation)
+                    
                     # Extract CLI and Lambda versions if details flag is set
                     cli_version_display = ""
                     lambda_version_display = ""
@@ -1646,9 +1831,12 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                     row_data = [
                         f"[dim]{str(reservation_id)[:8]}[/dim]" if dim_row else str(
                             reservation_id)[:8],
+                        f"[dim]{res_name_display}[/dim]" if dim_row else res_name_display,
                         f"[dim]{user_display}[/dim]" if dim_row else user_display,
                         f"[dim]{gpu_display}[/dim]" if dim_row else gpu_display,
                         status_display,
+                        f"[dim]{pod_name_display}[/dim]" if dim_row else pod_name_display,
+                        f"[dim]{ip_address}[/dim]" if dim_row else ip_address,
                         f"[dim]{storage_display}[/dim]" if dim_row else storage_display,
                         f"[dim]{queue_info}[/dim]" if dim_row else queue_info,
                         f"[dim]{created_formatted}[/dim]" if dim_row else created_formatted,
@@ -2408,14 +2596,7 @@ def _show_availability() -> None:
             }
 
             # Sort GPU types by architecture priority, then by name
-            sorted_gpu_types = sorted(
-                availability_info.items(),
-                key=lambda x: (
-                    arch_priority.get(
-                        gpu_architectures.get(x[0], "Unknown"), 99),
-                    x[0]
-                )
-            )
+            sorted_gpu_types = sorted(availability_info.items())
 
             table = Table(
                 title="GPU Availability by Type (numbers are GPUs, not nodes)")
@@ -2551,15 +2732,8 @@ def _show_availability_watch(interval: int) -> None:
                             "CPU (arm64)": 6,
                         }
 
-                        # Sort GPU types by architecture priority, then by name
-                        sorted_gpu_types = sorted(
-                            availability_info.items(),
-                            key=lambda x: (
-                                arch_priority.get(
-                                    gpu_architectures.get(x[0], "Unknown"), 99),
-                                x[0]
-                            )
-                        )
+                        # Sort GPU types alphabetically
+                        sorted_gpu_types = sorted(availability_info.items())
 
                         table = Table(
                             title="GPU Availability by Type (numbers are GPUs, not nodes)")
@@ -2919,12 +3093,27 @@ def show() -> None:
         # Get current environment info
         current_env = config.get("environment") or "Not set"
         env_source = "Config file" if config.get("region") else "Default/ENV vars"
+        
+        # Get API URL configuration
+        api_url_env = os.getenv("GPU_DEV_API_URL")
+        api_url_config = config.get("api_url")
+        env_config = config.ENVIRONMENTS.get(config.get("environment") or "prod", {})
+        api_url_default = env_config.get("api_url")
+        
+        if api_url_env:
+            api_url_display = f"{api_url_env} [dim](from GPU_DEV_API_URL)[/dim]"
+        elif api_url_config:
+            api_url_display = f"{api_url_config} [dim](from config)[/dim]"
+        elif api_url_default:
+            api_url_display = f"{api_url_default} [dim](environment default)[/dim]"
+        else:
+            api_url_display = "[red]Not set - run: gpu-dev config set api_url <url>[/red]"
 
         config_text = (
             f"[green]Configuration (Zero-Config)[/green]\n\n"
             f"[blue]Environment:[/blue] {current_env}\n"
             f"[blue]Region:[/blue] {config.aws_region} ({env_source})\n"
-            f"[blue]Queue:[/blue] {config.queue_name}\n"
+            f"[blue]API URL:[/blue] {api_url_display}\n"
             f"[blue]Cluster:[/blue] {config.cluster_name}\n"
             f"[blue]User:[/blue] {identity['arn']}\n"
             f"[blue]Account:[/blue] {identity['account']}\n\n"
@@ -2945,20 +3134,25 @@ def show() -> None:
 def set(key: str, value: str) -> None:
     """Set a configuration value
 
-    Configure user-specific settings. Currently only GitHub username is configurable.
-    Your GitHub username is used to fetch SSH public keys for server access.
+    Configure user-specific settings for the GPU Dev CLI.
 
     Arguments:
-        KEY: Configuration key to set (currently: github_user)
+        KEY: Configuration key to set (github_user, api_url)
         VALUE: Value to set for the configuration key
 
     \b
     Examples:
-        gpu-dev config set github_user johndoe   # Set GitHub username to 'johndoe'
-        gpu-dev config set github_user jane.doe  # GitHub usernames with dots work too
+        gpu-dev config set github_user johndoe           # Set GitHub username
+        gpu-dev config set api_url https://d123.cloudfront.net  # Set API URL
 
     Valid keys:
         github_user: Your GitHub username (used to fetch SSH public keys)
+        api_url:     API service URL (HTTPS CloudFront endpoint)
+
+    \b
+    Get API URL from terraform:
+        cd terraform-gpu-devservers
+        tofu output api_service_url
 
     Note: SSH keys must be public on your GitHub profile (github.com/username.keys)
     Note: SSH config files are automatically created in ~/.devgpu/ for each reservation
@@ -2967,12 +3161,21 @@ def set(key: str, value: str) -> None:
         config = load_config()
 
         # Validate known keys
-        valid_keys = ["github_user"]
+        valid_keys = ["github_user", "api_url"]
         if key not in valid_keys:
             rprint(
                 f"[red]❌ Unknown config key '{key}'. Valid keys: {', '.join(valid_keys)}[/red]"
             )
             return
+
+        # Validate api_url format if setting that key
+        if key == "api_url":
+            if not value.startswith(("http://", "https://")):
+                rprint(
+                    f"[red]❌ API URL must start with http:// or https://[/red]"
+                )
+                return
+            value = value.rstrip("/")  # Remove trailing slash
 
         config.save_config(key, value)
         rprint(f"[green]✅ Set {key} = {value}[/green]")
@@ -3575,7 +3778,7 @@ def disk_create(disk_name: str):
         return
 
     try:
-        # Send create request to SQS
+        # Send create request
         operation_id = create_disk(disk_name, user_id, config)
         if not operation_id:
             return
@@ -3686,7 +3889,7 @@ def disk_delete(disk_name: str, yes: bool):
             return
 
     try:
-        # Send delete request to SQS
+        # Send delete request
         operation_id = delete_disk(disk_name, user_id, config)
         if not operation_id:
             return
