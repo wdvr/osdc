@@ -544,9 +544,11 @@ def update_reservation_status(
                     return False
             
             logger.debug(f"Updated reservation {reservation_id} status to {new_status}")
-        
+            # Capture rowcount before exiting context manager (cursor closed after)
+            rows_updated = cur.rowcount
+
         # Add to history if requested and update was successful
-        if cur.rowcount > 0 and add_to_history:
+        if rows_updated > 0 and add_to_history:
             status_entry = {
                 'status': new_status,
                 'timestamp': datetime.now(UTC).isoformat(),
@@ -555,10 +557,10 @@ def update_reservation_status(
                 status_entry['message'] = detailed_status
             if failure_reason:
                 status_entry['failure_reason'] = failure_reason
-            
+
             append_status_history(reservation_id, status_entry)
-        
-        return cur.rowcount > 0
+
+        return rows_updated > 0
         
     except Exception as e:
         logger.error(f"Error updating reservation status for {reservation_id}: {e}", exc_info=True)

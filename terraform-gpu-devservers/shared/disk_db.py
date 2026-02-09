@@ -279,16 +279,28 @@ def update_disk(user_id: str, disk_name: str, updates: Dict[str, Any]) -> bool:
     Returns:
         True if successful, False otherwise
     """
+    # Whitelist of allowed field names for SQL injection protection
+    ALLOWED_DISK_FIELDS = {
+        'size_gb', 'disk_size', 'last_used', 'in_use', 'reservation_id',
+        'is_backing_up', 'is_deleted', 'delete_date', 'snapshot_count',
+        'pending_snapshot_count', 'ebs_volume_id', 'last_snapshot_at',
+        'operation_id', 'operation_status', 'operation_error',
+        'latest_snapshot_content_s3', 'last_updated'
+    }
+
     try:
         if not updates:
             logger.warning(f"No updates provided for disk '{disk_name}'")
             return True
-        
-        # Build SET clause dynamically
+
+        # Build SET clause dynamically with field validation
         set_clauses = []
         params = []
-        
+
         for field, value in updates.items():
+            if field not in ALLOWED_DISK_FIELDS:
+                logger.error(f"Invalid field name rejected: {field}")
+                raise ValueError(f"Invalid field name: {field}")
             set_clauses.append(f"{field} = %s")
             params.append(value)
         

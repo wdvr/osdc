@@ -1174,11 +1174,27 @@ async def cancel_job(
 ) -> JobActionResponse:
     """
     Cancel a running or queued job
-    
+
     Sends a cancellation action to PGMQ for the Job Processor to handle.
     """
     try:
         async with db_pool.acquire() as conn:
+            # Authorization check: verify user owns this job
+            owner = await conn.fetchval(
+                "SELECT user_id FROM reservations WHERE reservation_id = $1",
+                job_id
+            )
+            if owner is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {job_id} not found"
+                )
+            if owner != user_info["username"]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to cancel this job"
+                )
+
             # Create cancellation message
             message = {
                 "action": "cancel",
@@ -1220,11 +1236,27 @@ async def extend_job(
 ) -> JobActionResponse:
     """
     Extend the duration of a running job
-    
+
     Sends an extend action to PGMQ for the Job Processor to handle.
     """
     try:
         async with db_pool.acquire() as conn:
+            # Authorization check: verify user owns this job
+            owner = await conn.fetchval(
+                "SELECT user_id FROM reservations WHERE reservation_id = $1",
+                job_id
+            )
+            if owner is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {job_id} not found"
+                )
+            if owner != user_info["username"]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to extend this job"
+                )
+
             # Create extend message
             message = {
                 "action": "extend",
@@ -1269,11 +1301,27 @@ async def enable_jupyter(
 ) -> JobActionResponse:
     """
     Enable Jupyter Lab for a running job
-    
+
     Sends an enable_jupyter action to PGMQ for the Job Processor to handle.
     """
     try:
         async with db_pool.acquire() as conn:
+            # Authorization check: verify user owns this job
+            owner = await conn.fetchval(
+                "SELECT user_id FROM reservations WHERE reservation_id = $1",
+                job_id
+            )
+            if owner is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {job_id} not found"
+                )
+            if owner != user_info["username"]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to modify this job"
+                )
+
             # Create enable jupyter message
             message = {
                 "action": "enable_jupyter",
@@ -1319,6 +1367,22 @@ async def disable_jupyter(
     """
     try:
         async with db_pool.acquire() as conn:
+            # Authorization check: verify user owns this job
+            owner = await conn.fetchval(
+                "SELECT user_id FROM reservations WHERE reservation_id = $1",
+                job_id
+            )
+            if owner is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {job_id} not found"
+                )
+            if owner != user_info["username"]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to modify this job"
+                )
+
             # Create disable jupyter message
             message = {
                 "action": "disable_jupyter",
@@ -1360,12 +1424,28 @@ async def add_user_to_job(
 ) -> JobActionResponse:
     """
     Add a user's SSH keys to a running job
-    
+
     Fetches SSH keys from GitHub and adds them to the job's authorized_keys.
     Sends an add_user action to PGMQ for the Job Processor to handle.
     """
     try:
         async with db_pool.acquire() as conn:
+            # Authorization check: verify user owns this job
+            owner = await conn.fetchval(
+                "SELECT user_id FROM reservations WHERE reservation_id = $1",
+                job_id
+            )
+            if owner is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {job_id} not found"
+                )
+            if owner != user_info["username"]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to modify this job"
+                )
+
             # Create add user message
             message = {
                 "action": "add_user",
