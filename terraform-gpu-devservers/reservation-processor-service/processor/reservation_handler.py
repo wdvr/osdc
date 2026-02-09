@@ -1064,25 +1064,6 @@ def find_reservation_by_prefix(reservation_id: str, user_id: str = None) -> dict
         raise
 
 
-# query_user_reservations_with_prefix removed - DynamoDB-specific function no longer needed
-# Use list_reservations_by_user() from shared.reservation_db instead
-
-def query_user_reservations_with_prefix_REMOVED(table, user_id: str, reservation_prefix: str) -> list:
-    """REMOVED: Query user reservations using UserIndex GSI and filter by prefix"""
-    # This function has been removed as part of the PostgreSQL migration
-    # Use list_reservations_by_user() from shared.reservation_db instead
-    raise NotImplementedError("This function has been migrated to PostgreSQL. Use list_reservations_by_user() instead.")
-
-
-# scan_all_reservations_with_prefix removed - DynamoDB-specific function no longer needed
-# Use get_reservation() with LIKE queries in PostgreSQL instead
-
-def scan_all_reservations_with_prefix_REMOVED(table, reservation_prefix: str) -> list:
-    """REMOVED: Scan all reservations with prefix - fallback when no user_id provided"""
-    # This function has been removed as part of the PostgreSQL migration
-    raise NotImplementedError("This function has been migrated to PostgreSQL. Use appropriate query functions instead.")
-
-
 def handler(event, context):
     """Main Lambda handler"""
     try:
@@ -1155,7 +1136,7 @@ def handler(event, context):
                         success = process_jupyter_action(record)
                     elif action == "add_user":
                         success = process_add_user_action(record)
-                    elif action == "extend_reservation":
+                    elif action in ["extend_reservation", "extend"]:
                         success = process_extend_reservation_action(record)
                     elif action == "delete_disk":
                         success = process_delete_disk_action(record)
@@ -4028,20 +4009,20 @@ export GPU_DEV_USER_ID="{user_id or 'dev'}"
 check_warnings() {{
     # Check for startup script still running
     if [ -f /home/dev/STARTUP_SCRIPT_RUNNING.txt ]; then
-        echo -e "\\033[1;33m\$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
+        echo -e "\\033[1;33m$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
     fi
     # Check for expiry warnings
     for warning_file in /home/dev/WARN_EXPIRES_IN_*MIN.txt; do
-        if [ -f "\$warning_file" ]; then
-            minutes=\$(echo "\$warning_file" | sed 's/.*WARN_EXPIRES_IN_\\([0-9]*\\)MIN.txt/\\1/')
-            echo -e "\\033[1;31m🚨 URGENT: Server expires in <\${{minutes}} minutes! 🚨\\033[0m"
+        if [ -f "$warning_file" ]; then
+            minutes=$(echo "$warning_file" | sed 's/.*WARN_EXPIRES_IN_\\([0-9]*\\)MIN.txt/\\1/')
+            echo -e "\\033[1;31m🚨 URGENT: Server expires in <${{minutes}} minutes! 🚨\\033[0m"
             return
         fi
     done 2>/dev/null
 }}
 
 # Run warning check before every command prompt
-PROMPT_COMMAND="check_warnings; \$PROMPT_COMMAND"
+PROMPT_COMMAND="check_warnings; $PROMPT_COMMAND"
 EOF_BASHRC_EXT
 
                         cat > /home/dev/.zshrc_ext << EOF_ZSHRC_EXT
@@ -4056,16 +4037,16 @@ export GPU_DEV_USER_ID="{user_id or 'dev'}"
 check_warnings() {{
     # Check for startup script still running
     if [[ -f /home/dev/STARTUP_SCRIPT_RUNNING.txt ]]; then
-        echo -e "\\033[1;33m\$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
+        echo -e "\\033[1;33m$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
     fi
     # Check for expiry warnings
     setopt NULL_GLOB 2>/dev/null
     local warning_files=(/home/dev/WARN_EXPIRES_IN_*MIN.txt)
-    if [[ \${{#warning_files[@]}} -gt 0 ]] && [[ -f "\${{warning_files[1]}}" ]]; then
-        local minutes="\${{warning_files[1]:t:r}}"
-        minutes="\${{minutes#WARN_EXPIRES_IN_}}"
-        minutes="\${{minutes%MIN}}"
-        echo -e "\\033[1;31m🚨 URGENT: Server expires in <\${{minutes}} minutes! 🚨\\033[0m"
+    if [[ ${{#warning_files[@]}} -gt 0 ]] && [[ -f "${{warning_files[1]}}" ]]; then
+        local minutes="${{warning_files[1]:t:r}}"
+        minutes="${{minutes#WARN_EXPIRES_IN_}}"
+        minutes="${{minutes%MIN}}"
+        echo -e "\\033[1;31m🚨 URGENT: Server expires in <${{minutes}} minutes! 🚨\\033[0m"
     fi
 }}
 

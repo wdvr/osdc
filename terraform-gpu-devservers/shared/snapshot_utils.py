@@ -1,101 +1,115 @@
 """
 Shared snapshot utilities for GPU development server services
+
+This module provides cloud-agnostic snapshot management using the provider
+abstraction layer. It supports AWS, GCP, and custom storage backends.
 """
 
-import boto3
 import time
 import logging
 import os
-import subprocess
-import json
+from datetime import datetime, timedelta, UTC
 from kubernetes import client
 from kubernetes.stream import stream
-from decimal import Decimal
 
 from .db_pool import get_db_cursor
 
+# Import provider interface - lazy loaded to avoid circular imports
+_provider = None
+
+def _get_provider():
+    """Get the cloud provider instance (lazy initialization)."""
+    global _provider
+    if _provider is None:
+        import sys
+        # Add parent directory to path if providers module not found
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
+        from providers import get_cloud_provider
+        _provider = get_cloud_provider()
+    return _provider
+
 logger = logging.getLogger(__name__)
-ec2_client = boto3.client("ec2")
-s3_client = boto3.client("s3")
 
 
 def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name=None, content_s3_path=None, disk_size=None):
     """
     Safely create snapshot, avoiding duplicates if one is already in progress.
-    
+
     Returns (snapshot_id, was_created) on success.
-    
+
     IMPORTANT: If snapshot creation succeeds but database update fails, this function
     will attempt to delete the snapshot and raise an exception to prevent inconsistent state.
-    The operation is atomic: both AWS snapshot AND database update must succeed.
+    The operation is atomic: both cloud snapshot AND database update must succeed.
 
     Args:
-        volume_id: EBS volume ID
+        volume_id: Volume ID (cloud-provider-specific format)
         user_id: User identifier (email or username)
         snapshot_type: Type of snapshot (shutdown, migration, etc.)
         disk_name: Named disk identifier (for tagged disks) - if provided, database will be updated
-        content_s3_path: S3 path to disk contents listing
+        content_s3_path: Object storage path to disk contents listing
         disk_size: Disk usage size (e.g., "1.2G") from du -sh
-        
+
     Returns:
         tuple: (snapshot_id, was_created) where was_created is True for new snapshots, False for existing
-        
+
     Raises:
         Exception: If snapshot creation fails, or if database update fails (after attempting cleanup)
     """
+    provider = _get_provider()
+
     try:
         logger.info(f"Checking for existing snapshots for volume {volume_id}")
 
         # Check for any in-progress snapshots for this volume
-        ongoing_response = ec2_client.describe_snapshots(
-            OwnerIds=["self"],
-            Filters=[
-                {"Name": "volume-id", "Values": [volume_id]},
-                {"Name": "status", "Values": ["pending"]}
-            ]
+        ongoing_snapshots = provider.list_snapshots(
+            volume_id=volume_id,
+            status=["pending"],
+            use_pagination=False  # Small result set expected
         )
 
-        ongoing_snapshots = ongoing_response.get('Snapshots', [])
         if ongoing_snapshots:
-            latest_ongoing = max(ongoing_snapshots, key=lambda s: s['StartTime'])
-            logger.info(f"Found ongoing snapshot {latest_ongoing['SnapshotId']} for volume {volume_id}")
-            return latest_ongoing['SnapshotId'], False
+            # Sort by created_at and get latest
+            latest_ongoing = max(ongoing_snapshots, key=lambda s: s.created_at)
+            logger.info(f"Found ongoing snapshot {latest_ongoing.snapshot_id} for volume {volume_id}")
+            return latest_ongoing.snapshot_id, False
 
         # No ongoing snapshots - create a new one
         logger.info(f"Creating new {snapshot_type} snapshot for volume {volume_id}")
 
         timestamp = int(time.time())
 
-        tags = [
-            {"Key": "Name", "Value": f"gpu-dev-{snapshot_type}-{user_id.split('@')[0]}-{timestamp}"},
-            {"Key": "gpu-dev-user", "Value": user_id},
-            {"Key": "gpu-dev-snapshot-type", "Value": snapshot_type},
-            {"Key": "SnapshotType", "Value": snapshot_type},
-            {"Key": "created_at", "Value": str(timestamp)},
-        ]
+        # Build tags dict for provider
+        tags = {
+            "Name": f"gpu-dev-{snapshot_type}-{user_id.split('@')[0]}-{timestamp}",
+            "gpu-dev-user": user_id,
+            "gpu-dev-snapshot-type": snapshot_type,
+            "SnapshotType": snapshot_type,
+            "created_at": str(timestamp),
+        }
 
-        # Add disk_name tag if provided
+        # Add optional tags
         if disk_name:
-            tags.append({"Key": "disk_name", "Value": disk_name})
-
-        # Add content_s3_path tag if provided
+            tags["disk_name"] = disk_name
         if content_s3_path:
-            tags.append({"Key": "snapshot_content_s3", "Value": content_s3_path})
-
-        # Add disk_size tag if provided
+            tags["snapshot_content_s3"] = content_s3_path
         if disk_size:
-            tags.append({"Key": "disk_size", "Value": disk_size})
+            tags["disk_size"] = disk_size
 
-        snapshot_response = ec2_client.create_snapshot(
-            VolumeId=volume_id,
-            Description=f"gpu-dev {snapshot_type} snapshot for {user_id}" + (f" (disk: {disk_name})" if disk_name else "") + (f" ({disk_size})" if disk_size else ""),
-            TagSpecifications=[{
-                "ResourceType": "snapshot",
-                "Tags": tags
-            }]
+        description = f"gpu-dev {snapshot_type} snapshot for {user_id}"
+        if disk_name:
+            description += f" (disk: {disk_name})"
+        if disk_size:
+            description += f" ({disk_size})"
+
+        snapshot_info = provider.create_snapshot(
+            volume_id=volume_id,
+            description=description,
+            tags=tags,
         )
 
-        snapshot_id = snapshot_response["SnapshotId"]
+        snapshot_id = snapshot_info.snapshot_id
         logger.info(f"Created new snapshot {snapshot_id} for volume {volume_id}" + (f" (disk: {disk_name})" if disk_name else "") + (f" size: {disk_size}" if disk_size else ""))
 
         # Update PostgreSQL to mark disk as backing up
@@ -110,31 +124,31 @@ def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name
                             pending_snapshot_count = COALESCE(pending_snapshot_count, 0) + 1
                         WHERE user_id = %s AND disk_name = %s
                     """, (user_id, disk_name))
-                    
+
                     # Verify the update actually affected a row
                     if cur.rowcount == 0:
                         raise Exception(f"Disk '{disk_name}' not found in database for user {user_id}")
-                
+
                 logger.debug(f"Updated database for disk '{disk_name}' - marked as backing up")
             except Exception as db_error:
                 # Database update failed - snapshot created but database state is inconsistent
-                # This typically means the disk is orphaned (exists in AWS but not in database)
+                # This typically means the disk is orphaned (exists in cloud but not in database)
                 logger.error(
                     f"CRITICAL: Snapshot {snapshot_id} created successfully, "
                     f"but database update failed for disk '{disk_name}': {db_error}"
                 )
-                
-                # Clean up both the snapshot and the orphaned volume
+
+                # Clean up both the snapshot and the orphaned volume using provider
                 try:
                     logger.warning(f"Attempting to delete snapshot {snapshot_id} to maintain consistency")
-                    ec2_client.delete_snapshot(SnapshotId=snapshot_id)
+                    provider.delete_snapshot(snapshot_id)
                     logger.info(f"Successfully deleted snapshot {snapshot_id}")
                 except Exception as cleanup_error:
                     logger.error(
                         f"Failed to delete snapshot {snapshot_id}: {cleanup_error}. "
                         f"Snapshot exists but is not tracked in database. Manual cleanup required!"
                     )
-                
+
                 # If disk not found in database, also delete the orphaned volume
                 if "not found in database" in str(db_error).lower():
                     try:
@@ -142,14 +156,14 @@ def safe_create_snapshot(volume_id, user_id, snapshot_type="shutdown", disk_name
                             f"Disk '{disk_name}' not found in database - "
                             f"deleting orphaned volume {volume_id}"
                         )
-                        ec2_client.delete_volume(VolumeId=volume_id)
+                        provider.delete_volume(volume_id)
                         logger.info(f"Successfully deleted orphaned volume {volume_id}")
                     except Exception as volume_cleanup_error:
                         logger.error(
                             f"Failed to delete orphaned volume {volume_id}: {volume_cleanup_error}. "
                             f"Manual cleanup may be required."
                         )
-                
+
                 # Propagate the error so caller knows the operation failed
                 raise Exception(
                     f"Snapshot creation failed: database update error for disk '{disk_name}': {db_error}"
@@ -259,34 +273,27 @@ def cleanup_old_snapshots(user_id, keep_count=3, max_age_days=7, max_deletions_p
     """
     Clean up old snapshots for a user, keeping only the most recent ones.
     Keeps 'keep_count' newest snapshots and deletes any older than max_age_days.
-    Limited to max_deletions_per_run to prevent lambda timeouts.
+    Limited to max_deletions_per_run to prevent service timeouts.
     Returns number of snapshots deleted.
     """
-    try:
-        from datetime import datetime, timedelta, UTC
+    provider = _get_provider()
 
+    try:
         logger.info(f"Cleaning up old snapshots for user {user_id}")
 
-        # Get all snapshots for this user (with pagination)
-        paginator = ec2_client.get_paginator('describe_snapshots')
-        page_iterator = paginator.paginate(
-            OwnerIds=["self"],
-            Filters=[
-                {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-                {"Name": "status", "Values": ["completed"]}
-            ],
-            PaginationConfig={'PageSize': 100}
+        # Get all completed snapshots for this user using provider
+        snapshots = provider.list_snapshots(
+            filters={"gpu-dev-user": user_id},
+            status=["completed"],
+            use_pagination=True
         )
 
-        snapshots = []
-        for page in page_iterator:
-            snapshots.extend(page.get('Snapshots', []))
         if len(snapshots) <= keep_count:
             logger.debug(f"User {user_id} has {len(snapshots)} snapshots, no cleanup needed")
             return 0
 
-        # Sort by creation time (newest first)
-        snapshots.sort(key=lambda s: s['StartTime'], reverse=True)
+        # Sort by creation time (newest first) - created_at is ISO format string
+        snapshots.sort(key=lambda s: s.created_at, reverse=True)
 
         cutoff_date = datetime.now(UTC) - timedelta(days=max_age_days)
         deleted_count = 0
@@ -297,8 +304,9 @@ def cleanup_old_snapshots(user_id, keep_count=3, max_age_days=7, max_deletions_p
                 logger.info(f"Reached max deletions per run ({max_deletions_per_run}) for user {user_id}")
                 break
 
-            snapshot_id = snapshot['SnapshotId']
-            snapshot_date = snapshot['StartTime'].replace(tzinfo=None)
+            snapshot_id = snapshot.snapshot_id
+            # Parse ISO format timestamp
+            snapshot_date = datetime.fromisoformat(snapshot.created_at.replace('Z', '+00:00'))
 
             # Keep the newest 'keep_count' snapshots
             if i < keep_count:
@@ -309,7 +317,7 @@ def cleanup_old_snapshots(user_id, keep_count=3, max_age_days=7, max_deletions_p
             if snapshot_date < cutoff_date or i >= keep_count:
                 try:
                     logger.info(f"Deleting old snapshot {snapshot_id} from {snapshot_date}")
-                    ec2_client.delete_snapshot(SnapshotId=snapshot_id)
+                    provider.delete_snapshot(snapshot_id)
                     deleted_count += 1
                 except Exception as delete_error:
                     logger.warning(f"Could not delete snapshot {snapshot_id}: {delete_error}")
@@ -327,49 +335,38 @@ def get_latest_snapshot(user_id, volume_id=None, include_pending=False):
     Get the most recent snapshot for a user.
     If volume_id provided, gets snapshots for that specific volume.
     If include_pending is True, includes pending snapshots.
-    Returns the latest snapshot dict or None.
+    Returns the latest SnapshotInfo or None.
     """
+    provider = _get_provider()
+
     try:
         status_values = ["completed"]
         if include_pending:
-            status_values.extend(["pending"])
+            status_values.append("pending")
 
-        filters = [
-            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
-            {"Name": "status", "Values": status_values},
-        ]
-
-        if volume_id:
-            filters.append({"Name": "volume-id", "Values": [volume_id]})
-
-        # Use pagination to handle users with many snapshots
-        paginator = ec2_client.get_paginator('describe_snapshots')
-        page_iterator = paginator.paginate(
-            OwnerIds=["self"],
-            Filters=filters,
-            PaginationConfig={'PageSize': 100}
+        # Get snapshots using provider
+        snapshots = provider.list_snapshots(
+            filters={"gpu-dev-user": user_id},
+            volume_id=volume_id,
+            status=status_values,
+            use_pagination=True
         )
 
-        snapshots = []
-        for page in page_iterator:
-            snapshots.extend(page.get('Snapshots', []))
-
         # Filter out soft-deleted snapshots (those with delete-date tag)
-        active_snapshots = []
-        for snap in snapshots:
-            tags = {tag['Key']: tag['Value'] for tag in snap.get('Tags', [])}
-            if 'delete-date' not in tags:
-                active_snapshots.append(snap)
+        active_snapshots = [
+            snap for snap in snapshots
+            if 'delete-date' not in snap.tags
+        ]
 
         if not active_snapshots:
             status_desc = "completed or pending" if include_pending else "completed"
             logger.info(f"No {status_desc} snapshots found for user {user_id}")
             return None
 
-        # Get most recent snapshot by start time
-        latest_snapshot = max(active_snapshots, key=lambda s: s['StartTime'])
+        # Get most recent snapshot by creation time
+        latest_snapshot = max(active_snapshots, key=lambda s: s.created_at)
         logger.info(
-            f"Found latest snapshot {latest_snapshot['SnapshotId']} ({latest_snapshot['State']}) for user {user_id}")
+            f"Found latest snapshot {latest_snapshot.snapshot_id} ({latest_snapshot.status}) for user {user_id}")
         return latest_snapshot
 
     except Exception as e:
@@ -381,29 +378,22 @@ def cleanup_all_user_snapshots(max_users_per_run=20):
     """
     Run scheduled cleanup of old snapshots for all users.
     This runs separately from expiry processing.
-    Limited to max_users_per_run to prevent lambda timeouts.
+    Limited to max_users_per_run to prevent service timeouts.
     """
+    provider = _get_provider()
+
     try:
         logger.info("Starting scheduled snapshot cleanup for all users")
 
-        # Get all gpu-dev snapshots grouped by user (with pagination)
-        paginator = ec2_client.get_paginator('describe_snapshots')
-        page_iterator = paginator.paginate(
-            OwnerIds=["self"],
-            Filters=[
-                {"Name": "tag-key", "Values": ["gpu-dev-user"]},
-            ],
-            PaginationConfig={'PageSize': 100}
-        )
-
-        all_snapshots = []
-        for page in page_iterator:
-            all_snapshots.extend(page.get('Snapshots', []))
+        # Get all gpu-dev snapshots (those with gpu-dev-user tag)
+        # Note: We need to get all snapshots and group by user since
+        # provider interface doesn't support "tag-key exists" filter
+        all_snapshots = provider.list_snapshots(use_pagination=True)
 
         # Group snapshots by user
         users_snapshots = {}
         for snapshot in all_snapshots:
-            user_tag = next((tag['Value'] for tag in snapshot['Tags'] if tag['Key'] == 'gpu-dev-user'), None)
+            user_tag = snapshot.tags.get('gpu-dev-user')
             if user_tag:
                 if user_tag not in users_snapshots:
                     users_snapshots[user_tag] = []
@@ -435,8 +425,8 @@ def cleanup_all_user_snapshots(max_users_per_run=20):
 
 def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, k8s_client=None, mount_path="/workspace"):
     """
-    Capture disk contents via Kubernetes API exec and upload to S3.
-    Returns tuple (s3_path, disk_size) or (None, None) if failed.
+    Capture disk contents via Kubernetes API exec and upload to object storage.
+    Returns tuple (storage_uri, disk_size) or (None, None) if failed.
 
     Args:
         pod_name: Kubernetes pod name
@@ -448,8 +438,10 @@ def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, 
         mount_path: Mount point in pod (default: /workspace)
 
     Returns:
-        tuple: (s3_path, disk_size) where disk_size is like "1.2G" or None if failed
+        tuple: (storage_uri, disk_size) where disk_size is like "1.2G" or None if failed
     """
+    provider = _get_provider()
+
     try:
         bucket_name = os.environ.get('DISK_CONTENTS_BUCKET')
         if not bucket_name:
@@ -517,11 +509,10 @@ def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, 
             logger.warning(f"Kubernetes exec failed: {exec_error}")
             contents = f"Failed to capture contents: {str(exec_error)}\n\nThis snapshot was created but contents could not be listed."
 
-        # Upload to S3
-        s3_key = f"{user_id}/{disk_name}/{snapshot_id}-contents.txt"
-        s3_path = f"s3://{bucket_name}/{s3_key}"
+        # Upload to object storage using provider
+        object_key = f"{user_id}/{disk_name}/{snapshot_id}-contents.txt"
 
-        logger.info(f"Uploading disk contents to {s3_path}")
+        logger.info(f"Uploading disk contents to {bucket_name}/{object_key}")
 
         metadata = {
             'user_id': user_id,
@@ -535,79 +526,87 @@ def capture_disk_contents(pod_name, namespace, user_id, disk_name, snapshot_id, 
         if disk_size:
             metadata['disk_size'] = disk_size
 
-        s3_client.put_object(
-            Bucket=bucket_name,
-            Key=s3_key,
-            Body=contents.encode('utf-8'),
-            ContentType='text/plain',
-            Metadata=metadata
+        storage_uri = provider.upload_to_object_storage(
+            bucket=bucket_name,
+            key=object_key,
+            content=contents.encode('utf-8'),
+            metadata=metadata,
+            content_type='text/plain'
         )
 
-        logger.info(f"Successfully uploaded disk contents to {s3_path}")
-        return s3_path, disk_size
+        logger.info(f"Successfully uploaded disk contents to {storage_uri}")
+        return storage_uri, disk_size
 
     except Exception as e:
         logger.error(f"Error capturing disk contents: {str(e)}")
         return None, None
 
 
-def get_snapshot_contents(snapshot_id=None, s3_path=None):
+def get_snapshot_contents(snapshot_id=None, storage_uri=None):
     """
-    Fetch snapshot contents from S3.
-    Either snapshot_id or s3_path must be provided.
+    Fetch snapshot contents from object storage.
+    Either snapshot_id or storage_uri must be provided.
 
     Args:
-        snapshot_id: Snapshot ID to fetch contents for (will look up S3 path from tags)
-        s3_path: Direct S3 path (e.g., s3://bucket/user/disk/snap-123-contents.txt)
+        snapshot_id: Snapshot ID to fetch contents for (will look up storage path from tags)
+        storage_uri: Direct storage URI (e.g., s3://bucket/user/disk/snap-123-contents.txt)
 
     Returns:
         str: Contents text or None if not found
     """
-    try:
-        # If snapshot_id provided, look up S3 path from tags
-        if snapshot_id and not s3_path:
-            logger.info(f"Looking up S3 path for snapshot {snapshot_id}")
-            response = ec2_client.describe_snapshots(SnapshotIds=[snapshot_id])
+    provider = _get_provider()
 
-            if not response.get('Snapshots'):
+    try:
+        # If snapshot_id provided, look up storage path from tags
+        if snapshot_id and not storage_uri:
+            logger.info(f"Looking up storage path for snapshot {snapshot_id}")
+            snapshot = provider.get_snapshot(snapshot_id)
+
+            if not snapshot:
                 logger.error(f"Snapshot {snapshot_id} not found")
                 return None
 
-            snapshot = response['Snapshots'][0]
-            tags = {tag['Key']: tag['Value'] for tag in snapshot.get('Tags', [])}
-            s3_path = tags.get('snapshot_content_s3')
+            storage_uri = snapshot.tags.get('snapshot_content_s3')
 
-            if not s3_path:
-                logger.warning(f"Snapshot {snapshot_id} has no content_s3_path tag")
+            if not storage_uri:
+                logger.warning(f"Snapshot {snapshot_id} has no content storage path tag")
                 return None
 
-        if not s3_path:
-            logger.error("No S3 path provided or found")
+        if not storage_uri:
+            logger.error("No storage path provided or found")
             return None
 
-        # Parse S3 path (s3://bucket/key)
-        if not s3_path.startswith('s3://'):
-            logger.error(f"Invalid S3 path format: {s3_path}")
+        # Parse storage URI (s3://bucket/key or gs://bucket/key or file://path)
+        if storage_uri.startswith('s3://') or storage_uri.startswith('gs://'):
+            path_parts = storage_uri[5:].split('/', 1)  # Remove 's3://' or 'gs://' and split bucket/key
+            if len(path_parts) != 2:
+                logger.error(f"Invalid storage URI format: {storage_uri}")
+                return None
+            bucket_name, object_key = path_parts
+        elif storage_uri.startswith('file://'):
+            # Local filesystem path
+            file_path = storage_uri[7:]
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    return f.read()
+            else:
+                logger.error(f"File not found: {file_path}")
+                return None
+        else:
+            logger.error(f"Unsupported storage URI format: {storage_uri}")
             return None
 
-        path_parts = s3_path[5:].split('/', 1)  # Remove 's3://' and split bucket/key
-        if len(path_parts) != 2:
-            logger.error(f"Invalid S3 path format: {s3_path}")
+        logger.info(f"Fetching disk contents from {storage_uri}")
+
+        content_bytes = provider.download_from_object_storage(bucket_name, object_key)
+        if content_bytes is None:
+            logger.error(f"Object not found: {storage_uri}")
             return None
 
-        bucket_name, s3_key = path_parts
-
-        logger.info(f"Fetching disk contents from {s3_path}")
-
-        response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-        contents = response['Body'].read().decode('utf-8')
-
-        logger.info(f"Successfully fetched {len(contents)} bytes from S3")
+        contents = content_bytes.decode('utf-8')
+        logger.info(f"Successfully fetched {len(contents)} bytes from storage")
         return contents
 
-    except s3_client.exceptions.NoSuchKey:
-        logger.error(f"S3 object not found: {s3_path}")
-        return None
     except Exception as e:
         logger.error(f"Error fetching snapshot contents: {str(e)}")
         return None

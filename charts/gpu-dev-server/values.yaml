@@ -1,0 +1,243 @@
+# GPU Dev Server Helm Chart - Default Values
+# This file contains cloud-agnostic defaults
+# Override with values-aws.yaml or values-gcp.yaml for cloud-specific settings
+
+global:
+  # Prefix for resource naming
+  prefix: "gpu-dev"
+  # Environment name
+  environment: "production"
+
+# Namespace configuration
+namespaces:
+  controlplane: "gpu-controlplane"
+  workloads: "gpu-dev"
+
+# Storage configuration - override per cloud provider
+storage:
+  class: "gp3"  # AWS default, override for GCP
+  postgres:
+    size: "100Gi"
+  registry:
+    size: "50Gi"
+
+# PostgreSQL configuration
+postgres:
+  enabled: true
+  image:
+    # Use registry cache in-cluster (ghcr.io/pgmq/pg18-pgmq:v1.8.1)
+    repository: "ghcr.io/pgmq/pg18-pgmq"
+    tag: "v1.8.1"
+    pullPolicy: IfNotPresent
+  auth:
+    database: "gpudev"
+    username: "gpudev"
+    # Password should be set via --set or external secret
+    password: ""
+    existingSecret: ""
+    existingSecretKey: "POSTGRES_PASSWORD"
+  primary:
+    replicas: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "2000m"
+        memory: "4Gi"
+  replica:
+    replicas: 1
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+  # Node selector for postgres pods
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
+
+# Registry cache configuration
+registry:
+  ghcr:
+    enabled: true
+    image:
+      repository: "registry"
+      tag: "2"
+    # Credentials for ghcr.io authentication
+    auth:
+      username: ""
+      token: ""
+      existingSecret: ""
+  dockerhub:
+    enabled: true
+    image:
+      repository: "registry"
+      tag: "2"
+  native:
+    enabled: true
+    image:
+      repository: "registry"
+      tag: "2"
+    tls:
+      enabled: true
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
+
+# API Service configuration
+apiService:
+  enabled: true
+  replicas: 2
+  image:
+    repository: ""  # Set to your registry/api-service
+    tag: "latest"
+    pullPolicy: Always
+  config:
+    queueName: "gpu_reservations"
+    apiKeyTtlHours: "2"
+    allowedAwsRole: "SSOCloudDevGpuReservation"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  service:
+    type: "LoadBalancer"
+    port: 80
+    targetPort: 8000
+  # Cloud-specific service account annotations
+  serviceAccount:
+    annotations: {}
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
+
+# Reservation Processor configuration
+reservationProcessor:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ""  # Set to your registry/reservation-processor
+    tag: "latest"
+    pullPolicy: Always
+  config:
+    queueName: "gpu_reservations"
+    pollIntervalSeconds: "5"
+    visibilityTimeoutSeconds: "900"
+    batchSize: "1"
+    maxReservationHours: "168"
+    defaultTimeoutHours: "4"
+    gpuDevContainerImage: "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel"
+    processorVersion: "0.4.0"
+    minCliVersion: "0.0.1"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  serviceAccount:
+    annotations: {}
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
+
+# Availability Updater CronJob configuration
+availabilityUpdater:
+  enabled: true
+  schedule: "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
+  image:
+    repository: ""  # Set to your registry/availability-updater
+    tag: "latest"
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  serviceAccount:
+    annotations: {}
+  nodeSelector:
+    NodeType: "cpu"
+
+# Reservation Expiry CronJob configuration
+reservationExpiry:
+  enabled: true
+  schedule: "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
+  image:
+    repository: ""  # Set to your registry/reservation-expiry
+    tag: "latest"
+    pullPolicy: Always
+  config:
+    warningMinutes: "30"
+    gracePeriodSeconds: "120"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  serviceAccount:
+    annotations: {}
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
+
+# NVIDIA GPU Operator / Device Plugin
+nvidia:
+  devicePlugin:
+    enabled: true
+
+# Database migration job
+databaseMigration:
+  enabled: true
+  image:
+    repository: "postgres"
+    tag: "16-alpine"
+
+# Cloud provider configuration (set in values-aws.yaml or values-gcp.yaml)
+cloudProvider:
+  name: ""  # "aws" or "gcp" or "custom"
+  region: ""
+  # AWS-specific
+  aws:
+    eksClusterName: ""
+    primaryAvailabilityZone: ""
+    efsSecurityGroupId: ""
+    efsSubnetIds: ""
+    ccacheSharedEfsId: ""
+    ecrRepositoryUrl: ""
+  # GCP-specific
+  gcp:
+    gkeClusterName: ""
+    zone: ""
+    projectId: ""

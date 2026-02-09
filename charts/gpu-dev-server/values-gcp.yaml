@@ -1,0 +1,45 @@
+# GCP-specific overrides for GPU Dev Server
+# Usage: helm install gpu-dev ./charts/gpu-dev-server -f values-gcp.yaml
+
+cloudProvider:
+  name: "gcp"
+  region: "us-central1"  # Override as needed
+  gcp:
+    gkeClusterName: ""  # Set to your GKE cluster name
+    zone: "us-central1-a"
+    projectId: ""
+
+# GCP uses pd-ssd storage class
+storage:
+  class: "pd-ssd"
+
+# Service account annotations for Workload Identity
+apiService:
+  serviceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: ""  # api-service@PROJECT.iam.gserviceaccount.com
+
+reservationProcessor:
+  serviceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: ""  # reservation-processor@PROJECT.iam.gserviceaccount.com
+
+availabilityUpdater:
+  serviceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: ""  # availability-updater@PROJECT.iam.gserviceaccount.com
+
+reservationExpiry:
+  serviceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: ""  # reservation-expiry@PROJECT.iam.gserviceaccount.com
+
+# GCP-specific registry configuration
+registry:
+  # GCP Artifact Registry can be used instead of ghcr cache
+  ghcr:
+    enabled: true
+  dockerhub:
+    enabled: true
+  native:
+    enabled: true

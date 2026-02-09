@@ -1,0 +1,44 @@
+{{- if .Values.postgres.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gpu-dev-server.postgresPrimaryService" . }}
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: postgres
+    role: primary
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    app: postgres
+    role: primary
+---
+{{- if gt (int .Values.postgres.replica.replicas) 0 }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gpu-dev-server.postgresReplicaService" . }}
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: postgres
+    role: replica
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    app: postgres
+    role: replica
+{{- end }}
+{{- end }}

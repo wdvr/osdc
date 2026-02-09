@@ -1,5 +1,6 @@
 """Interactive CLI components for GPU Developer CLI"""
 
+import re
 import sys
 from typing import Dict, List, Optional, Any
 
@@ -82,11 +83,11 @@ def select_gpu_type_interactive(
             wait_display = "Unknown"
             status_indicator = "⚠️"
         elif est_wait < 60:
-            wait_display = f"{int(est_wait)}min"
+            wait_display = f"{round(est_wait)}min"
             status_indicator = "⏳"
         else:
             hours = int(est_wait // 60)
-            minutes = int(est_wait % 60)
+            minutes = round(est_wait % 60)
             if minutes == 0:
                 wait_display = f"{hours}h"
             else:
@@ -160,8 +161,11 @@ def select_gpu_count_interactive(gpu_type: str, max_gpus: int) -> Optional[int]:
     valid_counts = [count for count in valid_counts if count <= max_gpus]
 
     # Add multinode options (multiples of max_gpus)
-    multinode_counts = [
-        count for count in multinode_counts if count % max_gpus == 0]
+    if max_gpus > 0:
+        multinode_counts = [
+            count for count in multinode_counts if count % max_gpus == 0]
+    else:
+        multinode_counts = []
 
     choices = []
 
@@ -537,11 +541,11 @@ def _validate_github_username(username: str) -> bool:
         return "GitHub username cannot be empty"
 
     username = username.strip()
-    if not username.replace("-", "").replace("_", "").replace(".", "").isalnum():
-        return "Invalid GitHub username format"
-
-    if len(username) > 39:  # GitHub's max username length
+    if len(username) > 39:
         return "GitHub username too long (max 39 characters)"
+
+    if not re.match(r'^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$', username):
+        return "Invalid GitHub username format (alphanumeric and hyphens only, cannot start/end with hyphen)"
 
     return True
 
@@ -550,8 +554,8 @@ def _validate_extension(hours_str: str) -> bool:
     """Validate extension hours input"""
     try:
         hours = float(hours_str)
-        if hours <= 0:
-            return "Extension hours must be positive"
+        if hours < 1:
+            return "Minimum extension is 1 hour"
         if hours > 24:
             return "Maximum extension is 24 hours"
         return True
@@ -695,7 +699,6 @@ def _validate_disk_name(disk_name: str) -> bool:
     disk_name = disk_name.strip()
 
     # Check alphanumeric + hyphens + underscores
-    import re
     if not re.match(r'^[a-zA-Z0-9_-]+$', disk_name):
         return "Disk name must contain only letters, numbers, hyphens, and underscores"
 
