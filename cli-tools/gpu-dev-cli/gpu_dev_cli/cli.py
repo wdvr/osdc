@@ -16,6 +16,7 @@ from rich.live import Live
 from .auth import authenticate_user, validate_ssh_key_matches_github_user
 from .reservations import (
     ReservationManager,
+    _extract_ip_from_reservation,
     _generate_vscode_command,
     _add_agent_forwarding_to_ssh,
     create_ssh_config_for_reservation,
@@ -101,21 +102,6 @@ def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
     except (ValueError, TypeError):
         # Fallback to original format
         return str(timestamp_str)[:19] if len(str(timestamp_str)) > 10 else str(timestamp_str)
-
-
-def _extract_ip_from_reservation(reservation: dict) -> str:
-    """Extract IP:Port from reservation data (each pod has unique port on shared node IP)"""
-    # The API returns node_ip and node_port from the database
-    # Multiple pods can share the same node_ip, but each has a unique node_port
-    node_ip = reservation.get("node_ip")
-    node_port = reservation.get("node_port")
-    
-    if node_ip and node_port:
-        return f"{node_ip}:{node_port}"
-    elif node_ip:
-        return node_ip
-    
-    return "N/A"
 
 
 def _format_expires_with_remaining(expires_at) -> str:
@@ -788,10 +774,14 @@ def reserve(
     Authentication: Uses your AWS credentials and GitHub SSH keys
     """
     try:
+        # Track if user explicitly requests no persistent disk
+        explicit_no_disk = False
+
         # Handle --disk none (case insensitive) to explicitly request no persistent disk
         explicit_no_disk_from_param = False
         if disk and disk.lower() == "none":
             explicit_no_disk_from_param = True
+            explicit_no_disk = True
             disk = None
 
         # Determine if we should use interactive mode
@@ -915,9 +905,6 @@ def reserve(
                         return
             else:
                 gpu_count = int(gpus)
-
-            # Track if user explicitly requests no persistent disk
-            explicit_no_disk = False
 
             # Interactive disk selection (if not multinode - only master node gets persistent disk)
             # This comes BEFORE duration so user knows what they're reserving
@@ -1161,9 +1148,6 @@ def reserve(
                 live.update(Spinner("dots", text="🔐 Validating SSH key..."))
                 if not _validate_ssh_key_or_exit(config, live):
                     return
-
-                # Track if user explicitly requests no persistent disk
-                explicit_no_disk = False
 
                 # Validate disk if specified
                 if disk:
@@ -1614,6 +1598,10 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                     created_dt = datetime.fromtimestamp(
                                         created_at, tz=timezone.utc)
 
+                                # Ensure timezone-aware before comparing
+                                if created_dt.tzinfo is None:
+                                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+
                                 if created_dt >= one_hour_ago:
                                     filtered_reservations.append(reservation)
                             except (ValueError, TypeError):
@@ -1939,6 +1927,10 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                                     created_dt = naive_dt.replace(tzinfo=timezone.utc)
                                             else:
                                                 created_dt = datetime.fromtimestamp(created_at, tz=timezone.utc)
+
+                                            # Ensure timezone-aware before comparing
+                                            if created_dt.tzinfo is None:
+                                                created_dt = created_dt.replace(tzinfo=timezone.utc)
 
                                             if created_dt >= one_hour_ago:
                                                 filtered_reservations.append(reservation)
@@ -3441,10 +3433,7 @@ def edit(
 
         # Handle extension request
         if extend is not None:
-            # Validate extension limits
-            if extend <= 0:
-                rprint("[red]❌ Extension hours must be positive[/red]")
-                return
+            # Validate extension limits (minimum 1 hour already checked above)
             if extend > 24:
                 rprint("[red]❌ Maximum extension is 24 hours[/red]")
                 return

@@ -49,6 +49,10 @@ BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "1"))
 MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "50"))
 MAX_RETRIES = 3  # Maximum retry attempts before archiving
 
+# Named constants for clarity
+PENDING_JOB_WARNING_THRESHOLD_SECONDS = 300  # Warn if job pending > 5 minutes
+STATUS_LOG_INTERVAL = 12  # Log "no messages" every N polls (12 * 5s = ~1 minute)
+
 # Job tracking: msg_id -> {"job_name": str, "created_at": timestamp}
 active_jobs: Dict[int, Dict[str, Any]] = {}
 
@@ -149,7 +153,7 @@ def check_job_status(job_manager: JobManager, msg_id: int, job_info: Dict[str, A
         # Still pending - check if it's been too long
         created_at = job_info.get("created_at", 0)
         age_seconds = time.time() - created_at
-        if age_seconds > 300:  # 5 minutes
+        if age_seconds > PENDING_JOB_WARNING_THRESHOLD_SECONDS:
             logger.warning(f"⚠️  Job {job_name} (msg {msg_id}) pending for {age_seconds:.0f}s")
 
 
@@ -172,6 +176,11 @@ def rebuild_active_jobs_from_k8s(job_manager: JobManager):
                 # Extract msg_id from job name: "reservation-worker-123"
                 try:
                     msg_id = int(job_name.split("-")[-1])
+                    if msg_id <= 0:
+                        logger.warning(
+                            f"Skipping job {job_name}: extracted msg_id {msg_id} is not positive"
+                        )
+                        continue
                     active_jobs[msg_id] = {
                         "job_name": job_name,
                         "created_at": job.metadata.creation_timestamp.timestamp() if job.metadata.creation_timestamp else time.time(),
@@ -179,8 +188,10 @@ def rebuild_active_jobs_from_k8s(job_manager: JobManager):
                         "user_id": job.metadata.annotations.get("user_id", "unknown") if job.metadata.annotations else "unknown"
                     }
                     recovered += 1
-                except (ValueError, IndexError, AttributeError) as e:
-                    logger.warning(f"Could not parse job {job_name}: {e}")
+                except (ValueError, IndexError, AttributeError):
+                    logger.warning(
+                        f"Skipping job {job_name}: name does not match expected format 'reservation-worker-<msg_id>'"
+                    )
         
         logger.info(f"✅ Recovered {recovered} active jobs from Kubernetes")
         return recovered
@@ -240,7 +251,10 @@ def process_loop():
         try:
             poll_count += 1
             
-            # Check status of active jobs
+            # Check status of active jobs.
+            # We snapshot keys via list() because check_job_status may delete
+            # entries from active_jobs. This is safe: the poller is single-threaded
+            # (no threading used), so no concurrent mutation can occur.
             if active_jobs:
                 logger.debug(f"Checking status of {len(active_jobs)} active job(s)")
                 for msg_id in list(active_jobs.keys()):
@@ -314,7 +328,7 @@ def process_loop():
                         # Message will become visible again and we'll retry
             else:
                 # No messages - only log occasionally to reduce noise
-                if poll_count % 12 == 0:  # Every minute (12 * 5s)
+                if poll_count % STATUS_LOG_INTERVAL == 0:
                     logger.debug(f"No messages in queue ({len(active_jobs)} active jobs)")
                 
                 time.sleep(POLL_INTERVAL_SECONDS)

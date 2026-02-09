@@ -255,11 +255,15 @@ def try_acquire_disk(user_id: str, disk_name: str, reservation_id: str) -> tuple
                     return True, "Disk acquired"
                     
                 except Exception as lock_error:
-                    # Check if it's a lock wait error
                     if hasattr(lock_error, 'pgcode'):
                         # 55P03 = lock_not_available
                         if lock_error.pgcode == '55P03':
+                            logger.warning(f"Disk '{disk_name}' is locked by another operation")
                             return False, f"Disk '{disk_name}' is locked by another process, please try again"
+                        # 40P01 = deadlock_detected
+                        if lock_error.pgcode == '40P01':
+                            logger.error(f"Deadlock detected while locking disk '{disk_name}'")
+                            return False, "A database deadlock was detected. Please try again."
                     raise  # Re-raise if it's a different error
                     
     except Exception as e:

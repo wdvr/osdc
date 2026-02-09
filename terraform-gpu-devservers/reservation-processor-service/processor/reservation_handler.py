@@ -1064,25 +1064,6 @@ def find_reservation_by_prefix(reservation_id: str, user_id: str = None) -> dict
         raise
 
 
-# query_user_reservations_with_prefix removed - DynamoDB-specific function no longer needed
-# Use list_reservations_by_user() from shared.reservation_db instead
-
-def query_user_reservations_with_prefix_REMOVED(table, user_id: str, reservation_prefix: str) -> list:
-    """REMOVED: Query user reservations using UserIndex GSI and filter by prefix"""
-    # This function has been removed as part of the PostgreSQL migration
-    # Use list_reservations_by_user() from shared.reservation_db instead
-    raise NotImplementedError("This function has been migrated to PostgreSQL. Use list_reservations_by_user() instead.")
-
-
-# scan_all_reservations_with_prefix removed - DynamoDB-specific function no longer needed
-# Use get_reservation() with LIKE queries in PostgreSQL instead
-
-def scan_all_reservations_with_prefix_REMOVED(table, reservation_prefix: str) -> list:
-    """REMOVED: Scan all reservations with prefix - fallback when no user_id provided"""
-    # This function has been removed as part of the PostgreSQL migration
-    raise NotImplementedError("This function has been migrated to PostgreSQL. Use appropriate query functions instead.")
-
-
 def handler(event, context):
     """Main Lambda handler"""
     try:
@@ -1155,7 +1136,7 @@ def handler(event, context):
                         success = process_jupyter_action(record)
                     elif action == "add_user":
                         success = process_add_user_action(record)
-                    elif action == "extend_reservation":
+                    elif action in ["extend_reservation", "extend"]:
                         success = process_extend_reservation_action(record)
                     elif action == "delete_disk":
                         success = process_delete_disk_action(record)
