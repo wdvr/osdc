@@ -3387,6 +3387,10 @@ def edit(
             rprint("[red]❌ Cannot enable and disable Jupyter at the same time[/red]")
             return
 
+        if extend is not None and extend < 1:
+            rprint("[red]❌ Extension must be at least 1 hour (minimum: 1, maximum: 24)[/red]")
+            return
+
         if (
             not enable_jupyter
             and not disable_jupyter
