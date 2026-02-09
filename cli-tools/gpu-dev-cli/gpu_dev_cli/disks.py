@@ -8,6 +8,9 @@ All disk operations now use the API service instead of direct DynamoDB/SQS acces
 import re
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timezone
+
+import requests
+
 from .config import Config
 
 
@@ -29,10 +32,14 @@ def get_disk_in_use_status(disk_name: str, user_id: str, config: Config) -> Tupl
         
         return is_in_use, reservation_id
 
-    except Exception as e:
-        # If disk doesn't exist or API error, assume not in use
-        # This matches the old behavior of returning False on errors
-        return False, None
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return False, None
+        raise
+    except requests.exceptions.ConnectionError as e:
+        raise ConnectionError(f"Failed to connect to API while checking disk status: {e}") from e
+    except requests.exceptions.Timeout as e:
+        raise TimeoutError(f"API request timed out while checking disk status: {e}") from e
 
 
 def list_disks(user_id: str, config: Config) -> List[Dict]:

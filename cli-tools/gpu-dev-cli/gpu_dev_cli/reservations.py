@@ -790,11 +790,6 @@ class ReservationManager:
             
             # Note: API currently only supports filtering by current user
             # user_filter="all" functionality would need admin API endpoint
-            if user_filter and user_filter != "all":
-                console.print(
-                    "[yellow]⚠️  Filtering by specific user not yet supported "
-                    "via API. Showing your reservations.[/yellow]"
-                )
             
             # Call API with pagination
             # For now, request a large limit (500) to get most reservations

@@ -219,7 +219,8 @@ class APIClient:
         method: str,
         endpoint: str,
         data: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None
+        params: Optional[Dict[str, Any]] = None,
+        _retry_auth: bool = True
     ) -> Dict[str, Any]:
         """
         Make authenticated API request
@@ -229,6 +230,7 @@ class APIClient:
             endpoint: API endpoint (e.g., "/v1/jobs/submit")
             data: Request body data
             params: Query parameters
+            _retry_auth: Whether to retry with re-authentication on 401/403
 
         Returns:
             Response data as dict
@@ -253,7 +255,7 @@ class APIClient:
             )
 
             # Handle 401/403 by trying to re-authenticate once
-            if response.status_code in (401, 403):
+            if response.status_code in (401, 403) and _retry_auth:
                 self.authenticate(force=True)
                 headers["Authorization"] = f"Bearer {self.api_key}"
                 response = requests.request(

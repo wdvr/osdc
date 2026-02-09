@@ -11,6 +11,7 @@ Timezone Handling Policy:
 """
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -26,6 +27,8 @@ from botocore.exceptions import ClientError
 from fastapi import FastAPI, HTTPException, Query, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 # For retry metadata in PGMQ messages
 # Note: This would work if shared module is in PYTHONPATH
@@ -701,26 +704,28 @@ async def verify_aws_credentials(
 
     except ClientError as e:
         error_code = e.response['Error']['Code']
+        logger.warning(f"AWS credential verification failed: {error_code}", exc_info=True)
         if error_code == 'InvalidClientTokenId':
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid AWS credentials"
-            ) from e
+            )
         elif error_code == 'SignatureDoesNotMatch':
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="AWS signature verification failed"
-            ) from e
+            )
         else:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"AWS authentication failed: {error_code}"
-            ) from e
+            )
     except Exception as e:
+        logger.error(f"Failed to verify AWS credentials: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to verify AWS credentials"
-        ) from e
+        )
 
 
 async def create_api_key_for_user(
@@ -949,10 +954,11 @@ async def submit_job(
             )
 
     except Exception as e:
+        logger.error(f"Failed to submit job: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to submit job"
-        ) from e
+        )
 
 
 @app.get("/v1/jobs/{job_id}", response_model=JobDetail)
@@ -1050,10 +1056,11 @@ async def get_job_status(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to retrieve job details: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve job details: {str(e)}"
-        ) from e
+            detail="Failed to retrieve job details"
+        )
 
 
 @app.get("/v1/jobs", response_model=JobListResponse)
@@ -1161,10 +1168,11 @@ async def list_jobs(
             )
     
     except Exception as e:
+        logger.error(f"Failed to list jobs: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list jobs: {str(e)}"
-        ) from e
+            detail="Failed to list jobs"
+        )
 
 
 @app.post("/v1/jobs/{job_id}/cancel", response_model=JobActionResponse)
@@ -1222,10 +1230,11 @@ async def cancel_job(
             )
     
     except Exception as e:
+        logger.error(f"Failed to submit cancellation request: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to submit cancellation request"
-        ) from e
+        )
 
 
 @app.post("/v1/jobs/{job_id}/extend", response_model=JobActionResponse)
@@ -1288,10 +1297,11 @@ async def extend_job(
             )
     
     except Exception as e:
+        logger.error(f"Failed to submit extension request: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to submit extension request"
-        ) from e
+        )
 
 
 @app.post("/v1/jobs/{job_id}/jupyter/enable", response_model=JobActionResponse)
@@ -1349,10 +1359,11 @@ async def enable_jupyter(
             )
     
     except Exception as e:
+        logger.error(f"Failed to submit Jupyter enable request: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to submit Jupyter enable request"
-        ) from e
+        )
 
 
 @app.post("/v1/jobs/{job_id}/jupyter/disable", response_model=JobActionResponse)
@@ -1410,10 +1421,11 @@ async def disable_jupyter(
             )
     
     except Exception as e:
+        logger.error(f"Failed to submit Jupyter disable request: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to submit Jupyter disable request"
-        ) from e
+        )
 
 
 @app.post("/v1/jobs/{job_id}/users", response_model=JobActionResponse)
@@ -1477,10 +1489,11 @@ async def add_user_to_job(
             )
     
     except Exception as e:
+        logger.error(f"Failed to submit add user request: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to submit add user request"
-        ) from e
+        )
 
 
 # ============================================================================
@@ -1586,10 +1599,11 @@ async def get_gpu_availability(
             )
     
     except Exception as e:
+        logger.error(f"Failed to get GPU availability: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get GPU availability: {str(e)}"
-        ) from e
+            detail="Failed to get GPU availability"
+        )
 
 
 @app.get("/v1/cluster/status", response_model=ClusterStatusResponse)
@@ -1710,10 +1724,11 @@ async def get_cluster_status(
             )
     
     except Exception as e:
+        logger.error(f"Failed to get cluster status: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get cluster status: {str(e)}"
-        ) from e
+            detail="Failed to get cluster status"
+        )
 
 
 # ============================================================================
@@ -1748,10 +1763,11 @@ async def rotate_api_key(
                 expires_at=expires_at
             )
     except Exception as e:
+        logger.error(f"Failed to rotate key: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to rotate key"
-        ) from e
+        )
 
 
 @app.post("/v1/auth/aws-login", response_model=AWSLoginResponse)
@@ -1825,10 +1841,11 @@ async def aws_login(request: AWSLoginRequest) -> AWSLoginResponse:
         )
 
     except Exception as e:
+        logger.error(f"Failed to create API key: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create API key"
-        ) from e
+        )
 
 
 @app.post("/v1/disks", response_model=DiskOperationResponse)
@@ -1882,10 +1899,11 @@ async def create_disk(
         )
     
     except Exception as e:
+        logger.error(f"Failed to queue disk creation: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to queue disk creation: {str(e)}"
-        ) from e
+            detail="Failed to queue disk creation"
+        )
 
 
 @app.delete("/v1/disks/{disk_name}", response_model=DiskOperationResponse)
@@ -1936,10 +1954,11 @@ async def delete_disk(
         )
     
     except Exception as e:
+        logger.error(f"Failed to queue disk deletion: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to queue disk deletion: {str(e)}"
-        ) from e
+            detail="Failed to queue disk deletion"
+        )
 
 
 @app.get("/v1/disks", response_model=DiskListResponse)
@@ -1990,10 +2009,11 @@ async def list_disks(
             )
     
     except Exception as e:
+        logger.error(f"Failed to list disks: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list disks: {str(e)}"
-        ) from e
+            detail="Failed to list disks"
+        )
 
 
 @app.get("/v1/disks/{disk_name}", response_model=DiskInfo)
@@ -2042,10 +2062,11 @@ async def get_disk_info(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to get disk info: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get disk info: {str(e)}"
-        ) from e
+            detail="Failed to get disk info"
+        )
 
 
 @app.get("/v1/disks/{disk_name}/operations/{operation_id}")
@@ -2095,10 +2116,11 @@ async def get_disk_operation_status(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to get operation status: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get operation status: {str(e)}"
-        ) from e
+            detail="Failed to get operation status"
+        )
 
 
 @app.get("/v1/disks/{disk_name}/content", response_model=DiskContentResponse)
@@ -2201,10 +2223,11 @@ async def get_disk_content(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to get disk content: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get disk content: {str(e)}"
-        ) from e
+            detail="Failed to get disk content"
+        )
 
 
 @app.post("/v1/disks/{disk_name}/rename")
@@ -2335,10 +2358,11 @@ async def rename_disk(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to rename disk: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to rename disk: {str(e)}"
-        ) from e
+            detail="Failed to rename disk"
+        )
 
 
 @app.get("/")
