@@ -952,11 +952,11 @@ class ReservationManager:
             return False
 
     def extend_reservation(self, reservation_id: str, user_id: str, extension_hours: float) -> bool:
-        """Extend an active reservation by the specified number of hours"""
+        """Extend an active reservation by the specified number of hours (minimum 1)"""
         try:
             # Send extend request via API
             # Job processor will handle the expiration timestamp update and pod updates
-            self.api_client.extend_job(reservation_id, int(extension_hours))
+            self.api_client.extend_job(reservation_id, extension_hours)
 
             console.print(
                 f"[yellow]⏳ Extension request submitted for reservation {reservation_id[:8]}...[/yellow]"

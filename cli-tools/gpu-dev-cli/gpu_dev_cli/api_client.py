@@ -378,18 +378,19 @@ class APIClient:
         """
         return self._make_request("POST", f"/v1/jobs/{job_id}/cancel")
 
-    def extend_job(self, job_id: str, extension_hours: int) -> Dict[str, Any]:
+    def extend_job(self, job_id: str, extension_hours: float) -> Dict[str, Any]:
         """
         Extend job duration
-        
+
         Args:
             job_id: Job ID (reservation_id)
-            extension_hours: Number of hours to extend
-            
+            extension_hours: Number of hours to extend (minimum 1)
+
         Returns:
             Action response with status
         """
-        data = {"extension_hours": extension_hours}
+        # API requires integer, round to nearest hour
+        data = {"extension_hours": round(extension_hours)}
         return self._make_request("POST", f"/v1/jobs/{job_id}/extend", data=data)
 
     def enable_jupyter(self, job_id: str) -> Dict[str, Any]:

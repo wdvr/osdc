@@ -550,8 +550,8 @@ def _validate_extension(hours_str: str) -> bool:
     """Validate extension hours input"""
     try:
         hours = float(hours_str)
-        if hours <= 0:
-            return "Extension hours must be positive"
+        if hours < 1:
+            return "Minimum extension is 1 hour"
         if hours > 24:
             return "Maximum extension is 24 hours"
         return True
