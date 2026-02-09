@@ -7,7 +7,6 @@ Used by ssh with: ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' user@host
 import sys
 import asyncio
 import websockets
-import ssl as ssl_module
 
 
 async def tunnel_ssh(target_host: str, target_port: int):
@@ -19,9 +18,10 @@ async def tunnel_ssh(target_host: str, target_port: int):
         target_port: Target SSH port
     """
     # Determine proxy URL based on target host
-    if ".test.devservers.io" in target_host:
+    # Use endswith() for security - prevents hostname spoofing like "fake.devservers.io.attacker.com"
+    if target_host.endswith(".test.devservers.io"):
         proxy_host = "ssh.test.devservers.io"
-    elif ".devservers.io" in target_host:
+    elif target_host.endswith(".devservers.io"):
         proxy_host = "ssh.devservers.io"
     else:
         print(f"Error: Unsupported domain: {target_host}", file=sys.stderr)
