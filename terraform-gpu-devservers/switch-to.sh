@@ -3,10 +3,10 @@
 set -e
 
 if [ $# -ne 1 ]; then
-    echo "Usage: $0 <prod|test>"
+    echo "Usage: $0 <prod|test|local>"
     echo ""
-    echo "Switches between prod and test environments by:"
-    echo "  - Updating kubeconfig for the correct EKS cluster"
+    echo "Switches between prod, test, and local environments by:"
+    echo "  - Updating kubeconfig for the correct cluster"
     echo "  - Switching kubens to gpu-dev namespace"
     echo "  - Selecting the correct Terraform workspace"
     echo "  - Setting AWS region via aws-cli config"
@@ -16,6 +16,21 @@ fi
 ENVIRONMENT=$1
 
 case $ENVIRONMENT in
+    "local")
+        echo "Switching to local k3d environment..."
+        if command -v gpu-dev >/dev/null 2>&1; then
+            gpu-dev config environment local
+        fi
+        kubectl config use-context k3d-gpu-dev-local
+        if command -v kubens >/dev/null 2>&1; then
+            kubens gpu-dev
+        else
+            kubectl config set-context --current --namespace=gpu-dev
+        fi
+        echo ""
+        echo "Switched to local. API: http://localhost:8000"
+        exit 0
+        ;;
     "prod")
         REGION="us-east-2"
         WORKSPACE="prod"
@@ -25,7 +40,7 @@ case $ENVIRONMENT in
         WORKSPACE="default"
         ;;
     *)
-        echo "Error: Environment must be 'prod' or 'test'"
+        echo "Error: Environment must be 'prod', 'test', or 'local'"
         exit 1
         ;;
 esac

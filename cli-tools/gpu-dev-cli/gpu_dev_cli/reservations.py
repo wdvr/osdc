@@ -13,6 +13,7 @@ from rich.live import Live
 from rich.spinner import Spinner
 
 from .config import Config
+from .kubeconfig import get_kubectl_exec_command
 from .name_generator import sanitize_name
 from .api_client import APIClient
 from . import __version__
@@ -122,34 +123,19 @@ def _map_gpu_to_instance_type(gpu_type: str, gpu_count: int) -> str:
     return config["instance_type"]
 
 
-def _get_default_image(gpu_type: str) -> str:
-    """
-    Get default Docker image for GPU type
-    
-    Args:
-        gpu_type: GPU type (h100, a100, etc.)
-        
-    Returns:
-        Default Docker image string
-    """
-    # For now, use the same PyTorch image for all GPU types
-    # This can be made configurable later
-    return "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime"
-
-
 def _transform_to_api_format(message: Dict[str, Any]) -> Dict[str, Any]:
     """
     Transform CLI parameters to API format for job submission
-    
+
     Args:
         message: CLI parameters with gpu_type, gpu_count, etc.
-        
+
     Returns:
         New API format with image, instance_type, etc.
-        
+
     Raises:
         ValueError: If required fields are missing
-        
+
     Note:
         This function is only for job submission (reservation creation).
         Actions (cancel, extend, etc.) are handled by dedicated API endpoints
@@ -161,22 +147,23 @@ def _transform_to_api_format(message: Dict[str, Any]) -> Dict[str, Any]:
             "Message is missing required fields 'gpu_type' and 'gpu_count'. "
             "This doesn't appear to be a valid reservation message."
         )
-    
+
     gpu_type = message["gpu_type"]
     gpu_count = message["gpu_count"]
-    
+
     # Map to instance type
     instance_type = _map_gpu_to_instance_type(gpu_type, gpu_count)
-    
-    # Get Docker image (use dockerimage if provided, otherwise default)
-    image = message.get("dockerimage", _get_default_image(gpu_type))
-    
-    # Build new API format
+
+    # Build new API format - only include image if user explicitly specified one
     api_message = {
-        "image": image,
         "instance_type": instance_type,
         "duration_hours": int(message["duration_hours"]),
     }
+
+    # Only send image when user explicitly provides --dockerimage
+    # Otherwise, let the server use its configured GPU_DEV_CONTAINER_IMAGE
+    if message.get("dockerimage"):
+        api_message["image"] = message["dockerimage"]
     
     # Optional fields
     if message.get("disk_name"):
@@ -323,14 +310,16 @@ def _generate_ssh_config(hostname: str, pod_name: str) -> str:
     """Generate SSH config for a reservation
 
     Args:
-        hostname: The FQDN hostname (e.g., old_bison.devservers.io)
-        pod_name: The pod name to use as SSH host alias
+        hostname: The FQDN hostname (kept for backwards compat, not used in ProxyCommand)
+        pod_name: The pod name used as SSH host alias and K8s pod target
 
     Returns:
         SSH config content as string
     """
+    # ProxyCommand uses pod_name to connect via K8s port-forward to the pod's sshd.
+    # HostName is set to pod_name so %h in ProxyCommand resolves to the K8s pod name.
     config_content = f"""Host {pod_name}
-    HostName {hostname}
+    HostName {pod_name}
     User dev
     ForwardAgent yes
     ProxyCommand gpu-dev-ssh-proxy %h %p
@@ -1408,6 +1397,13 @@ class ReservationManager:
         # Track previous node statuses to only show changes
         previous_node_statuses = {}
 
+        def _elapsed() -> str:
+            """Return elapsed time as compact string, e.g. '12s' or '1m 23s'."""
+            secs = int(time.time() - start_time)
+            if secs < 60:
+                return f"{secs}s"
+            return f"{secs // 60}m {secs % 60:02d}s"
+
         def handle_interrupt(signum, frame):
             """Handle Ctrl+C to cancel reservation(s)"""
             nonlocal cancelled
@@ -1750,12 +1746,11 @@ class ReservationManager:
                                     "status") == "failed" else ""
 
                                 if current_detailed_status:
-                                    message = f"🚀 {current_detailed_status}"
+                                    message = f"🚀 [{_elapsed()}] {current_detailed_status}"
                                 elif failure_reason:
-                                    message = f"🚀 Failed: {failure_reason}"
+                                    message = f"🚀 [{_elapsed()}] Failed: {failure_reason}"
                                 else:
-                                    message = status_messages.get(
-                                        aggregate_status, f"Status: {aggregate_status}")
+                                    message = f"🚀 [{_elapsed()}] {status_messages.get(aggregate_status, f'Status: {aggregate_status}')}"
 
                         elif aggregate_status == "failed":
                             failed_nodes = [node for node in node_details if node["status"] in [
@@ -1794,6 +1789,9 @@ class ReservationManager:
                                 # Handle single node failure below in completion check
                                 pass
 
+                        elif aggregate_status == "pending" and not is_multinode:
+                            message = f"⏳ [{_elapsed()}] Reservation submitted, waiting for processing..."
+
                         elif aggregate_status == "active":
                             if is_multinode:
                                 # Check if all nodes are truly ready: "active" status AND valid SSH command
@@ -1821,36 +1819,26 @@ class ReservationManager:
                                             pod_name = res.get("pod_name")
                                             res_id = res.get("reservation_id")
                                             res_name = res.get("name")
+                                            short_id = res_id[:8] if res_id else ""
 
-                                            # Create SSH config file for this node
-                                            config_path = None
-                                            use_include = False
-                                            if fqdn and pod_name and res_id:
+                                            # Create SSH config for VS Code/Cursor
+                                            if pod_name and res_id:
                                                 try:
-                                                    config_path, use_include = create_ssh_config_for_reservation(
-                                                        fqdn, pod_name, res_id, res_name)
-                                                except Exception as e:
-                                                    console.print(
-                                                        f"[yellow]⚠️  Could not create SSH config for node {node['index']+1}: {str(e)}[/yellow]")
+                                                    create_ssh_config_for_reservation(
+                                                        fqdn or pod_name, pod_name, res_id, res_name)
+                                                except Exception:
+                                                    pass
 
-                                            # Show connection info
-                                            if config_path and pod_name and use_include:
-                                                console.print(
-                                                    f"[cyan]🖥️  Node {node['index']+1}:[/cyan] [green]ssh {pod_name}[/green]")
-                                            else:
-                                                ssh_command = res.get(
-                                                    "ssh_command", "ssh user@pending")
-                                                ssh_with_forwarding = _add_agent_forwarding_to_ssh(
-                                                    ssh_command)
-                                                console.print(
-                                                    f"[cyan]🖥️  Node {node['index']+1}:[/cyan] {ssh_with_forwarding}")
+                                            # Show connect command
+                                            console.print(
+                                                f"[cyan]🖥️  Node {node['index']+1}:[/cyan] [green]gpu-dev connect {short_id}[/green] [dim](ssh {pod_name})[/dim]")
 
                                     return all_reservations
                                 else:
                                     # Some nodes are "active" but SSH not ready yet - keep preparing
                                     # For multinode, don't override detailed Panel display with summary message
                                     # The preparing logic above will show detailed per-node status
-                                    message = f"🚀 Setting up SSH access... ({nodes_ready}/{total_nodes} ready)"
+                                    message = f"🚀 Setting up access... ({nodes_ready}/{total_nodes} ready)"
                                     # Don't directly update spinner here - let the main logic handle display
                             else:
                                 # Handle single node completion below in completion check
@@ -1867,32 +1855,25 @@ class ReservationManager:
                                     current_detailed_status = reservation.get(
                                         "current_detailed_status", "")
                                     if current_detailed_status:
-                                        message = f"🐳 {current_detailed_status}"
+                                        message = f"🐳 [{_elapsed()}] {current_detailed_status}"
                                     else:
-                                        message = status_messages.get(
-                                            aggregate_status, f"Status: {aggregate_status}")
+                                        message = f"🐳 [{_elapsed()}] {status_messages.get(aggregate_status, f'Status: {aggregate_status}')}"
                                 else:
-                                    message = status_messages.get(
-                                        aggregate_status, f"Status: {aggregate_status}")
+                                    message = f"[{_elapsed()}] {status_messages.get(aggregate_status, f'Status: {aggregate_status}')}"
 
-                        # Update spinner if status changed, message changed, or we're in certain states
-                        # BUT: Don't override custom Panel display for multinode with spinner
-                        if (aggregate_status != last_status or
-                            message != last_message or
-                                aggregate_status in ["queued", "preparing", "creating_server"]):
-                            if message and not (is_multinode and aggregate_status == "preparing"):
-                                # Only use spinner for single-node or non-preparing multinode states
-                                spinner.text = message
-                                last_status = aggregate_status
-                                last_message = message
-                                live.update(spinner)
-                            elif not is_multinode and message:
-                                # Single node - always use spinner
-                                spinner.text = message
-                                last_status = aggregate_status
-                                last_message = message
-                                live.update(spinner)
-                            # For multinode preparing with custom display, we already updated above with Panel
+                        # Always update spinner to keep elapsed time ticking
+                        # BUT: Don't override custom Panel display for multinode preparing
+                        if message and not (is_multinode and aggregate_status == "preparing"):
+                            spinner.text = message
+                            last_status = aggregate_status
+                            last_message = message
+                            live.update(spinner)
+                        elif not is_multinode and message:
+                            spinner.text = message
+                            last_status = aggregate_status
+                            last_message = message
+                            live.update(spinner)
+                        # For multinode preparing with custom display, we already updated above with Panel
 
                         # Check for single-node completion states (when not multinode or already handled above)
                         if not is_multinode and aggregate_status == "active":
@@ -1926,74 +1907,54 @@ class ReservationManager:
                                 console.print(
                                     f"[cyan]⏰ Valid for:[/cyan] {duration_hours} hours")
 
-                                # Show quick connect command
+                                # Show quick connect command (primary method - uses k8s exec via Python)
                                 short_id = reservation_id[:8]
-                                console.print(
-                                    f"[cyan]⚡ Quick Connect:[/cyan] [green]gpu-dev connect {short_id}[/green]")
-
-                                # Always create SSH config file for this reservation
-                                fqdn = reservation.get("fqdn")
                                 pod_name = reservation.get("pod_name")
+                                console.print(
+                                    f"[cyan]⚡ Connect:[/cyan] [green]gpu-dev connect {short_id}[/green]")
+
+                                # Show kubectl exec as alternative
+                                if pod_name:
+                                    console.print(
+                                        f"[dim]   Or: [green]{get_kubectl_exec_command(pod_name)}[/green][/dim]")
+
+                                # Create SSH config for VS Code/Cursor (uses k8s port-forward as ProxyCommand)
+                                fqdn = reservation.get("fqdn")
                                 res_id = reservation.get("reservation_id")
                                 res_name = reservation.get("name")
                                 config_path = None
                                 use_include = False
-                                if fqdn and pod_name and res_id:
+                                if pod_name and res_id:
                                     try:
                                         config_path, use_include = create_ssh_config_for_reservation(
-                                            fqdn, pod_name, res_id, res_name)
+                                            fqdn or pod_name, pod_name, res_id, res_name)
                                     except Exception as e:
                                         console.print(
                                             f"[yellow]⚠️  Could not create SSH config: {str(e)}[/yellow]")
 
-                                # Show SSH command using config file if created, otherwise fallback
+                                # Show SSH/VS Code commands (secondary - for IDE integration)
                                 if config_path and pod_name:
                                     if use_include:
-                                        # User approved Include - show simple commands
                                         console.print(
-                                            f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh {pod_name}[/green]")
-                                        # Also show full command with IP:port
-                                        ssh_with_forwarding = _add_agent_forwarding_to_ssh(ssh_command)
-                                        console.print(
-                                            f"[dim]   Direct:[/dim] {ssh_with_forwarding}")
-                                        # Create clickable VS Code link
+                                            f"[cyan]🖥️  SSH/VS Code:[/cyan] [green]ssh {pod_name}[/green]")
                                         vscode_url = _make_vscode_link(pod_name)
                                         vscode_command = f"code --remote ssh-remote+{pod_name} /home/dev"
                                         console.print(
                                             f"[cyan]💻 VS Code Remote:[/cyan] [link={vscode_url}][green]{vscode_command}[/green][/link]")
-
-                                        # Create clickable Cursor link
                                         cursor_url = _make_cursor_link(pod_name)
                                         cursor_command = f"cursor --remote ssh-remote+{pod_name} /home/dev"
                                         console.print(
                                             f"[cyan]🖥️ Cursor Remote:[/cyan] [link={cursor_url}][green]{cursor_command}[/green][/link]")
                                     else:
-                                        # User declined Include - show commands with -F flag
                                         console.print(
-                                            f"[cyan]🖥️  SSH Command:[/cyan] [green]ssh -F {config_path} {pod_name}[/green]")
-                                        # Also show full command with IP:port
-                                        ssh_with_forwarding = _add_agent_forwarding_to_ssh(ssh_command)
+                                            f"[cyan]🖥️  SSH/VS Code:[/cyan] [green]ssh -F {config_path} {pod_name}[/green]")
                                         console.print(
-                                            f"[dim]   Direct:[/dim] {ssh_with_forwarding}")
-                                        console.print(
-                                            f"[cyan]💻 VS Code/Cursor:[/cyan] Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config and ~/.cursor/ssh_config")
-                                        console.print(
-                                            f"[dim]   Or run: [green]gpu-dev config ssh-include enable[/green][/dim]")
+                                            f"[dim]   Enable simple SSH: [green]gpu-dev config ssh-include enable[/green][/dim]")
                                 else:
-                                    # Fallback to full SSH command if config creation failed
                                     ssh_with_forwarding = _add_agent_forwarding_to_ssh(ssh_command)
-                                    console.print(
-                                        f"[cyan]🖥️  SSH Command:[/cyan] {ssh_with_forwarding}")
-
-                                    vscode_command = _generate_vscode_command(ssh_command)
-                                    if vscode_command:
+                                    if ssh_with_forwarding:
                                         console.print(
-                                            f"[cyan]💻 VS Code Remote:[/cyan] {vscode_command}")
-
-                                    cursor_command = _generate_cursor_command(ssh_command)
-                                    if cursor_command:
-                                        console.print(
-                                            f"[cyan]🖱️  Cursor Remote:[/cyan] {cursor_command}")
+                                            f"[cyan]🖥️  SSH:[/cyan] {ssh_with_forwarding}")
 
                                 # Show Jupyter link if enabled
                                 jupyter_enabled = reservation.get(
@@ -2010,9 +1971,9 @@ class ReservationManager:
                                 current_detailed_status = reservation.get(
                                     "current_detailed_status", "")
                                 if current_detailed_status:
-                                    message = f"🚀 {current_detailed_status}"
+                                    message = f"🚀 [{_elapsed()}] {current_detailed_status}"
                                 else:
-                                    message = "🚀 Setting up external SSH access..."
+                                    message = f"🚀 [{_elapsed()}] Setting up access..."
 
                                 if message != (last_status if isinstance(last_status, str) else ""):
                                     spinner.text = message
@@ -2057,8 +2018,11 @@ class ReservationManager:
 
                             return None
 
-                        # Continue polling
-                        time.sleep(3)
+                        # Poll faster during active phases (1s), slower when queued (3s)
+                        if aggregate_status in ("preparing", "creating_server", "active", "pending"):
+                            time.sleep(1)
+                        else:
+                            time.sleep(3)
 
                     except Exception as e:
                         console.print(

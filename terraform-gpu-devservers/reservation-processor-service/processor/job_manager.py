@@ -29,6 +29,7 @@ class JobManager:
         self.namespace = os.environ.get("KUBE_NAMESPACE", "gpu-controlplane")
         self.worker_image = os.environ.get("WORKER_IMAGE", "")
         self.service_account = os.environ.get("SERVICE_ACCOUNT", "reservation-processor-sa")
+        self.image_pull_policy = os.environ.get("IMAGE_PULL_POLICY", "Always")
         
         if not self.worker_image:
             logger.warning("WORKER_IMAGE environment variable not set - jobs may fail")
@@ -120,7 +121,7 @@ class JobManager:
                             client.V1Container(
                                 name="worker",
                                 image=self.worker_image,
-                                image_pull_policy="Always",  # Always pull latest
+                                image_pull_policy=self.image_pull_policy,
                                 
                                 # Command to run worker script with message ID
                                 command=["python", "-m", "processor.worker"],
@@ -327,11 +328,13 @@ class JobManager:
         )
         
         # AWS configuration (from environment or configmap)
-        for env_name in ["REGION", "EKS_CLUSTER_NAME", "PRIMARY_AVAILABILITY_ZONE", 
+        for env_name in ["REGION", "AWS_DEFAULT_REGION",
+                         "EKS_CLUSTER_NAME", "PRIMARY_AVAILABILITY_ZONE",
                          "MAX_RESERVATION_HOURS", "DEFAULT_TIMEOUT_HOURS",
                          "GPU_DEV_CONTAINER_IMAGE", "EFS_SECURITY_GROUP_ID",
                          "EFS_SUBNET_IDS", "CCACHE_SHARED_EFS_ID",
-                         "ECR_REPOSITORY_URL", "PROCESSOR_VERSION", "MIN_CLI_VERSION"]:
+                         "ECR_REPOSITORY_URL", "PROCESSOR_VERSION", "MIN_CLI_VERSION",
+                         "IMAGE_PULL_POLICY"]:
             value = os.environ.get(env_name)
             if value:
                 env_vars.append(client.V1EnvVar(name=env_name, value=value))

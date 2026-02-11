@@ -164,6 +164,7 @@ ALLOWED_AWS_ROLE = os.getenv(
     "ALLOWED_AWS_ROLE", "SSOCloudDevGpuReservation"
 )
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+LOCAL_DEV_USER = os.getenv("LOCAL_DEV_USER")
 
 # Validate queue names (alphanumeric and underscore only)
 if not re.match(r'^[a-zA-Z0-9_]+$', QUEUE_NAME):
@@ -274,7 +275,7 @@ security_scheme = Security(security)
 
 class JobSubmissionRequest(BaseModel):
     """Request model for job submission"""
-    image: str = Field(..., description="Docker image to run")
+    image: str | None = Field(None, description="Docker image to run (omit to use server default)")
     instance_type: str = Field(
         ..., description="EC2 instance type (e.g., p5.48xlarge)"
     )
@@ -295,7 +296,6 @@ class JobSubmissionRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "image": "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime",
                 "instance_type": "p5.48xlarge",
                 "duration_hours": 4,
                 "disk_name": "my-training-data",
@@ -1783,26 +1783,35 @@ async def aws_login(request: AWSLoginRequest) -> AWSLoginResponse:
     The API key expires after API_KEY_TTL_HOURS (default 2 hours).
     The CLI should automatically re-authenticate when the key expires.
     """
-    # 1. Verify AWS credentials
-    identity = await verify_aws_credentials(
-        request.aws_access_key_id,
-        request.aws_secret_access_key,
-        request.aws_session_token
-    )
-
-    # 2. Extract and verify role (exact match, not substring)
-    role = extract_role_from_arn(identity['arn'])
-    if role != ALLOWED_AWS_ROLE:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"Access denied. Required role: {ALLOWED_AWS_ROLE}, "
-                f"got: {role or 'none'}"
-            )
+    # Local dev mode - skip AWS validation entirely
+    if LOCAL_DEV_USER:
+        identity = {
+            "arn": f"arn:aws:sts::000000000000:assumed-role/LocalDev/{LOCAL_DEV_USER}",
+            "account": "000000000000",
+            "user_id": LOCAL_DEV_USER,
+        }
+        username = LOCAL_DEV_USER
+    else:
+        # 1. Verify AWS credentials
+        identity = await verify_aws_credentials(
+            request.aws_access_key_id,
+            request.aws_secret_access_key,
+            request.aws_session_token
         )
 
-    # 3. Extract username from ARN
-    username = extract_username_from_arn(identity['arn'])
+        # 2. Extract and verify role (exact match, not substring)
+        role = extract_role_from_arn(identity['arn'])
+        if role != ALLOWED_AWS_ROLE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Access denied. Required role: {ALLOWED_AWS_ROLE}, "
+                    f"got: {role or 'none'}"
+                )
+            )
+
+        # 3. Extract username from ARN
+        username = extract_username_from_arn(identity['arn'])
 
     try:
         async with db_pool.acquire() as conn:

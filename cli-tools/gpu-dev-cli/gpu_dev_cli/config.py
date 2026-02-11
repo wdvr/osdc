@@ -24,6 +24,12 @@ class Config:
             "description": "Production environment",
             "api_url": None,  # Set after CloudFront deployment
         },
+        "local": {
+            "region": "us-west-1",
+            "workspace": "local",
+            "description": "Local k3d development environment",
+            "api_url": "http://localhost:8000",
+        },
     }
     DEFAULT_ENVIRONMENT = "prod"
 
@@ -218,6 +224,14 @@ class Config:
         self.user_config["environment"] = env_name
         self.user_config["region"] = env_config["region"]
         self.user_config["workspace"] = env_config["workspace"]
+
+        # Sync api_url from environment defaults so the explicit config
+        # value doesn't override the environment-specific default
+        if env_config.get("api_url"):
+            self.user_config["api_url"] = env_config["api_url"]
+        else:
+            # Clear any previous api_url so the environment default is used
+            self.user_config.pop("api_url", None)
 
         self._save_config(self.user_config)
         self.aws_region = env_config["region"]

@@ -66,7 +66,6 @@ locals {
 
 resource "null_resource" "availability_updater_build" {
   depends_on = [
-    null_resource.setup_docker_certs,
     kubernetes_deployment.registry_native,
     kubernetes_service.registry_native,
   ]
@@ -114,7 +113,7 @@ kubectl port-forward --address 0.0.0.0 -n gpu-controlplane svc/registry-native $
       # Wait for port-forward to be ready
       echo "Waiting for registry to be accessible..."
       for i in {1..30}; do
-        if curl -sf --max-time 2 --insecure https://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+        if curl -sf --max-time 2 http://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
           echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
           break
         fi

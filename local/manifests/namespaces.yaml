@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gpu-controlplane
+  labels:
+    name: gpu-controlplane
+    purpose: control-plane-infrastructure
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gpu-dev
+  labels:
+    name: gpu-dev
+    purpose: gpu-development

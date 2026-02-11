@@ -82,6 +82,7 @@ ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
 # Version validation - injected via Terraform (or environment)
 PROCESSOR_VERSION = os.environ.get("PROCESSOR_VERSION", "0.4.0")  # Updated for PostgreSQL migration
 MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.5")
+IMAGE_PULL_POLICY = os.environ.get("IMAGE_PULL_POLICY", "Always")
 
 # GPU Configuration - GPU type to instance type mappings
 # NOTE: This configuration is also stored in the gpu_types database table.
@@ -3652,7 +3653,7 @@ def create_pod(
                 client.V1Container(
                     name="ssh-setup",
                     image="alpine:latest",
-                    image_pull_policy="Always",  # Fail fast if image doesn't exist
+                    image_pull_policy=IMAGE_PULL_POLICY,
                     command=["/bin/sh"],
                     args=[
                         "-c",
@@ -3726,7 +3727,7 @@ def create_pod(
                 client.V1Container(
                     name="gpu-dev",
                     image=container_image,
-                    image_pull_policy="Always",  # Always pull to check if image exists, fail fast if not
+                    image_pull_policy=IMAGE_PULL_POLICY,
                     **({
                         "command": ["/bin/bash"],
                         "args": [
@@ -3991,6 +3992,30 @@ EOF_PROFILE
                             echo "[STARTUP] CREATE_SH_ENV='$CREATE_SH_ENV' - Using existing shell configuration from persistent disk"
                             echo "[STARTUP] Current files in /home/dev:"
                             ls -la /home/dev/.??* 2>/dev/null || echo "[STARTUP] No hidden files found in /home/dev"
+                        fi
+
+                        # Recovery: copy missing essential files from /devserver-setup/ to /home/dev/
+                        # This handles persistent disks created with older images that lacked zsh/claude/etc.
+                        if [ -d "/devserver-setup" ]; then
+                            echo "[STARTUP] Checking for missing essential files..."
+
+                            for file in .zshrc .zprofile .shell_env .npmrc .profile .bash_profile .bashrc; do
+                                if [ ! -f "/home/dev/$file" ] && [ -f "/devserver-setup/$file" ]; then
+                                    echo "[STARTUP] Recovering missing $file from Docker image"
+                                    cp "/devserver-setup/$file" "/home/dev/$file"
+                                    chown 1081:1081 "/home/dev/$file"
+                                fi
+                            done
+
+                            for directory in oh-my-zsh npm-global jupyter; do
+                                if [ ! -d "/home/dev/.$directory" ] && [ -d "/devserver-setup/$directory" ]; then
+                                    echo "[STARTUP] Recovering missing .$directory directory from Docker image"
+                                    cp -r "/devserver-setup/$directory" "/home/dev/.$directory"
+                                    chown -R 1081:1081 "/home/dev/.$directory"
+                                fi
+                            done
+
+                            echo "[STARTUP] Essential files check complete"
                         fi
 
                         # Always write shell extension files (these contain system features like warnings)
@@ -4662,6 +4687,7 @@ EOF
                     empty_dir=client.V1EmptyDirVolumeSource(
                         medium="Memory", size_limit="8Gi"),  # Increased for NCCL multi-node
                 ),
+            ] + ([
                 client.V1Volume(
                     name="ccache-shared",
                     nfs=client.V1NFSVolumeSource(
@@ -4670,7 +4696,12 @@ EOF
                         read_only=False
                     )
                 ),
-            ] + ([
+            ] if CCACHE_SHARED_EFS_ID else [
+                client.V1Volume(
+                    name="ccache-shared",
+                    empty_dir=client.V1EmptyDirVolumeSource()
+                ),
+            ]) + ([
                 client.V1Volume(
                     name="shared-efs",
                     nfs=client.V1NFSVolumeSource(
@@ -4907,17 +4938,25 @@ def get_node_public_ip() -> str:
         v1 = client.CoreV1Api(k8s_client)
         nodes = v1.list_node()
 
+        internal_ip = None
         for node in nodes.items:
             if node.status.addresses:
                 for addr in node.status.addresses:
                     if addr.type == "ExternalIP":
                         return addr.address
+                    if addr.type == "InternalIP" and not internal_ip:
+                        internal_ip = addr.address
 
         instance_id = get_node_instance_id()
         if instance_id:
             response = ec2_client.describe_instances(InstanceIds=[instance_id])
             instance = response["Reservations"][0]["Instances"][0]
             return instance.get("PublicIpAddress", "")
+
+        # Fall back to InternalIP (e.g. local k3d clusters)
+        if internal_ip:
+            logger.info(f"No ExternalIP found, using InternalIP: {internal_ip}")
+            return internal_ip
 
         raise ValueError("Could not determine node public IP")
 
@@ -4949,7 +4988,14 @@ def get_pod_node_public_ip(pod_name: str) -> str:
                         f"Pod {pod_name} is on node {node_name} with IP {addr.address}")
                     return addr.address
 
-        logger.warning(f"No external IP found for node {node_name}")
+        # Fall back to InternalIP (e.g. local k3d clusters)
+        for addr in node.status.addresses:
+            if addr.type == "InternalIP":
+                logger.info(
+                    f"Pod {pod_name} on node {node_name}, using InternalIP {addr.address}")
+                return addr.address
+
+        logger.warning(f"No external or internal IP found for node {node_name}")
         return get_node_public_ip()  # Fallback
 
     except Exception as e:

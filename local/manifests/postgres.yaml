@@ -1,0 +1,186 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: gpu-controlplane
+  labels:
+    app: postgres
+type: Opaque
+stringData:
+  POSTGRES_USER: gpudev
+  POSTGRES_PASSWORD: localdevpassword
+  POSTGRES_DB: gpudev
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+  namespace: gpu-controlplane
+  labels:
+    app: postgres
+data:
+  init-pgmq.sh: |
+    #!/bin/bash
+    set -e
+    echo "Creating PGMQ extension..."
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+      CREATE EXTENSION IF NOT EXISTS pgmq;
+      CREATE EXTENSION IF NOT EXISTS pg_partman;
+      GRANT ALL ON SCHEMA pgmq TO gpudev;
+      GRANT ALL ON ALL TABLES IN SCHEMA pgmq TO gpudev;
+      GRANT ALL ON ALL SEQUENCES IN SCHEMA pgmq TO gpudev;
+    EOSQL
+    echo "PGMQ extension enabled."
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-primary-config
+  namespace: gpu-controlplane
+  labels:
+    app: postgres
+    role: primary
+data:
+  postgresql.conf: |
+    listen_addresses = '*'
+    port = 5432
+    max_connections = 100
+    shared_buffers = 128MB
+    wal_level = replica
+    shared_preload_libraries = 'pg_partman_bgw'
+    log_destination = 'stderr'
+    logging_collector = off
+  pg_hba.conf: |
+    local   all   all                 trust
+    host    all   all   0.0.0.0/0     scram-sha-256
+    host    all   all   ::1/128       scram-sha-256
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-primary
+  namespace: gpu-controlplane
+  labels:
+    app: postgres
+    role: primary
+spec:
+  serviceName: postgres-primary-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+      role: primary
+  template:
+    metadata:
+      labels:
+        app: postgres
+        role: primary
+    spec:
+      securityContext:
+        fsGroup: 999
+      initContainers:
+        - name: init-config
+          image: busybox:1.36
+          securityContext:
+            runAsUser: 999
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cp /config/postgresql.conf /var/lib/postgresql/data-config/postgresql.conf
+              cp /config/pg_hba.conf /var/lib/postgresql/data-config/pg_hba.conf
+              chmod 600 /var/lib/postgresql/data-config/*.conf
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: config-writable
+              mountPath: /var/lib/postgresql/data-config
+      containers:
+        - name: postgres
+          image: ghcr.io/pgmq/pg18-pgmq:v1.8.1
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          args:
+            - "-c"
+            - "config_file=/var/lib/postgresql/data-config/postgresql.conf"
+            - "-c"
+            - "hba_file=/var/lib/postgresql/data-config/pg_hba.conf"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: config-writable
+              mountPath: /var/lib/postgresql/data-config
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "gpudev", "-d", "gpudev"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "gpudev", "-d", "gpudev"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: postgres-primary-config
+        - name: config-writable
+          emptyDir: {}
+        - name: init-scripts
+          configMap:
+            name: postgres-init-script
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-primary-headless
+  namespace: gpu-controlplane
+  labels:
+    app: postgres
+    role: primary
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: postgres
+    role: primary
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-primary
+  namespace: gpu-controlplane
+  labels:
+    app: postgres
+    role: primary
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+    role: primary
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
