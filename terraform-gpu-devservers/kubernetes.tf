@@ -29,7 +29,14 @@ resource "kubernetes_config_map" "aws_auth" {
           "system:bootstrappers",
           "system:nodes"
         ]
-      }
+      },
+      # SSO role for GPU reservation users - maps to gpu-dev-users K8s group
+      # Allows kubectl exec / gpu-dev connect access to pods in gpu-dev namespace
+      {
+        rolearn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/SSOCloudDevGpuReservation"
+        username = "{{SessionName}}"
+        groups   = ["gpu-dev-users"]
+      },
     ])
   }
 
@@ -1732,9 +1739,6 @@ resource "kubernetes_config_map" "registry_native_config" {
           enabled: true
       http:
         addr: :5000
-        tls:
-          certificate: /etc/docker/registry/tls/tls.crt
-          key: /etc/docker/registry/tls/tls.key
         headers:
           X-Content-Type-Options: [nosniff]
       # No proxy configuration - this is a native registry for storing images
@@ -1775,7 +1779,6 @@ resource "kubernetes_persistent_volume_claim" "registry_native_pvc" {
 resource "kubernetes_deployment" "registry_native" {
   depends_on = [
     kubernetes_namespace.controlplane,
-    kubernetes_secret.registry_native_tls,
     kubernetes_config_map.registry_native_config,
     kubernetes_persistent_volume_claim.registry_native_pvc,
   ]
@@ -1844,12 +1847,6 @@ resource "kubernetes_deployment" "registry_native" {
           }
 
           volume_mount {
-            name       = "tls"
-            mount_path = "/etc/docker/registry/tls"
-            read_only  = true
-          }
-
-          volume_mount {
             name       = "data"
             mount_path = "/var/lib/registry"
           }
@@ -1869,7 +1866,7 @@ resource "kubernetes_deployment" "registry_native" {
             http_get {
               path   = "/"
               port   = 5000
-              scheme = "HTTPS"
+              scheme = "HTTP"
             }
             initial_delay_seconds = 10
             period_seconds        = 10
@@ -1879,7 +1876,7 @@ resource "kubernetes_deployment" "registry_native" {
             http_get {
               path   = "/"
               port   = 5000
-              scheme = "HTTPS"
+              scheme = "HTTP"
             }
             initial_delay_seconds = 5
             period_seconds        = 5
@@ -1890,13 +1887,6 @@ resource "kubernetes_deployment" "registry_native" {
           name = "config"
           config_map {
             name = kubernetes_config_map.registry_native_config.metadata[0].name
-          }
-        }
-
-        volume {
-          name = "tls"
-          secret {
-            secret_name = kubernetes_secret.registry_native_tls.metadata[0].name
           }
         }
 
@@ -1967,7 +1957,7 @@ resource "kubernetes_role" "gpu_dev_role" {
 
   rule {
     api_groups = [""]
-    resources  = ["pods", "pods/log", "pods/exec"]
+    resources  = ["pods", "pods/log", "pods/exec", "pods/portforward"]
     verbs      = ["get", "list", "create", "update", "patch", "watch"]
   }
 }
@@ -1991,6 +1981,29 @@ resource "kubernetes_role_binding" "gpu_dev_role_binding" {
     kind      = "ServiceAccount"
     name      = kubernetes_service_account.gpu_dev_sa.metadata[0].name
     namespace = kubernetes_namespace.gpu_dev.metadata[0].name
+  }
+}
+
+# Role binding for SSO users (gpu-dev-users group from aws-auth)
+# Grants pods/exec access in gpu-dev namespace for gpu-dev connect
+resource "kubernetes_role_binding" "gpu_dev_user_role_binding" {
+  depends_on = [aws_eks_cluster.gpu_dev_cluster]
+
+  metadata {
+    name      = "gpu-dev-user-role-binding"
+    namespace = kubernetes_namespace.gpu_dev.metadata[0].name
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.gpu_dev_role.metadata[0].name
+  }
+
+  subject {
+    kind      = "Group"
+    name      = "gpu-dev-users"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 

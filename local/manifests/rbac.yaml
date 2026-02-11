@@ -1,0 +1,83 @@
+# ServiceAccount for reservation processor
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reservation-processor-sa
+  namespace: gpu-controlplane
+  labels:
+    app: reservation-processor
+---
+# ServiceAccount for GPU dev pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-dev-service-account
+  namespace: gpu-dev
+---
+# ClusterRole for reservation processor - manages pods, services, jobs across namespaces
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: reservation-processor-role
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status", "pods/exec"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "jobs/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# ClusterRoleBinding for reservation processor
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: reservation-processor-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reservation-processor-role
+subjects:
+  - kind: ServiceAccount
+    name: reservation-processor-sa
+    namespace: gpu-controlplane
+---
+# Role for GPU dev pods
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-dev-role
+  namespace: gpu-dev
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "pods/portforward"]
+    verbs: ["get", "list", "create", "update", "patch", "watch"]
+---
+# RoleBinding for GPU dev service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-dev-role-binding
+  namespace: gpu-dev
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-dev-role
+subjects:
+  - kind: ServiceAccount
+    name: gpu-dev-service-account
+    namespace: gpu-dev

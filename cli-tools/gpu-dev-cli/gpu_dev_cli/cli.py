@@ -25,6 +25,7 @@ from .reservations import (
     is_ssh_include_enabled,
 )
 from .config import Config, load_config
+from .kubeconfig import get_k8s_api_client, get_kubectl_exec_command, kube_exec_interactive
 from .interactive import (
     select_gpu_type_interactive,
     select_gpu_count_interactive,
@@ -252,35 +253,22 @@ def _show_single_reservation(connection_info: dict) -> None:
             short_id = connection_info["reservation_id"][:8]
             secondary_users_info = f"[dim]Secondary Users:[/dim] [yellow]None[/yellow] [dim]→[/dim] [cyan]gpu-dev edit {short_id} --add-user <github_username>[/cyan]\n"
 
-        # Generate VS Code command
-        vscode_command = _generate_vscode_command(
-            connection_info["ssh_command"]
-        )
-        vscode_info = ""
-        if vscode_command:
-            vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command}\n"
-
-        # Add agent forwarding to SSH command for display
-        ssh_with_forwarding = _add_agent_forwarding_to_ssh(
-            connection_info["ssh_command"]
-        )
-
-        # Generate convenience connect command
+        # Generate convenience connect command (primary connection method)
         short_id = connection_info["reservation_id"][:8]
         connect_command = f"[cyan]gpu-dev connect {short_id}[/cyan]"
 
-        # Get SSH config path for this reservation
+        # Pod name for display
         reservation_id = connection_info["reservation_id"]
         reservation_name = connection_info.get("name")
         pod_name = connection_info.get("pod_name", "")
+
+        # SSH config for VS Code/Cursor remote (uses k8s port-forward under the hood)
         ssh_config_path = get_ssh_config_path(reservation_id, reservation_name)
         use_include = is_ssh_include_enabled()
 
-        # Use SSH config in commands if it exists
         from pathlib import Path
         if Path(ssh_config_path).exists() and pod_name:
             if use_include:
-                # User approved Include - show simple commands
                 from .reservations import _make_vscode_link
                 ssh_command_display = f"[green]ssh {pod_name}[/green]"
                 vscode_url = _make_vscode_link(pod_name)
@@ -288,15 +276,15 @@ def _show_single_reservation(connection_info: dict) -> None:
                 vscode_command_display = f"[link={vscode_url}][green]{vscode_cmd_text}[/green][/link]"
                 vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command_display}\n"
             else:
-                # User declined Include - show commands with -F flag
                 ssh_command_display = f"[green]ssh -F {ssh_config_path} {pod_name}[/green]"
-                vscode_command_display = f"Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config and ~/.cursor/ssh_config (or: [green]gpu-dev config ssh-include enable[/green])"
+                vscode_command_display = f"Add [green]Include ~/.gpu-dev/*-sshconfig[/green] to ~/.ssh/config (or: [green]gpu-dev config ssh-include enable[/green])"
                 vscode_info = f"[blue]VS Code/Cursor:[/blue] {vscode_command_display}\n"
         else:
-            # Fallback to full commands if SSH config doesn't exist
+            ssh_command = connection_info.get("ssh_command", "")
+            ssh_with_forwarding = _add_agent_forwarding_to_ssh(ssh_command) if ssh_command else ""
             ssh_command_display = ssh_with_forwarding
-            vscode_command_display = vscode_command if vscode_command else ""
-            vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command_display}\n" if vscode_command_display else ""
+            vscode_command = _generate_vscode_command(ssh_command) if ssh_command else ""
+            vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command}\n" if vscode_command else ""
 
         # Check for warnings
         warning_message = connection_info.get("warning", "")
@@ -319,12 +307,18 @@ def _show_single_reservation(connection_info: dict) -> None:
         ip_port = _extract_ip_from_reservation(connection_info)
         ip_section = f"[blue]IP:Port:[/blue] {ip_port}\n"
         
+        # kubectl exec alternative
+        kubectl_info = ""
+        if pod_name:
+            kubectl_info = f"[dim]kubectl:[/dim] [dim]{get_kubectl_exec_command(pod_name)}[/dim]\n"
+
         panel_content = (
             f"[green]Reservation Details[/green]\n\n"
             + res_name_section
             + f"[blue]Quick Connect:[/blue] {connect_command}\n"
-            f"[blue]SSH Command:[/blue] {ssh_command_display}\n"
+            f"[blue]SSH/VS Code:[/blue] {ssh_command_display}\n"
             + vscode_info
+            + kubectl_info
             + jupyter_info
             + f"[blue]Pod Name:[/blue] {connection_info['pod_name']}\n"
             + ip_section
@@ -640,9 +634,9 @@ def login() -> None:
 @click.option(
     "--gpus",
     "-g",
-    type=click.Choice(["1", "2", "4", "8", "12", "16",
+    type=click.Choice(["0", "1", "2", "4", "8", "12", "16",
                       "20", "24", "32", "40", "48"]),
-    help="Number of GPUs to reserve (multiples of max-per-node for multinode setups)",
+    help="Number of GPUs to reserve (0 for CPU-only, multiples of max-per-node for multinode)",
 )
 @click.option(
     "--gpu-type",
@@ -1632,20 +1626,22 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
 
             reservations = sorted(reservations, key=sort_key)
 
-            # Create table with enhanced columns for queue info
+            # Create table with columns sized for typical terminal widths
+            show_all_users = (user == "all")
             table = Table(title="GPU Reservations")
             table.add_column("ID", style="cyan", no_wrap=True)
             table.add_column("Name", style="yellow", no_wrap=True)
-            table.add_column("User", style="green")
-            table.add_column("GPUs", style="magenta")
-            table.add_column("Status")
+            if show_all_users:
+                table.add_column("User", style="green", no_wrap=True)
+            table.add_column("GPUs", style="magenta", no_wrap=True, min_width=6)
+            table.add_column("Status", no_wrap=True, min_width=8)
             table.add_column("Pod Name", style="dim", no_wrap=True)
-            table.add_column("IP:Port", style="blue", no_wrap=True)
             table.add_column("Storage", style="dim", no_wrap=True)
-            table.add_column("Queue Info", style="cyan")
-            table.add_column("Created", style="blue")
-            table.add_column("Expires/ETA", style="red")
+            table.add_column("Expires/ETA", style="red", no_wrap=True, min_width=10)
             if details:
+                table.add_column("IP:Port", style="blue", no_wrap=True)
+                table.add_column("Queue Info", style="cyan")
+                table.add_column("Created", style="blue")
                 table.add_column("CLI Ver", style="dim", no_wrap=True)
                 table.add_column("Lambda Ver", style="dim", no_wrap=True)
 
@@ -1816,26 +1812,29 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         lambda_version_display = lambda_version if lambda_version else "<0.2.6"
 
                     # Apply dimming to entire row for cancelled/expired reservations
+                    def _dim(val):
+                        return f"[dim]{val}[/dim]" if dim_row else val
+
                     row_data = [
-                        f"[dim]{str(reservation_id)[:8]}[/dim]" if dim_row else str(
-                            reservation_id)[:8],
-                        f"[dim]{res_name_display}[/dim]" if dim_row else res_name_display,
-                        f"[dim]{user_display}[/dim]" if dim_row else user_display,
-                        f"[dim]{gpu_display}[/dim]" if dim_row else gpu_display,
+                        _dim(str(reservation_id)[:8]),
+                        _dim(res_name_display),
+                    ]
+                    if show_all_users:
+                        row_data.append(_dim(user_display))
+                    row_data += [
+                        _dim(gpu_display),
                         status_display,
-                        f"[dim]{pod_name_display}[/dim]" if dim_row else pod_name_display,
-                        f"[dim]{ip_address}[/dim]" if dim_row else ip_address,
-                        f"[dim]{storage_display}[/dim]" if dim_row else storage_display,
-                        f"[dim]{queue_info}[/dim]" if dim_row else queue_info,
-                        f"[dim]{created_formatted}[/dim]" if dim_row else created_formatted,
-                        f"[dim]{expires_formatted}[/dim]" if dim_row else expires_formatted,
+                        _dim(pod_name_display),
+                        _dim(storage_display),
+                        _dim(expires_formatted),
                     ]
 
                     if details:
-                        row_data.append(
-                            f"[dim]{cli_version_display}[/dim]" if dim_row else cli_version_display)
-                        row_data.append(
-                            f"[dim]{lambda_version_display}[/dim]" if dim_row else lambda_version_display)
+                        row_data.append(_dim(ip_address))
+                        row_data.append(_dim(queue_info))
+                        row_data.append(_dim(created_formatted))
+                        row_data.append(_dim(cli_version_display))
+                        row_data.append(_dim(lambda_version_display))
 
                     table.add_row(*row_data)
 
@@ -2820,9 +2819,11 @@ def _show_availability_watch(interval: int) -> None:
 @click.argument("reservation_id", required=False)
 @click.pass_context
 def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
-    """Connect to a reservation via SSH
+    """Connect to a reservation via interactive shell
 
-    Convenience command that wraps SSH with ProxyCommand for easy access.
+    Opens an interactive bash session on your GPU pod using the Kubernetes API.
+    No kubectl or AWS CLI needed - uses Python libraries directly.
+
     If no reservation ID is provided, shows your active reservations and lets you select one.
 
     Arguments:
@@ -2834,15 +2835,8 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         gpu-dev connect abc12345                # Connect to reservation abc12345
         gpu-dev connect abc1                    # Short form works too
 
-    This command:
-        - Uses HTTP CONNECT tunneling through ssh.devservers.io
-        - Handles ProxyCommand setup automatically
-        - Works with agent forwarding enabled by default
-
-    For VS Code Remote or manual SSH, use 'gpu-dev show' to see full SSH command.
+    For VS Code Remote or manual SSH, use 'gpu-dev show' to see SSH commands.
     """
-    import subprocess
-
     try:
         with Live(
             Spinner("dots", text="📡 Fetching reservation details..."), console=console
@@ -2907,19 +2901,15 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
                 f"[red]❌ Reservation is not active (status: {connection_info['status']})[/red]")
             return
 
-        # Extract SSH command and execute it
-        ssh_command = connection_info.get("ssh_command", "")
-        if not ssh_command:
-            rprint("[red]❌ No SSH command available for this reservation[/red]")
+        pod_name = connection_info.get("pod_name", "")
+        if not pod_name:
+            rprint("[red]❌ No pod name available for this reservation[/red]")
             return
 
-        # Add agent forwarding if not already present
-        if "-A" not in ssh_command and "-o ForwardAgent=yes" not in ssh_command:
-            ssh_command = ssh_command.replace("ssh ", "ssh -A ", 1)
-
-        # Parse and execute the command
-        rprint(f"[dim]Executing: {ssh_command}[/dim]\n")
-        subprocess.run(ssh_command, shell=True)
+        # Connect via Python kubernetes client (no kubectl/aws cli needed)
+        rprint(f"[dim]Connecting to pod {pod_name}...[/dim]\n")
+        api_client = get_k8s_api_client(config)
+        kube_exec_interactive(api_client, pod_name)
 
     except KeyboardInterrupt:
         rprint("\n[yellow]Connection cancelled by user[/yellow]")
@@ -3178,24 +3168,26 @@ def set(key: str, value: str) -> None:
 
 
 @config.command()
-@click.argument("env_name", type=click.Choice(["test", "prod"]))
+@click.argument("env_name", type=click.Choice(["test", "prod", "local"]))
 def environment(env_name: str) -> None:
-    """Set the environment (test or prod)
+    """Set the environment (test, prod, or local)
 
     Sets the AWS region and Terraform workspace for the specified environment.
     This configuration is used by the switch-to.sh script.
 
     Arguments:
-        ENV_NAME: Environment name (test or prod)
+        ENV_NAME: Environment name (test, prod, or local)
 
     \b
     Examples:
         gpu-dev config environment test   # Set to test environment (us-west-1)
         gpu-dev config environment prod   # Set to prod environment (us-east-2)
+        gpu-dev config environment local  # Set to local k3d environment
 
     Environment configurations:
-        test: us-west-1, Terraform workspace 'default'
-        prod: us-east-2, Terraform workspace 'prod'
+        test:  us-west-1, Terraform workspace 'default'
+        prod:  us-east-2, Terraform workspace 'prod'
+        local: localhost:8000, k3d cluster
     """
     from .config import Config
 

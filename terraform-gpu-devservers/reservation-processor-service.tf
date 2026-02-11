@@ -67,7 +67,6 @@ locals {
 
 resource "null_resource" "reservation_processor_build" {
   depends_on = [
-    null_resource.setup_docker_certs,
     kubernetes_deployment.registry_native,
     kubernetes_service.registry_native,
   ]
@@ -115,7 +114,7 @@ kubectl port-forward --address 0.0.0.0 -n gpu-controlplane svc/registry-native $
       # Wait for port-forward to be ready
       echo "Waiting for registry to be accessible..."
       for i in {1..30}; do
-        if curl -sf --max-time 2 --insecure https://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+        if curl -sf --max-time 2 http://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
           echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
           break
         fi
@@ -282,6 +281,31 @@ resource "aws_iam_role_policy" "reservation_processor_ecr" {
   })
 }
 
+# IAM policy for S3 (needed for disk content backups)
+resource "aws_iam_role_policy" "reservation_processor_s3" {
+  name = "s3-access"
+  role = aws_iam_role.reservation_processor_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "${aws_s3_bucket.disk_contents.arn}",
+          "${aws_s3_bucket.disk_contents.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
 # IAM policy for EFS (needed for shared storage management)
 resource "aws_iam_role_policy" "reservation_processor_efs" {
   name = "efs-access"
@@ -431,7 +455,7 @@ resource "kubernetes_config_map" "reservation_processor_config" {
     DEFAULT_TIMEOUT_HOURS      = "4"    # Default 4 hours
     
     # Container Configuration
-    GPU_DEV_CONTAINER_IMAGE    = "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel"
+    GPU_DEV_CONTAINER_IMAGE    = local.runtime_latest_image_uri
     
     # Optional: EFS Configuration (if using persistent disks)
     EFS_SECURITY_GROUP_ID      = aws_security_group.efs_sg.id
@@ -444,7 +468,10 @@ resource "kubernetes_config_map" "reservation_processor_config" {
     
     # Optional: ECR Configuration (if using custom images)
     ECR_REPOSITORY_URL         = aws_ecr_repository.gpu_dev_custom_images.repository_url
-    
+
+    # S3 bucket for storing disk contents at snapshot time
+    DISK_CONTENTS_BUCKET       = aws_s3_bucket.disk_contents.bucket
+
     # Version Configuration
     PROCESSOR_VERSION          = "0.4.0"
     MIN_CLI_VERSION            = "0.0.1"  # Temporarily lowered to allow current CLI

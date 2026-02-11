@@ -64,7 +64,6 @@ locals {
 
 resource "null_resource" "api_service_build" {
   depends_on = [
-    null_resource.setup_docker_certs,
     kubernetes_deployment.registry_native,
     kubernetes_service.registry_native,
   ]
@@ -112,7 +111,7 @@ resource "null_resource" "api_service_build" {
       # Wait for port-forward to be ready
       echo "Waiting for registry to be accessible..."
       for i in {1..30}; do
-        if curl -sf --max-time 2 --insecure https://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
+        if curl -sf --max-time 2 http://127.0.0.1:$REGISTRY_PORT/v2/ > /dev/null 2>&1; then
           echo "✓ Registry is accessible at 127.0.0.1:$REGISTRY_PORT"
           break
         fi
@@ -203,6 +202,29 @@ resource "aws_iam_role_policy" "api_service_sts" {
   })
 }
 
+# IAM policy for S3 (needed for reading disk content backups)
+resource "aws_iam_role_policy" "api_service_s3" {
+  name = "s3-read-access"
+  role = aws_iam_role.api_service_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "${aws_s3_bucket.disk_contents.arn}",
+          "${aws_s3_bucket.disk_contents.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
 # ============================================================================
 # Kubernetes Resources
 # ============================================================================
@@ -240,6 +262,7 @@ resource "kubernetes_config_map" "api_service_config" {
     API_KEY_TTL_HOURS    = "2"
     ALLOWED_AWS_ROLE     = "SSOCloudDevGpuReservation"
     AWS_REGION           = local.current_config.aws_region
+    DISK_CONTENTS_BUCKET = aws_s3_bucket.disk_contents.bucket
   }
 }
 

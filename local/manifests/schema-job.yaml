@@ -1,0 +1,101 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: schema-migration
+  namespace: gpu-controlplane
+  labels:
+    app: database-migration
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: database-migration
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-postgres
+          image: ghcr.io/pgmq/pg18-pgmq:v1.8.1
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              echo "Waiting for PostgreSQL to be ready..."
+              until pg_isready -h postgres-primary -U gpudev -d gpudev; do
+                echo "PostgreSQL is unavailable - sleeping"
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+      containers:
+        - name: migrate
+          image: ghcr.io/pgmq/pg18-pgmq:v1.8.1
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "=========================================="
+              echo "Database Schema Migration"
+              echo "=========================================="
+
+              echo "Applying schema files..."
+              for file in $(ls /schema/*.sql | sort); do
+                if [ -f "$file" ]; then
+                  echo "  -> $(basename $file)"
+                  PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                    -h postgres-primary \
+                    -U "$POSTGRES_USER" \
+                    -d "$POSTGRES_DB" \
+                    -v ON_ERROR_STOP=1 \
+                    -f "$file" || {
+                      echo "ERROR: Failed to apply $(basename $file)"
+                      exit 1
+                    }
+                fi
+              done
+
+              echo ""
+              echo "Applying fixture data..."
+              for file in $(ls /fixtures/*.sql | sort); do
+                if [ -f "$file" ]; then
+                  echo "  -> $(basename $file)"
+                  PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                    -h postgres-primary \
+                    -U "$POSTGRES_USER" \
+                    -d "$POSTGRES_DB" \
+                    -v ON_ERROR_STOP=1 \
+                    -f "$file" || {
+                      echo "ERROR: Failed to apply $(basename $file)"
+                      exit 1
+                    }
+                fi
+              done
+
+              echo ""
+              echo "=========================================="
+              echo "Migration completed successfully!"
+              echo "=========================================="
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+            - name: fixtures
+              mountPath: /fixtures
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: schema
+          configMap:
+            name: database-schema
+        - name: fixtures
+          configMap:
+            name: database-fixtures
