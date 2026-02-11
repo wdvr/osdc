@@ -3605,12 +3605,8 @@ def create_pod(
     try:
         v1 = client.CoreV1Api(k8s_client)
 
-        # Determine container image to use based on architecture
-        if gpu_type.startswith("cpu-arm"):
-            # Use Python base image for ARM64 CPU instances with PyTorch installed via pip
-            container_image = "python:3.11-slim"  # Multi-arch image with ARM64 support
-        else:
-            container_image = GPU_DEV_CONTAINER_IMAGE  # Default x86_64 PyTorch image
+        # Use the configured container image for all types
+        container_image = GPU_DEV_CONTAINER_IMAGE
 
         if dockerimage:
             logger.info(f"Using custom Docker image: {dockerimage}")
