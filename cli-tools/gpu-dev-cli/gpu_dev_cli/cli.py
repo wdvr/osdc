@@ -2909,7 +2909,9 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         # Connect via Python kubernetes client (no kubectl/aws cli needed)
         rprint(f"[dim]Connecting to pod {pod_name}...[/dim]\n")
         api_client = get_k8s_api_client(config)
-        kube_exec_interactive(api_client, pod_name)
+        # Use zsh if available (default on our dev pods), fallback to bash
+        shell = "/bin/zsh" if config.user_config.get("environment") == "local" else "/bin/bash"
+        kube_exec_interactive(api_client, pod_name, shell=shell)
 
     except KeyboardInterrupt:
         rprint("\n[yellow]Connection cancelled by user[/yellow]")

@@ -17,10 +17,11 @@ echo ""
 echo "Building gpu-dev-processor:local..."
 docker build -t gpu-dev-processor:local -f "$TF_DIR/reservation-processor-service/Dockerfile" "$TF_DIR/"
 
-# CPU-only dev pod
+# CPU-only dev pod (uses terraform-gpu-devservers/docker/ as build context
+# to reuse the same shell configs, scripts, and ssh_config as production)
 echo ""
 echo "Building gpu-dev-pod:local..."
-docker build -t gpu-dev-pod:local -f "$SCRIPT_DIR/dev-pod-image/Dockerfile" "$SCRIPT_DIR/dev-pod-image/"
+docker build -t gpu-dev-pod:local -f "$SCRIPT_DIR/dev-pod-image/Dockerfile" "$TF_DIR/docker/"
 
 # Load into k3d
 echo ""

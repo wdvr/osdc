@@ -155,13 +155,15 @@ def get_k8s_api_client(config) -> k8s_client.ApiClient:
     return k8s_client.ApiClient(configuration)
 
 
-def kube_exec_interactive(api_client: k8s_client.ApiClient, pod_name: str, namespace: str = NAMESPACE) -> int:
-    """Interactive exec into a pod - equivalent to kubectl exec -it -- /bin/bash -l.
+def kube_exec_interactive(api_client: k8s_client.ApiClient, pod_name: str, namespace: str = NAMESPACE, shell: str = None) -> int:
+    """Interactive exec into a pod - equivalent to kubectl exec -it -- <shell> -l.
 
     Handles raw terminal mode, bidirectional I/O, and terminal resize.
     Falls back to non-interactive mode when stdin is not a TTY (e.g., piped input).
     Returns the exit code from the remote process.
     """
+    if shell is None:
+        shell = "/bin/bash"
     is_tty = sys.stdin.isatty()
 
     v1 = k8s_client.CoreV1Api(api_client)
@@ -172,7 +174,7 @@ def kube_exec_interactive(api_client: k8s_client.ApiClient, pod_name: str, names
         v1.connect_get_namespaced_pod_exec,
         pod_name,
         namespace,
-        command=["/bin/bash", "-l"],
+        command=[shell, "-l"],
         stderr=True,
         stdin=True,
         stdout=True,
