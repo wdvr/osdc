@@ -1,4 +1,4 @@
-{{- if .Values.imagePrepuller.enabled }}
+{{- if and .Values.imagePrepuller.enabled .Values.imagePrepuller.image }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:

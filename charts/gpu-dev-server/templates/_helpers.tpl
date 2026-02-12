@@ -87,11 +87,11 @@ PostgreSQL connection host (primary)
 PostgreSQL credentials secret name
 */}}
 {{- define "gpu-dev-server.postgresSecretName" -}}
-{{- if .Values.postgres.auth.existingSecret }}
-{{- .Values.postgres.auth.existingSecret }}
-{{- else }}
+{{- if .Values.postgres.auth.existingSecret -}}
+{{- .Values.postgres.auth.existingSecret -}}
+{{- else -}}
 postgres-credentials
-{{- end }}
+{{- end -}}
 {{- end }}
 
 {{/*
