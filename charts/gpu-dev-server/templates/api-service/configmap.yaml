@@ -12,4 +12,10 @@ data:
   API_KEY_TTL_HOURS: {{ .Values.apiService.config.apiKeyTtlHours | quote }}
   ALLOWED_AWS_ROLE: {{ .Values.apiService.config.allowedAwsRole | quote }}
   AWS_REGION: {{ .Values.cloudProvider.region | quote }}
+  {{- if .Values.apiService.config.diskContentsBucket }}
+  DISK_CONTENTS_BUCKET: {{ .Values.apiService.config.diskContentsBucket | quote }}
+  {{- end }}
+  {{- if .Values.apiService.config.localDevUser }}
+  LOCAL_DEV_USER: {{ .Values.apiService.config.localDevUser | quote }}
+  {{- end }}
 {{- end }}

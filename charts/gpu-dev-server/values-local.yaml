@@ -1,0 +1,110 @@
+# Local k3d development overrides for GPU Dev Server
+# Usage: helm install gpu-dev ./charts/gpu-dev-server -f values-local.yaml
+
+global:
+  environment: "local"
+
+cloudProvider:
+  name: "local"
+  region: "local"
+
+storage:
+  class: ""  # Use k3d default storage class
+  postgres:
+    size: "1Gi"
+  registry:
+    size: "1Gi"
+
+postgres:
+  image:
+    repository: "ghcr.io/pgmq/pg18-pgmq"
+    tag: "v1.8.1"
+  auth:
+    password: "localdevpassword"
+    replicationPassword: "localdevreplication"
+  replica:
+    replicas: 0  # No replica locally
+  primary:
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+  nodeSelector: {}
+  tolerations: []
+
+registry:
+  ghcr:
+    enabled: false
+  dockerhub:
+    enabled: false
+  native:
+    enabled: false
+  nodeSelector: {}
+  tolerations: []
+
+apiService:
+  replicas: 1
+  image:
+    repository: "gpu-dev-api"
+    tag: "local"
+    pullPolicy: IfNotPresent
+  config:
+    localDevUser: "localdev"
+    apiKeyTtlHours: "24"
+    allowedAwsRole: "*"
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  nodeSelector: {}
+  tolerations: []
+
+reservationProcessor:
+  image:
+    repository: "gpu-dev-processor"
+    tag: "local"
+    pullPolicy: IfNotPresent
+  config:
+    gpuDevContainerImage: "gpu-dev-pod:local"
+    imagePullPolicy: "IfNotPresent"
+    visibilityTimeoutSeconds: "300"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  nodeSelector: {}
+  tolerations: []
+
+availabilityUpdater:
+  enabled: false  # No auto-updater locally
+
+reservationExpiry:
+  enabled: false  # No auto-expiry locally
+
+nvidia:
+  devicePlugin:
+    enabled: false
+
+imagePrepuller:
+  enabled: false
+
+gpuDev:
+  rbac:
+    enabled: true
+
+databaseMigration:
+  enabled: true
+  image:
+    repository: "ghcr.io/pgmq/pg18-pgmq"
+    tag: "v1.8.1"

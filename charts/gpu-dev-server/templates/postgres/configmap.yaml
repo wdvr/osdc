@@ -1,61 +1,106 @@
 {{- if .Values.postgres.enabled }}
+---
+# Primary PostgreSQL configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: postgres-config
+  name: postgres-primary-config
   namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
   labels:
     {{- include "gpu-dev-server.labels" . | nindent 4 }}
     app: postgres
+    role: primary
 data:
-  # Primary configuration
-  primary-postgresql.conf: |
+  postgresql.conf: |
     listen_addresses = '*'
     port = 5432
     max_connections = 200
     shared_buffers = 256MB
+    effective_cache_size = 768MB
     work_mem = 16MB
     maintenance_work_mem = 128MB
     wal_level = replica
     max_wal_senders = 10
     max_replication_slots = 10
+    wal_keep_size = 1GB
     hot_standby = on
-    synchronous_commit = on
-    archive_mode = off
+    checkpoint_completion_target = 0.9
     log_destination = 'stderr'
     logging_collector = off
-    log_min_messages = warning
-    log_min_error_statement = error
-
-  # Replica configuration
-  replica-postgresql.conf: |
+    log_statement = 'ddl'
+    log_min_duration_statement = 1000
+    shared_preload_libraries = 'pg_partman_bgw'
+  pg_hba.conf: |
+    # TYPE  DATABASE        USER            ADDRESS                 METHOD
+    local   all             all                                     trust
+    host    all             all             127.0.0.1/32            scram-sha-256
+    host    all             all             ::1/128                 scram-sha-256
+    host    all             all             0.0.0.0/0               scram-sha-256
+    host    replication     replicator      0.0.0.0/0               scram-sha-256
+---
+{{- if gt (int .Values.postgres.replica.replicas) 0 }}
+# Replica PostgreSQL configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-replica-config
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: postgres
+    role: replica
+data:
+  postgresql.conf: |
     listen_addresses = '*'
     port = 5432
     max_connections = 200
-    shared_buffers = 128MB
-    work_mem = 8MB
-    maintenance_work_mem = 64MB
+    shared_buffers = 256MB
+    effective_cache_size = 768MB
+    work_mem = 16MB
+    maintenance_work_mem = 128MB
     hot_standby = on
     hot_standby_feedback = on
     log_destination = 'stderr'
     logging_collector = off
-    log_min_messages = warning
-    log_min_error_statement = error
-
-  # Primary pg_hba.conf
-  primary-pg_hba.conf: |
+  pg_hba.conf: |
     # TYPE  DATABASE        USER            ADDRESS                 METHOD
     local   all             all                                     trust
-    host    all             all             127.0.0.1/32            trust
-    host    all             all             ::1/128                 trust
-    host    all             all             0.0.0.0/0               md5
-    host    replication     replicator      0.0.0.0/0               md5
+    host    all             all             127.0.0.1/32            scram-sha-256
+    host    all             all             ::1/128                 scram-sha-256
+    host    all             all             0.0.0.0/0               scram-sha-256
+{{- end }}
+---
+# PostgreSQL init script (creates PGMQ extension and replication user)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: postgres
+data:
+  init-pgmq.sh: |
+    #!/bin/bash
+    set -e
 
-  # Replica pg_hba.conf
-  replica-pg_hba.conf: |
-    # TYPE  DATABASE        USER            ADDRESS                 METHOD
-    local   all             all                                     trust
-    host    all             all             127.0.0.1/32            trust
-    host    all             all             ::1/128                 trust
-    host    all             all             0.0.0.0/0               md5
+    echo "Creating replication user..."
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+      DO \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${REPLICATION_USER}') THEN
+          CREATE ROLE ${REPLICATION_USER} WITH REPLICATION LOGIN PASSWORD '${REPLICATION_PASSWORD}';
+        END IF;
+      END
+      \$\$;
+
+      CREATE EXTENSION IF NOT EXISTS pgmq;
+      CREATE EXTENSION IF NOT EXISTS pg_partman;
+
+      GRANT ALL ON SCHEMA pgmq TO ${POSTGRES_USER};
+      GRANT ALL ON ALL TABLES IN SCHEMA pgmq TO ${POSTGRES_USER};
+      GRANT ALL ON ALL SEQUENCES IN SCHEMA pgmq TO ${POSTGRES_USER};
+    EOSQL
+
+    echo "PGMQ extension enabled and replication user created."
 {{- end }}

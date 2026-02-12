@@ -4,6 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TF_DIR="$ROOT_DIR/terraform-gpu-devservers"
+CHART_DIR="$ROOT_DIR/charts/gpu-dev-server"
 
 echo "=== Setting up local k3d development environment ==="
 
@@ -38,46 +39,22 @@ kubectl label node "$NODE" NodeType=cpu --overwrite
 echo ""
 "$SCRIPT_DIR/build-images.sh"
 
-# 4. Apply namespaces
+# 4. Deploy via Helm chart
 echo ""
-echo "Applying namespaces..."
-kubectl apply -f "$SCRIPT_DIR/manifests/namespaces.yaml"
+echo "Installing GPU Dev Server chart..."
+helm upgrade --install gpu-dev-server "$CHART_DIR" \
+    -f "$CHART_DIR/values-local.yaml" \
+    -n gpu-controlplane --create-namespace \
+    --wait --timeout 300s
 
-# 5. Apply postgres
+# 5. Wait for PostgreSQL to be ready (Helm --wait handles deployments but
+#    StatefulSets may still need a moment for pg_isready)
 echo ""
-echo "Applying PostgreSQL..."
-kubectl apply -f "$SCRIPT_DIR/manifests/postgres.yaml"
-
-# Wait for postgres to be ready
 echo "Waiting for PostgreSQL to be ready..."
 kubectl wait --for=condition=ready pod -l app=postgres,role=primary \
     -n gpu-controlplane --timeout=120s
 
-# 6. Create ConfigMaps from SQL files for schema migration
-echo ""
-echo "Creating schema ConfigMaps from SQL files..."
-kubectl create configmap database-schema \
-    -n gpu-controlplane \
-    --from-file="$TF_DIR/database/schema/" \
-    --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl create configmap database-fixtures \
-    -n gpu-controlplane \
-    --from-file="$TF_DIR/database/fixtures/" \
-    --dry-run=client -o yaml | kubectl apply -f -
-
-# 7. Run schema migration
-echo ""
-echo "Running schema migration..."
-# Delete previous job if it exists (jobs are immutable)
-kubectl delete job schema-migration -n gpu-controlplane --ignore-not-found
-kubectl apply -f "$SCRIPT_DIR/manifests/schema-job.yaml"
-
-echo "Waiting for schema migration to complete..."
-kubectl wait --for=condition=complete job/schema-migration \
-    -n gpu-controlplane --timeout=120s
-
-# 8. Clean up database for local dev (only keep the local CPU type active)
+# 6. Clean up database for local dev (only keep the local CPU type active)
 echo ""
 echo "Configuring database for local dev (only $LOCAL_GPU_TYPE active)..."
 kubectl exec -n gpu-controlplane postgres-primary-0 -c postgres -- \
@@ -94,27 +71,12 @@ kubectl exec -n gpu-controlplane postgres-primary-0 -c postgres -- \
         WHERE gpu_type = '$LOCAL_GPU_TYPE';
     "
 
-# 9. Apply RBAC
-echo ""
-echo "Applying RBAC..."
-kubectl apply -f "$SCRIPT_DIR/manifests/rbac.yaml"
-
-# 10. Deploy API service
-echo ""
-echo "Deploying API service..."
-kubectl apply -f "$SCRIPT_DIR/manifests/api-service.yaml"
-
-# 11. Deploy processor
-echo ""
-echo "Deploying reservation processor..."
-kubectl apply -f "$SCRIPT_DIR/manifests/processor.yaml"
-
-# 12. Apply ingress
+# 7. Apply ingress (local-only, not part of chart)
 echo ""
 echo "Applying ingress..."
 kubectl apply -f "$SCRIPT_DIR/manifests/ingress.yaml"
 
-# 13. Wait for API service to be ready
+# 8. Wait for API service to be ready
 echo ""
 echo "Waiting for API service to be ready..."
 kubectl wait --for=condition=ready pod -l app=api-service \

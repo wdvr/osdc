@@ -1,5 +1,28 @@
 {{- if .Values.postgres.enabled }}
 ---
+# Headless Service for PostgreSQL Primary (required for StatefulSet DNS)
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-primary-headless
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: postgres
+    role: primary
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    app: postgres
+    role: primary
+---
+# ClusterIP Service for PostgreSQL Primary (read-write endpoint)
 apiVersion: v1
 kind: Service
 metadata:
@@ -21,6 +44,29 @@ spec:
     role: primary
 ---
 {{- if gt (int .Values.postgres.replica.replicas) 0 }}
+# Headless Service for PostgreSQL Replica (required for StatefulSet DNS)
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-replica-headless
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: postgres
+    role: replica
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    app: postgres
+    role: replica
+---
+# ClusterIP Service for PostgreSQL Replica (read-only endpoint)
 apiVersion: v1
 kind: Service
 metadata:

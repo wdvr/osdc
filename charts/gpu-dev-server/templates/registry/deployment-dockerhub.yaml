@@ -1,0 +1,148 @@
+{{- if .Values.registry.dockerhub.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-dockerhub-config
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: registry-cache
+data:
+  config.yml: |
+    version: 0.1
+    log:
+      level: info
+      fields:
+        service: registry
+    storage:
+      filesystem:
+        rootdirectory: /var/lib/registry
+      cache:
+        blobdescriptor: inmemory
+      delete:
+        enabled: true
+    http:
+      addr: :5000
+      headers:
+        X-Content-Type-Options: [nosniff]
+    proxy:
+      remoteurl: https://registry-1.docker.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-dockerhub
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: registry-cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry-cache
+      upstream: dockerhub
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: registry-cache
+        upstream: dockerhub
+    spec:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      {{- with .Values.registry.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: registry
+          image: "{{ .Values.registry.dockerhub.image.repository }}:{{ .Values.registry.dockerhub.image.tag }}"
+          ports:
+            - containerPort: 5000
+              name: registry
+          volumeMounts:
+            - name: config
+              mountPath: /etc/docker/registry
+            - name: data
+              mountPath: /var/lib/registry
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: registry-dockerhub-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: registry-dockerhub-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-dockerhub-data
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: registry-cache
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.storage.class }}
+  storageClassName: {{ include "gpu-dev-server.storageClass" . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.registry.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-dockerhub
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: registry-cache
+  {{- if eq .Values.cloudProvider.name "aws" }}
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+  {{- end }}
+spec:
+  {{- if eq .Values.cloudProvider.name "aws" }}
+  type: LoadBalancer
+  {{- else }}
+  type: ClusterIP
+  {{- end }}
+  ports:
+    - port: 5000
+      targetPort: 5000
+      protocol: TCP
+      name: registry
+  selector:
+    app: registry-cache
+    upstream: dockerhub
+{{- end }}

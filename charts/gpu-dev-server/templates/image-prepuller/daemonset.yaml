@@ -1,0 +1,42 @@
+{{- if .Values.imagePrepuller.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-dev-image-prepuller
+  namespace: kube-system
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: image-prepuller
+spec:
+  selector:
+    matchLabels:
+      app: image-prepuller
+  template:
+    metadata:
+      labels:
+        app: image-prepuller
+    spec:
+      {{- with .Values.imagePrepuller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: pull-gpu-dev-image
+          image: {{ .Values.imagePrepuller.image | quote }}
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c", "echo 'GPU dev image pulled successfully'"]
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "10Mi"
+            limits:
+              cpu: "10m"
+              memory: "10Mi"
+{{- end }}

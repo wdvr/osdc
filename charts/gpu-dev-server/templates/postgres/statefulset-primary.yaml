@@ -9,7 +9,7 @@ metadata:
     app: postgres
     role: primary
 spec:
-  serviceName: postgres-primary
+  serviceName: postgres-primary-headless
   replicas: {{ .Values.postgres.primary.replicas }}
   selector:
     matchLabels:
@@ -21,6 +21,10 @@ spec:
         app: postgres
         role: primary
     spec:
+      serviceAccountName: postgres-service-account
+      securityContext:
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
       {{- with .Values.postgres.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -30,12 +34,21 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
-        - name: init-pgdata
+        - name: init-config
           image: busybox:1.36
-          command: ['sh', '-c', 'chown -R 999:999 /var/lib/postgresql/data || true']
+          securityContext:
+            runAsUser: 999
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cp /config/postgresql.conf /var/lib/postgresql/data-config/postgresql.conf
+              cp /config/pg_hba.conf /var/lib/postgresql/data-config/pg_hba.conf
+              chmod 600 /var/lib/postgresql/data-config/*.conf
           volumeMounts:
-            - name: postgres-data
-              mountPath: /var/lib/postgresql/data
+            - name: config
+              mountPath: /config
+            - name: config-writable
+              mountPath: /var/lib/postgresql/data-config
       containers:
         - name: postgres
           image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
@@ -43,31 +56,30 @@ spec:
           ports:
             - containerPort: 5432
               name: postgres
+          envFrom:
+            - secretRef:
+                name: {{ include "gpu-dev-server.postgresSecretName" . }}
+            {{- if gt (int .Values.postgres.replica.replicas) 0 }}
+            - secretRef:
+                name: postgres-replication-credentials
+            {{- end }}
           env:
-            - name: POSTGRES_USER
-              value: {{ .Values.postgres.auth.username | quote }}
-            - name: POSTGRES_DB
-              value: {{ .Values.postgres.auth.database | quote }}
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "gpu-dev-server.postgresSecretName" . }}
-                  key: {{ .Values.postgres.auth.existingSecretKey }}
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
-            - name: POSTGRES_INITDB_ARGS
-              value: "--encoding=UTF8 --locale=C"
-          resources:
-            {{- toYaml .Values.postgres.primary.resources | nindent 12 }}
+          args:
+            - "-c"
+            - "config_file=/var/lib/postgresql/data-config/postgresql.conf"
+            - "-c"
+            - "hba_file=/var/lib/postgresql/data-config/pg_hba.conf"
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
-            - name: postgres-config
-              mountPath: /etc/postgresql/postgresql.conf
-              subPath: primary-postgresql.conf
-            - name: postgres-config
-              mountPath: /etc/postgresql/pg_hba.conf
-              subPath: primary-pg_hba.conf
+            - name: config-writable
+              mountPath: /var/lib/postgresql/data-config
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            {{- toYaml .Values.postgres.primary.resources | nindent 12 }}
           livenessProbe:
             exec:
               command:
@@ -93,15 +105,23 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
       volumes:
-        - name: postgres-config
+        - name: config
           configMap:
-            name: postgres-config
+            name: postgres-primary-config
+        - name: config-writable
+          emptyDir: {}
+        - name: init-scripts
+          configMap:
+            name: postgres-init-script
+            defaultMode: 0755
   volumeClaimTemplates:
     - metadata:
         name: postgres-data
       spec:
         accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.class }}
         storageClassName: {{ include "gpu-dev-server.storageClass" . }}
+        {{- end }}
         resources:
           requests:
             storage: {{ .Values.storage.postgres.size }}

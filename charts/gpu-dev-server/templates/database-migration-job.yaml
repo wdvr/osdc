@@ -1,4 +1,43 @@
 {{- if .Values.databaseMigration.enabled }}
+---
+# ConfigMap with schema SQL files
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: database-schema
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: database-migration
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  {{- range $path, $bytes := .Files.Glob "database/schema/*.sql" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+---
+# ConfigMap with fixture SQL files
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: database-fixtures
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: database-migration
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  {{- range $path, $bytes := .Files.Glob "database/fixtures/*.sql" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -12,7 +51,7 @@ metadata:
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
-  ttlSecondsAfterFinished: 300
+  ttlSecondsAfterFinished: 3600
   backoffLimit: 3
   template:
     metadata:
@@ -28,126 +67,91 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      containers:
-        - name: migration
+      initContainers:
+        - name: wait-for-postgres
           image: "{{ .Values.databaseMigration.image.repository }}:{{ .Values.databaseMigration.image.tag }}"
-          env:
-            - name: PGHOST
-              value: {{ include "gpu-dev-server.postgresHost" . }}
-            - name: PGPORT
-              value: "5432"
-            - name: PGUSER
-              value: {{ .Values.postgres.auth.username | quote }}
-            - name: PGDATABASE
-              value: {{ .Values.postgres.auth.database | quote }}
-            - name: PGPASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "gpu-dev-server.postgresSecretName" . }}
-                  key: {{ .Values.postgres.auth.existingSecretKey }}
-          command:
-            - /bin/bash
-            - -c
+          command: ["/bin/bash", "-c"]
+          args:
             - |
-              set -e
               echo "Waiting for PostgreSQL to be ready..."
-              until pg_isready -h $PGHOST -p $PGPORT -U $PGUSER; do
-                echo "Waiting for postgres..."
+              until pg_isready -h {{ include "gpu-dev-server.postgresPrimaryService" . }} -U {{ .Values.postgres.auth.username }} -d {{ .Values.postgres.auth.database }}; do
+                echo "PostgreSQL is unavailable - sleeping"
                 sleep 2
               done
-              echo "PostgreSQL is ready. Running migrations..."
+              echo "PostgreSQL is ready!"
+          envFrom:
+            - secretRef:
+                name: {{ include "gpu-dev-server.postgresSecretName" . }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.databaseMigration.image.repository }}:{{ .Values.databaseMigration.image.tag }}"
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
 
-              # Create PGMQ extension if not exists
-              psql -c "CREATE EXTENSION IF NOT EXISTS pgmq;"
+              echo "=========================================="
+              echo "Database Schema Migration"
+              echo "=========================================="
+              echo ""
 
-              # Create replicator user for streaming replication
-              psql -c "DO \$\$ BEGIN
-                CREATE USER replicator WITH REPLICATION ENCRYPTED PASSWORD '$PGPASSWORD';
-              EXCEPTION
-                WHEN duplicate_object THEN
-                  NULL;
-              END \$\$;"
+              echo "Applying schema files..."
+              for file in $(ls /schema/*.sql | sort); do
+                if [ -f "$file" ]; then
+                  echo "  → $(basename $file)"
+                  PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                    -h {{ include "gpu-dev-server.postgresPrimaryService" . }} \
+                    -U "$POSTGRES_USER" \
+                    -d "$POSTGRES_DB" \
+                    -v ON_ERROR_STOP=1 \
+                    -f "$file" || {
+                      echo "ERROR: Failed to apply $(basename $file)"
+                      exit 1
+                    }
+                fi
+              done
 
-              # Create gpu_reservations queue
-              psql -c "SELECT pgmq.create('gpu_reservations');" 2>/dev/null || echo "Queue may already exist"
+              echo ""
+              echo "Applying fixture data..."
+              for file in $(ls /fixtures/*.sql | sort); do
+                if [ -f "$file" ]; then
+                  echo "  → $(basename $file)"
+                  PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                    -h {{ include "gpu-dev-server.postgresPrimaryService" . }} \
+                    -U "$POSTGRES_USER" \
+                    -d "$POSTGRES_DB" \
+                    -v ON_ERROR_STOP=1 \
+                    -f "$file" || {
+                      echo "ERROR: Failed to apply $(basename $file)"
+                      exit 1
+                    }
+                fi
+              done
 
-              # Create tables (idempotent)
-              psql <<EOF
-              -- API Users table
-              CREATE TABLE IF NOT EXISTS api_users (
-                  user_id SERIAL PRIMARY KEY,
-                  username VARCHAR(255) UNIQUE NOT NULL,
-                  email VARCHAR(255),
-                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                  is_active BOOLEAN DEFAULT true
-              );
-
-              -- API Keys table
-              CREATE TABLE IF NOT EXISTS api_keys (
-                  key_id SERIAL PRIMARY KEY,
-                  user_id INTEGER REFERENCES api_users(user_id) ON DELETE CASCADE,
-                  key_hash VARCHAR(128) NOT NULL UNIQUE,
-                  key_prefix VARCHAR(16) NOT NULL,
-                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                  expires_at TIMESTAMP WITH TIME ZONE,
-                  last_used_at TIMESTAMP WITH TIME ZONE,
-                  is_active BOOLEAN DEFAULT true,
-                  description TEXT
-              );
-
-              -- Reservations table
-              CREATE TABLE IF NOT EXISTS reservations (
-                  id SERIAL PRIMARY KEY,
-                  user_id INTEGER REFERENCES api_users(user_id),
-                  username VARCHAR(255) NOT NULL,
-                  gpu_type VARCHAR(50) NOT NULL,
-                  gpu_count INTEGER NOT NULL,
-                  status VARCHAR(50) NOT NULL DEFAULT 'pending',
-                  pod_name VARCHAR(255),
-                  node_name VARCHAR(255),
-                  ssh_port INTEGER,
-                  ssh_host VARCHAR(255),
-                  disk_name VARCHAR(255),
-                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                  started_at TIMESTAMP WITH TIME ZONE,
-                  expires_at TIMESTAMP WITH TIME ZONE,
-                  cancelled_at TIMESTAMP WITH TIME ZONE,
-                  error_message TEXT
-              );
-
-              -- Disks table
-              CREATE TABLE IF NOT EXISTS disks (
-                  id SERIAL PRIMARY KEY,
-                  name VARCHAR(255) NOT NULL,
-                  username VARCHAR(255) NOT NULL,
-                  size_gb INTEGER NOT NULL,
-                  status VARCHAR(50) NOT NULL DEFAULT 'available',
-                  snapshot_id VARCHAR(255),
-                  volume_id VARCHAR(255),
-                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                  last_used_at TIMESTAMP WITH TIME ZONE,
-                  UNIQUE(name, username)
-              );
-
-              -- GPU Availability table
-              CREATE TABLE IF NOT EXISTS gpu_availability (
-                  id SERIAL PRIMARY KEY,
-                  gpu_type VARCHAR(50) UNIQUE NOT NULL,
-                  total_gpus INTEGER NOT NULL DEFAULT 0,
-                  available_gpus INTEGER NOT NULL DEFAULT 0,
-                  running_instances INTEGER NOT NULL DEFAULT 0,
-                  queued_requests INTEGER NOT NULL DEFAULT 0,
-                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-              );
-
-              -- Indexes
-              CREATE INDEX IF NOT EXISTS idx_api_users_username ON api_users(username);
-              CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash) WHERE is_active = true;
-              CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id) WHERE is_active = true;
-              CREATE INDEX IF NOT EXISTS idx_reservations_username ON reservations(username);
-              CREATE INDEX IF NOT EXISTS idx_reservations_status ON reservations(status);
-              CREATE INDEX IF NOT EXISTS idx_disks_username ON disks(username);
-              EOF
-
-              echo "Database migration completed successfully!"
+              echo ""
+              echo "=========================================="
+              echo "Migration completed successfully!"
+              echo "=========================================="
+          envFrom:
+            - secretRef:
+                name: {{ include "gpu-dev-server.postgresSecretName" . }}
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+            - name: fixtures
+              mountPath: /fixtures
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: schema
+          configMap:
+            name: database-schema
+        - name: fixtures
+          configMap:
+            name: database-fixtures
 {{- end }}

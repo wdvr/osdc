@@ -1,0 +1,54 @@
+{{- if .Values.gpuDev.rbac.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-dev-service-account
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-dev-role
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log", "pods/portforward"]
+    verbs: ["get", "list", "create", "update", "patch", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-dev-role-binding
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-dev-role
+subjects:
+  - kind: ServiceAccount
+    name: gpu-dev-service-account
+    namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-dev-user-role-binding
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-dev-role
+subjects:
+  - kind: Group
+    name: gpu-dev-users
+    apiGroup: rbac.authorization.k8s.io
+{{- end }}

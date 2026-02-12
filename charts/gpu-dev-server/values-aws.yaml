@@ -1,38 +1,125 @@
 # AWS-specific overrides for GPU Dev Server
 # Usage: helm install gpu-dev ./charts/gpu-dev-server -f values-aws.yaml
+# Most AWS-specific values (image URIs, IAM roles, S3 buckets) are injected
+# dynamically by the helm_release resource in helm-gpu-dev-server.tf
 
 cloudProvider:
   name: "aws"
   region: "us-east-2"  # Override as needed
   aws:
-    eksClusterName: ""  # Set to your EKS cluster name
-    primaryAvailabilityZone: ""  # e.g., us-east-2a
-    efsSecurityGroupId: ""
-    efsSubnetIds: ""
-    ccacheSharedEfsId: ""
-    ecrRepositoryUrl: ""
+    eksClusterName: ""  # Set by TF
+    primaryAvailabilityZone: ""  # Set by TF
+    efsSecurityGroupId: ""  # Set by TF
+    efsSubnetIds: ""  # Set by TF
+    ccacheSharedEfsId: ""  # Set by TF
+    ecrRepositoryUrl: ""  # Set by TF
 
-# AWS uses gp3 storage class
+# AWS uses gp3 storage class (created by chart)
 storage:
   class: "gp3"
+  postgres:
+    size: "100Gi"
+  registry:
+    size: "50Gi"
 
-# Service account annotations for IRSA (IAM Roles for Service Accounts)
+# PostgreSQL - production config
+postgres:
+  primary:
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "2000m"
+        memory: "4Gi"
+  replica:
+    replicas: 1
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
+
+# Registry caches - all enabled for prod
+registry:
+  ghcr:
+    enabled: true
+  dockerhub:
+    enabled: true
+  native:
+    enabled: true
+    tls:
+      enabled: true
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
+
+# API Service - production config
 apiService:
+  replicas: 2
+  service:
+    type: "LoadBalancer"
+  # Service account annotations for IRSA (set by TF)
   serviceAccount:
-    annotations:
-      eks.amazonaws.com/role-arn: ""  # arn:aws:iam::ACCOUNT:role/PREFIX-api-service-role
+    annotations: {}
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
 
+# Reservation Processor - production config
 reservationProcessor:
+  replicas: 1
   serviceAccount:
-    annotations:
-      eks.amazonaws.com/role-arn: ""  # arn:aws:iam::ACCOUNT:role/PREFIX-reservation-processor-role
+    annotations: {}
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
 
+# Availability Updater - enabled for prod
 availabilityUpdater:
+  enabled: true
   serviceAccount:
-    annotations:
-      eks.amazonaws.com/role-arn: ""  # arn:aws:iam::ACCOUNT:role/PREFIX-availability-updater-role
+    annotations: {}
+  nodeSelector:
+    NodeType: "cpu"
 
+# Reservation Expiry - enabled for prod
 reservationExpiry:
+  enabled: true
   serviceAccount:
-    annotations:
-      eks.amazonaws.com/role-arn: ""  # arn:aws:iam::ACCOUNT:role/PREFIX-reservation-expiry-role
+    annotations: {}
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
+
+# Image pre-puller enabled in prod (image set by TF)
+imagePrepuller:
+  enabled: true
+  nodeSelector:
+    NodeType: "gpu"
+    kubernetes.io/arch: "amd64"
