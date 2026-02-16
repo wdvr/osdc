@@ -6886,24 +6886,26 @@ def process_cancellation_request(record: dict[str, Any]) -> bool:
                             logger.info(
                                 f"No persistent storage found for pod {pod_name} - skipping cancellation snapshot")
 
-                        # Cleanup pod resources (no need to read pod for snapshot info anymore)
-
                         # Now cleanup pod resources
                         cleanup_pod_resources(pod_name, namespace)
                         logger.info(
                             f"Cleaned up pod resources for cancelled reservation {full_reservation_id}")
 
-                        # Clear disk in_use flag after cleanup
-                        if disk_name:
-                            try:
-                                mark_disk_in_use(user_id, disk_name, False)
-                                logger.info(f"Cleared in_use flag for disk '{disk_name}'")
-                            except Exception as disk_flag_error:
-                                logger.warning(f"Failed to clear disk in_use flag: {disk_flag_error}")
-
                     except Exception as cleanup_error:
                         logger.error(
                             f"Error cleaning up pod {pod_name}: {cleanup_error}")
+
+                    # Clear disk in_use flag OUTSIDE the try block so it runs
+                    # even if cleanup_pod_resources or snapshot creation fails.
+                    # New reservations create a new volume from snapshot, so an
+                    # orphaned old volume won't cause multi-attach conflicts —
+                    # but a stuck in_use flag permanently blocks the user.
+                    if disk_name:
+                        try:
+                            mark_disk_in_use(user_id, disk_name, False)
+                            logger.info(f"Cleared in_use flag for disk '{disk_name}'")
+                        except Exception as disk_flag_error:
+                            logger.warning(f"Failed to clear disk in_use flag: {disk_flag_error}")
 
             # Mark SSH domain mapping as inactive
             # Use SHORT name (not full FQDN) as key - SSH proxy server extracts short name from URL
