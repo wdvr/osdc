@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 # Add parent directory to path for shared imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import boto3
 from kubernetes import client
 
 from shared.db_pool import init_connection_pool, close_connection_pool
@@ -29,9 +28,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# AWS clients
-autoscaling = boto3.client("autoscaling")
-ec2 = boto3.client("ec2")
+# Cloud provider detection
+CLOUD_PROVIDER = os.environ.get("CLOUD_PROVIDER", "aws")
+
+# Lazy-initialized AWS clients (only created when CLOUD_PROVIDER=aws)
+_autoscaling = None
+_ec2 = None
+
+
+def _get_boto3():
+    import boto3
+    return boto3
+
+
+def _get_autoscaling():
+    global _autoscaling
+    if _autoscaling is None:
+        _autoscaling = _get_boto3().client("autoscaling")
+    return _autoscaling
+
+
+def _get_ec2():
+    global _ec2
+    if _ec2 is None:
+        _ec2 = _get_boto3().client("ec2")
+    return _ec2
+
+
+class _LazyClient:
+    def __init__(self, getter):
+        self._getter = getter
+    def __getattr__(self, name):
+        return getattr(self._getter(), name)
+
+
+autoscaling = _LazyClient(_get_autoscaling)
+ec2 = _LazyClient(_get_ec2)
 
 # Environment variables
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
@@ -60,12 +92,8 @@ def update_gpu_availability_for_type(
     try:
         logger.info(f"Starting availability update for GPU type: {gpu_type}")
 
-        # Get current ASG capacity - handle multiple ASGs per GPU type
-        # (e.g., capacity reservations)
-        # Get GPU configuration to check if this is a CPU type
         gpus_per_instance = gpu_config.get("gpus_per_instance", 8)
 
-        # Validate configuration
         if gpus_per_instance < 0:
             logger.error(
                 f"Invalid gpus_per_instance for {gpu_type}: "
@@ -81,17 +109,18 @@ def update_gpu_availability_for_type(
 
         is_cpu_type = gpus_per_instance == 0
 
+        # Non-AWS path: use K8s-only GPU counting (no ASG queries)
+        if CLOUD_PROVIDER != "aws":
+            _update_availability_k8s_only(gpu_type, gpu_config, k8s_client, gpus_per_instance, is_cpu_type)
+            return
+
         # Build ASG name patterns to try
         # CPU types may use different naming conventions
         asg_patterns = []
         if is_cpu_type:
-            # Try multiple patterns for CPU types
             asg_patterns = [
-                # Standard pattern
                 f"pytorch-gpu-dev-gpu-nodes-{gpu_type}",
-                # CPU-specific pattern
                 f"pytorch-gpu-dev-cpu-nodes-{gpu_type}",
-                # Generic CPU pattern
                 "pytorch-gpu-dev-cpu-nodes",
             ]
             logger.info(
@@ -99,7 +128,6 @@ def update_gpu_availability_for_type(
                 f"{asg_patterns}"
             )
         else:
-            # GPU types use standard pattern
             asg_patterns = [f"pytorch-gpu-dev-gpu-nodes-{gpu_type}"]
             logger.info(
                 f"Checking ASGs matching pattern: {asg_patterns[0]}*"
@@ -127,15 +155,12 @@ def update_gpu_availability_for_type(
                 f"No ASGs found for {gpu_type}. "
                 f"Tried patterns: {asg_patterns}"
             )
-            # For CPU types, this might be expected if no CPU ASGs exist yet
             if is_cpu_type:
                 logger.info(
                     "No CPU ASGs found - this may be normal if CPU nodes "
                     "not yet deployed"
                 )
 
-            # IMPORTANT: Update database with zero values when no ASG exists
-            # This prevents showing stale capacity for GPU types without nodes
             pod_name = (
                 os.environ.get("HOSTNAME")
                 or os.environ.get("POD_NAME")
@@ -383,6 +408,86 @@ def update_gpu_availability_for_type(
         raise
 
 
+def _update_availability_k8s_only(gpu_type, gpu_config, k8s_client, gpus_per_instance, is_cpu_type):
+    """K8s-only availability update (no ASG queries) for non-AWS environments"""
+    logger.info(f"Using K8s-only availability counting for {gpu_type} (CLOUD_PROVIDER={CLOUD_PROVIDER})")
+
+    pod_name = (
+        os.environ.get("HOSTNAME")
+        or os.environ.get("POD_NAME")
+        or "availability-updater-unknown"
+    )
+
+    if k8s_client is None:
+        logger.warning(f"No K8s client available, setting {gpu_type} availability to zero")
+        update_gpu_availability(
+            gpu_type=gpu_type, total_gpus=0, available_gpus=0, max_reservable=0,
+            full_nodes_available=0, running_instances=0, desired_capacity=0,
+            gpus_per_instance=gpus_per_instance, updated_by=pod_name
+        )
+        return
+
+    try:
+        v1 = client.CoreV1Api(k8s_client)
+        nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+        running_instances = sum(1 for n in nodes.items if is_node_ready_and_schedulable(n))
+
+        if is_cpu_type:
+            max_users_per_node = 3
+            total_gpus = running_instances * max_users_per_node
+            total_available_slots = 0
+            for node in nodes.items:
+                if is_node_ready_and_schedulable(node):
+                    pods = v1.list_pod_for_all_namespaces(
+                        field_selector=f"spec.nodeName={node.metadata.name}"
+                    )
+                    gpu_dev_pods = [p for p in pods.items if p.metadata.name.startswith('gpu-dev-')]
+                    total_available_slots += max(0, max_users_per_node - len(gpu_dev_pods))
+            available_gpus = total_available_slots
+            full_nodes_available = available_gpus
+            max_reservable = 1 if available_gpus > 0 else 0
+        else:
+            total_gpus = running_instances * gpus_per_instance
+            available_gpus = check_schedulable_gpus_for_type(k8s_client, gpu_type)
+            full_nodes_available = 0
+            max_reservable = 0
+            single_node_max = 0
+            for node in nodes.items:
+                if is_node_ready_and_schedulable(node):
+                    available_on_node = get_available_gpus_on_node(v1, node)
+                    single_node_max = max(single_node_max, available_on_node)
+                    total_on_node = 0
+                    if node.status.allocatable:
+                        try:
+                            total_on_node = int(node.status.allocatable.get("nvidia.com/gpu", "0"))
+                        except (ValueError, TypeError):
+                            pass
+                    if total_on_node > 0 and available_on_node == total_on_node:
+                        full_nodes_available += 1
+            multinode_gpu_types = ['h100', 'h200', 'b200', 'a100']
+            if gpu_type in multinode_gpu_types and gpus_per_instance == 8:
+                max_nodes = min(4, full_nodes_available)
+                max_reservable = max_nodes * gpus_per_instance
+                if max_reservable == 0:
+                    max_reservable = single_node_max
+            else:
+                max_reservable = single_node_max
+
+        update_gpu_availability(
+            gpu_type=gpu_type, total_gpus=total_gpus, available_gpus=available_gpus,
+            max_reservable=max_reservable, full_nodes_available=full_nodes_available,
+            running_instances=running_instances, desired_capacity=running_instances,
+            gpus_per_instance=gpus_per_instance, updated_by=pod_name
+        )
+        logger.info(
+            f"K8s-only update for {gpu_type}: {available_gpus}/{total_gpus} "
+            f"available ({running_instances} nodes, max_reservable: {max_reservable})"
+        )
+    except Exception as e:
+        logger.error(f"K8s-only availability update failed for {gpu_type}: {e}", exc_info=True)
+        raise
+
+
 def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
     """
     Check how many GPUs of a specific type are schedulable (available
@@ -604,6 +709,10 @@ def run_availability_update():
 def run_disk_reconciliation():
     """Main disk reconciliation logic"""
     logger.info("=== Starting Disk Reconciliation ===")
+
+    if CLOUD_PROVIDER != "aws":
+        logger.info("Non-AWS environment, skipping disk reconciliation")
+        return True
 
     try:
         # Use global ec2 client

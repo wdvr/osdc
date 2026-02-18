@@ -8,19 +8,41 @@ import random
 import time
 from typing import List, Optional
 
-import boto3
-from botocore.exceptions import ClientError
-
 from .db_pool import get_db_cursor
 
 logger = logging.getLogger(__name__)
+
+# Cloud provider detection
+CLOUD_PROVIDER = os.environ.get("CLOUD_PROVIDER", "aws")
 
 # Environment variables
 DOMAIN_NAME = os.environ.get("DOMAIN_NAME", "")
 HOSTED_ZONE_ID = os.environ.get("HOSTED_ZONE_ID", "")
 
-# Route53 client
-route53_client = boto3.client("route53")
+# Lazy-initialized Route53 client (only created when CLOUD_PROVIDER=aws)
+_route53_client = None
+
+
+def _get_boto3():
+    import boto3
+    return boto3
+
+
+def _get_route53_client():
+    global _route53_client
+    if _route53_client is None:
+        _route53_client = _get_boto3().client("route53")
+    return _route53_client
+
+
+class _LazyClient:
+    def __init__(self, getter):
+        self._getter = getter
+    def __getattr__(self, name):
+        return getattr(self._getter(), name)
+
+
+route53_client = _LazyClient(_get_route53_client)
 
 # Name generation lists
 ADJECTIVES = [
@@ -154,8 +176,12 @@ def get_existing_dns_names() -> List[str]:
     except Exception as e:
         logger.warning(f"Failed to get existing domain names from database: {str(e)}")
 
-        # Fallback to Route53 scan if database fails
+        # Fallback to Route53 scan if database fails (AWS only)
+        if CLOUD_PROVIDER != "aws":
+            logger.info("Non-AWS environment, skipping Route53 fallback for DNS names")
+            return []
         try:
+            from botocore.exceptions import ClientError
             existing_names = []
             paginator = route53_client.get_paginator('list_resource_record_sets')
 
@@ -224,9 +250,15 @@ def create_dns_record(subdomain: str, target_ip: str, target_port: int) -> bool:
     """
     import os
 
+    if CLOUD_PROVIDER != "aws":
+        logger.info("Non-AWS environment, skipping DNS record creation")
+        return True
+
     if not DOMAIN_NAME or not HOSTED_ZONE_ID:
         logger.info("Domain name not configured, skipping DNS record creation")
         return True  # Not an error if DNS is not configured
+
+    from botocore.exceptions import ClientError
 
     # Get ALB DNS name from environment
     alb_dns = os.environ.get("JUPYTER_ALB_DNS", "")
@@ -294,9 +326,15 @@ def delete_dns_record(subdomain: str, target_ip: str, target_port: int) -> bool:
     Returns:
         bool: True if successful, False otherwise
     """
+    if CLOUD_PROVIDER != "aws":
+        logger.info("Non-AWS environment, skipping DNS record deletion")
+        return True
+
     if not DOMAIN_NAME or not HOSTED_ZONE_ID:
         logger.info("Domain name not configured, skipping DNS record deletion")
         return True  # Not an error if DNS is not configured
+
+    from botocore.exceptions import ClientError
 
     try:
         fqdn = f"{subdomain}.{DOMAIN_NAME}"

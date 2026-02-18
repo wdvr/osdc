@@ -8,6 +8,7 @@ metadata:
     {{- include "gpu-dev-server.labels" . | nindent 4 }}
     app: reservation-expiry
 data:
+  CLOUD_PROVIDER: {{ default "aws" .Values.cloudProvider.name | quote }}
   AWS_REGION: {{ .Values.cloudProvider.region | quote }}
   REGION: {{ .Values.cloudProvider.region | quote }}
   {{- if eq .Values.cloudProvider.name "aws" }}

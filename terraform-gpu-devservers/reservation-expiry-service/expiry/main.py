@@ -14,7 +14,6 @@ import time
 from datetime import datetime, UTC, timedelta
 from typing import Any
 
-import boto3
 from kubernetes import client, stream
 
 # Ensure shared utilities are importable
@@ -55,8 +54,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# AWS clients (EC2 still needed for snapshots)
-ec2_client = boto3.client("ec2")
+# Cloud provider detection
+CLOUD_PROVIDER = os.environ.get("CLOUD_PROVIDER", "aws")
+
+# Lazy-initialized EC2 client (only created when CLOUD_PROVIDER=aws)
+_ec2_client = None
+
+
+def _get_boto3():
+    import boto3
+    return boto3
+
+
+def _get_ec2_client():
+    global _ec2_client
+    if _ec2_client is None:
+        _ec2_client = _get_boto3().client("ec2")
+    return _ec2_client
+
+
+class _LazyClient:
+    def __init__(self, getter):
+        self._getter = getter
+    def __getattr__(self, name):
+        return getattr(self._getter(), name)
+
+
+ec2_client = _LazyClient(_get_ec2_client)
 
 # Environment variables
 EKS_CLUSTER_NAME = os.environ.get("EKS_CLUSTER_NAME", "pytorch-gpu-dev-cluster")
@@ -78,6 +102,10 @@ def get_k8s_client():
 
 def trigger_availability_update():
     """Trigger the availability updater Lambda function"""
+    if CLOUD_PROVIDER != "aws":
+        logger.info("Non-AWS environment, skipping Lambda availability trigger")
+        return
+
     try:
         # Get the availability updater function name from environment variable
         availability_function_name = os.environ.get(
@@ -90,7 +118,7 @@ def trigger_availability_update():
             return
 
         # Create Lambda client and invoke the availability updater
-        lambda_client = boto3.client("lambda")
+        lambda_client = _get_boto3().client("lambda")
 
         # Invoke asynchronously to avoid blocking the expiry process
         response = lambda_client.invoke(
@@ -122,6 +150,10 @@ def sync_disk_deleted_snapshots() -> int:
     Returns count of snapshots tagged.
     """
     tagged_count = 0
+
+    if CLOUD_PROVIDER != "aws":
+        logger.info("Non-AWS environment, skipping snapshot deletion sync")
+        return 0
 
     try:
         # Get disks marked as deleted in PostgreSQL
@@ -213,6 +245,10 @@ def sync_completed_snapshots() -> int:
     """
     updated_count = 0
 
+    if CLOUD_PROVIDER != "aws":
+        logger.info("Non-AWS environment, skipping completed snapshot sync")
+        return 0
+
     try:
         # Find all completed snapshots with disk_name tag (created by our system)
         # Use paginator to handle large numbers of snapshots
@@ -282,6 +318,11 @@ def cleanup_soft_deleted_snapshots() -> int:
     Returns count of deleted snapshots.
     """
     deleted_count = 0
+
+    if CLOUD_PROVIDER != "aws":
+        logger.info("Non-AWS environment, skipping soft-deleted snapshot cleanup")
+        return 0
+
     today = datetime.now(UTC).strftime('%Y-%m-%d')
 
     try:
@@ -1382,52 +1423,54 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
         v1 = client.CoreV1Api(k8s_client)
         logger.info(f"Kubernetes client configured successfully")
 
-        # Create shutdown snapshot if pod has persistent storage
+        # Create shutdown snapshot if pod has persistent storage (AWS only)
+        if CLOUD_PROVIDER != "aws":
+            logger.info(f"Non-AWS environment, skipping EBS snapshot/volume operations for pod {pod_name}")
         try:
             user_id = None
             volume_id = None
             disk_name = None
 
-            # Get user_id, volume_id, and disk_name from reservation data if provided
-            if reservation_data:
-                user_id = reservation_data.get('user_id')
-                volume_id = reservation_data.get('ebs_volume_id')
-                disk_name = reservation_data.get('disk_name')
+            if CLOUD_PROVIDER == "aws":
+                # Get user_id, volume_id, and disk_name from reservation data if provided
+                if reservation_data:
+                    user_id = reservation_data.get('user_id')
+                    volume_id = reservation_data.get('ebs_volume_id')
+                    disk_name = reservation_data.get('disk_name')
 
-            # Quick check - if we have reservation data with EBS info, use it directly
-            if user_id and volume_id:
-                logger.info(f"Found persistent storage in reservation data: volume {volume_id} for user {user_id}")
+                # Quick check - if we have reservation data with EBS info, use it directly
+                if user_id and volume_id:
+                    logger.info(f"Found persistent storage in reservation data: volume {volume_id} for user {user_id}")
 
-            # If no reservation data or missing info, try to get from pod spec
-            elif not user_id or not volume_id:
-                try:
-                    pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+                # If no reservation data or missing info, try to get from pod spec
+                elif not user_id or not volume_id:
+                    try:
+                        pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
 
-                    # Extract user_id from pod labels or annotations
-                    if pod.metadata.labels:
-                        user_id = pod.metadata.labels.get('user-id') or user_id
+                        # Extract user_id from pod labels or annotations
+                        if pod.metadata.labels:
+                            user_id = pod.metadata.labels.get('user-id') or user_id
 
-                    # Look for EBS volume in pod spec
-                    if pod.spec.volumes:
-                        for volume in pod.spec.volumes:
-                            if volume.aws_elastic_block_store:
-                                # Extract volume ID from AWS EBS volume
-                                volume_id = volume.aws_elastic_block_store.volume_id
-                                break
+                        # Look for EBS volume in pod spec
+                        if pod.spec.volumes:
+                            for volume in pod.spec.volumes:
+                                if volume.aws_elastic_block_store:
+                                    volume_id = volume.aws_elastic_block_store.volume_id
+                                    break
 
-                except Exception as pod_read_error:
-                    logger.warning(f"Could not read pod {pod_name} for snapshot info: {pod_read_error}")
+                    except Exception as pod_read_error:
+                        logger.warning(f"Could not read pod {pod_name} for snapshot info: {pod_read_error}")
 
-            # If disk_name not in reservation data, try to get it from volume tags
-            if volume_id and not disk_name:
-                try:
-                    vol_response = ec2_client.describe_volumes(VolumeIds=[volume_id])
-                    if vol_response['Volumes']:
-                        tags = {tag['Key']: tag['Value'] for tag in vol_response['Volumes'][0].get('Tags', [])}
-                        disk_name = tags.get('disk_name')
-                        logger.info(f"Retrieved disk_name '{disk_name}' from volume tags")
-                except Exception as tag_error:
-                    logger.warning(f"Could not read volume tags for disk_name: {tag_error}")
+                # If disk_name not in reservation data, try to get it from volume tags
+                if volume_id and not disk_name:
+                    try:
+                        vol_response = ec2_client.describe_volumes(VolumeIds=[volume_id])
+                        if vol_response['Volumes']:
+                            tags = {tag['Key']: tag['Value'] for tag in vol_response['Volumes'][0].get('Tags', [])}
+                            disk_name = tags.get('disk_name')
+                            logger.info(f"Retrieved disk_name '{disk_name}' from volume tags")
+                    except Exception as tag_error:
+                        logger.warning(f"Could not read volume tags for disk_name: {tag_error}")
 
             # Create shutdown snapshot if we have the necessary info
             if user_id and volume_id:
