@@ -6,11 +6,13 @@ global:
   environment: "production"
 
 namespaces:
+  create: true  # Set to false when namespaces are managed externally (e.g., by Terraform)
   controlplane: "gpu-controlplane"
   workloads: "gpu-dev"
 
 # Storage configuration - override per cloud provider
 storage:
+  createClass: true  # Set to false when StorageClass is managed externally (e.g., by Terraform)
   class: "gp3"  # AWS default; set to "" for local (uses default)
   postgres:
     size: "100Gi"
@@ -80,6 +82,9 @@ registry:
       tag: "2"
     tls:
       enabled: true
+      cert: ""  # TLS certificate content (PEM); injected via --set or helm_release
+      key: ""   # TLS private key content (PEM); injected via --set or helm_release
+      existingSecret: ""  # Use pre-existing TLS secret instead of creating one
   nodeSelector:
     NodeType: "cpu"
   tolerations:
@@ -113,6 +118,7 @@ apiService:
     type: "LoadBalancer"
     port: 80
     targetPort: 8000
+    nodePort: null  # Set when type=NodePort (e.g., 30080 for ALB routing)
   serviceAccount:
     annotations: {}
   nodeSelector:
@@ -143,6 +149,7 @@ reservationProcessor:
     processorVersion: "0.4.0"
     minCliVersion: "0.0.1"
     diskContentsBucket: ""  # Set in AWS values
+    buildkitRegistryUrl: ""  # Override for non-AWS (defaults to ECR_REPOSITORY_URL on AWS)
   resources:
     requests:
       cpu: "500m"
@@ -208,6 +215,12 @@ reservationExpiry:
       operator: "Equal"
       value: "cpu-only"
       effect: "NoSchedule"
+
+# BuildKit service account for Dockerfile builds
+buildkit:
+  enabled: true
+  serviceAccount:
+    annotations: {}  # Set eks.amazonaws.com/role-arn for AWS
 
 # GPU Dev namespace RBAC
 gpuDev:

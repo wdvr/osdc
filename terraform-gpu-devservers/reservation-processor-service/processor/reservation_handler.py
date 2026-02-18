@@ -17,8 +17,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, UTC
 from typing import Any, Dict, List, Optional
 
-import boto3
-
 from shared import (
     K8sGPUTracker, 
     setup_kubernetes_client,
@@ -78,6 +76,7 @@ EFS_SECURITY_GROUP_ID = os.environ.get("EFS_SECURITY_GROUP_ID")
 EFS_SUBNET_IDS = [s.strip() for s in os.environ.get("EFS_SUBNET_IDS", "").split(",") if s.strip()] if os.environ.get("EFS_SUBNET_IDS") else []
 CCACHE_SHARED_EFS_ID = os.environ.get("CCACHE_SHARED_EFS_ID")
 ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
+BUILDKIT_REGISTRY_URL = os.environ.get("BUILDKIT_REGISTRY_URL", ECR_REPOSITORY_URL)
 
 # Version validation - injected via Terraform (or environment)
 PROCESSOR_VERSION = os.environ.get("PROCESSOR_VERSION", "0.4.0")  # Updated for PostgreSQL migration
@@ -171,10 +170,57 @@ def retry_with_backoff(func, *args, max_retries=5, initial_delay=1, max_delay=32
         raise last_exception
 
 
-# AWS clients (removed: dynamodb, sqs_client - now using PostgreSQL/PGMQ)
-eks_client = boto3.client("eks")
-ec2_client = boto3.client("ec2")
-efs_client = boto3.client("efs")
+# Cloud provider detection
+CLOUD_PROVIDER = os.environ.get("CLOUD_PROVIDER", "aws")
+
+# Lazy-initialized AWS clients (only created when CLOUD_PROVIDER=aws)
+_eks_client = None
+_ec2_client = None
+_efs_client = None
+
+
+def _get_boto3():
+    """Import boto3 lazily to avoid crashes when not on AWS"""
+    import boto3
+    return boto3
+
+
+def get_eks_client():
+    global _eks_client
+    if _eks_client is None:
+        _eks_client = _get_boto3().client("eks")
+    return _eks_client
+
+
+def get_ec2_client():
+    global _ec2_client
+    if _ec2_client is None:
+        _ec2_client = _get_boto3().client("ec2")
+    return _ec2_client
+
+
+def get_efs_client():
+    global _efs_client
+    if _efs_client is None:
+        _efs_client = _get_boto3().client("efs")
+    return _efs_client
+
+
+def is_aws():
+    return CLOUD_PROVIDER == "aws"
+
+
+# Backward-compatible module-level names (property-like access via lazy init)
+class _LazyClient:
+    """Descriptor that lazily initializes AWS clients on first access"""
+    def __init__(self, getter):
+        self._getter = getter
+    def __getattr__(self, name):
+        return getattr(self._getter(), name)
+
+eks_client = _LazyClient(get_eks_client)
+ec2_client = _LazyClient(get_ec2_client)
+efs_client = _LazyClient(get_efs_client)
 
 # Global Kubernetes client (reused across invocations)
 _k8s_client = None
@@ -2399,6 +2445,12 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         if node_labels:
             logger.info(f"Node label preferences: {node_labels}")
 
+        # Docker-in-Docker support (check both top-level and env_vars)
+        env_vars = request.get("env_vars") or {}
+        docker_enabled = request.get("docker_enabled", False) or env_vars.get("DOCKER_ENABLED", "").lower() == "true"
+        if docker_enabled:
+            logger.info(f"Docker-in-Docker enabled for reservation {reservation_id}")
+
         # Set up K8s client early for both Docker builds and pod creation
         k8s_client = get_k8s_client()
 
@@ -2421,12 +2473,13 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 # Create BuildKit job to build the image
                 # Use short reservation ID as tag
                 image_tag = reservation_id[:8]
+                registry_url = BUILDKIT_REGISTRY_URL or ECR_REPOSITORY_URL
                 buildkit_job_name, is_cached = create_buildkit_job(
                     k8s_client,
                     reservation_id,
                     dockerfile_base64_data,
                     image_tag,
-                    ECR_REPOSITORY_URL
+                    registry_url
                 )
 
                 # Extract actual image tag from job name (buildkit-{hash})
@@ -2440,7 +2493,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         "creating_server",
                         detailed_status="Using cached Docker image"
                     )
-                    dockerimage = f"{ECR_REPOSITORY_URL}:{actual_image_tag}"
+                    dockerimage = f"{registry_url}:{actual_image_tag}"
                     logger.info(f"Will use cached image: {dockerimage}")
                 else:
                     # Need to build or wait for build
@@ -2479,7 +2532,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                         logger.info(
                             f"Docker build successful for {reservation_id}")
                         # Use the built image
-                        dockerimage = f"{ECR_REPOSITORY_URL}:{actual_image_tag}"
+                        dockerimage = f"{registry_url}:{actual_image_tag}"
                         logger.info(f"Will use built image: {dockerimage}")
                     else:
                         build_logs = build_result.get('logs', 'No logs available')
@@ -3238,6 +3291,7 @@ def create_kubernetes_resources(
                         target_az=target_az,
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
+                        docker_enabled=docker_enabled,
                     )
                     logger.info(f"Created new pod {pod_name} with Jupyter")
                     update_reservation_status(
@@ -3316,6 +3370,7 @@ def create_kubernetes_resources(
                         target_az=target_az,
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
+                        docker_enabled=docker_enabled,
                     )
                     logger.info(f"Created new pod {pod_name} without Jupyter")
                     update_reservation_status(
@@ -3600,6 +3655,7 @@ def create_pod(
     target_az: str = None,
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
+    docker_enabled: bool = False,
 ):
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
@@ -4740,6 +4796,54 @@ EOF
             # Faster pod deletion (default is 30s)
             termination_grace_period_seconds=10,
         )
+
+        # Add Docker-in-Docker sidecar if requested
+        if docker_enabled:
+            logger.info(f"Docker-in-Docker enabled for pod {pod_name}")
+
+            # DinD sidecar container
+            dind_container = client.V1Container(
+                name="dind",
+                image="docker:27-dind",
+                image_pull_policy="IfNotPresent",
+                security_context=client.V1SecurityContext(privileged=True),
+                env=[
+                    client.V1EnvVar(name="DOCKER_TLS_CERTDIR", value="/certs"),
+                    client.V1EnvVar(name="DOCKER_TLS_SAN", value="DNS:localhost"),
+                ],
+                volume_mounts=[
+                    client.V1VolumeMount(name="docker-certs", mount_path="/certs"),
+                    client.V1VolumeMount(name="docker-data", mount_path="/var/lib/docker"),
+                ],
+                resources=client.V1ResourceRequirements(
+                    requests={"cpu": "500m", "memory": "512Mi"},
+                    limits={"cpu": "2", "memory": "2Gi"},
+                ),
+            )
+            pod_spec.containers.append(dind_container)
+
+            # Add Docker volumes
+            pod_spec.volumes.extend([
+                client.V1Volume(
+                    name="docker-certs",
+                    empty_dir=client.V1EmptyDirVolumeSource(),
+                ),
+                client.V1Volume(
+                    name="docker-data",
+                    empty_dir=client.V1EmptyDirVolumeSource(),
+                ),
+            ])
+
+            # Add Docker env vars and cert mount to main container
+            main_container = pod_spec.containers[0]
+            main_container.env = (main_container.env or []) + [
+                client.V1EnvVar(name="DOCKER_HOST", value="tcp://localhost:2376"),
+                client.V1EnvVar(name="DOCKER_TLS_VERIFY", value="1"),
+                client.V1EnvVar(name="DOCKER_CERT_PATH", value="/certs/client"),
+            ]
+            main_container.volume_mounts = (main_container.volume_mounts or []) + [
+                client.V1VolumeMount(name="docker-certs", mount_path="/certs", read_only=True),
+            ]
 
         # Create pod metadata
         # Build annotations with volume info for snapshot handling

@@ -711,6 +711,11 @@ def login() -> None:
     help="Named persistent disk to use (e.g., 'pytorch-main'), or 'none' for temporary storage only. Use 'gpu-dev disk list' to see available disks.",
 )
 @click.option(
+    "--docker",
+    is_flag=True,
+    help="Enable Docker-in-Docker (DinD) sidecar for running Docker inside the dev pod",
+)
+@click.option(
     "--node-label",
     "-l",
     type=str,
@@ -734,6 +739,7 @@ def reserve(
     dockerfile: Optional[str],
     dockerimage: Optional[str],
     preserve_entrypoint: bool,
+    docker: bool,
     disk: Optional[str],
     node_label: tuple,
 ) -> None:
@@ -1374,6 +1380,7 @@ def reserve(
                     dockerimage=dockerimage,
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
+                    docker_enabled=docker,
                     disk_name=disk,
                     node_labels=node_labels if node_labels else None,
                 )
@@ -1392,6 +1399,7 @@ def reserve(
                     dockerimage=dockerimage,
                     no_persistent_disk=no_persistent_disk,
                     preserve_entrypoint=preserve_entrypoint,
+                    docker_enabled=docker,
                     disk_name=disk,
                     node_labels=node_labels if node_labels else None,
                 )

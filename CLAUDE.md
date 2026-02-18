@@ -28,7 +28,10 @@ For infrastructure, we use OpenTofu (`tofu`), never run `tofu apply` directly - 
 
 ## Content
 
-- **terraform-gpu-devservers/** - Main infrastructure: EKS cluster, PostgreSQL/PGMQ, API service, job processor, and all Kubernetes resources
+- **charts/gpu-dev-server/** - Helm chart for all K8s resources (cloud-agnostic)
+  - **templates/** - K8s manifests (postgres, api-service, reservation-processor, cronjobs, rbac, registry, etc.)
+  - **values.yaml** - Default values (AWS); **values-local.yaml** - Local k3d overrides
+- **terraform-gpu-devservers/** - AWS infrastructure (EKS, IAM, VPC, ALB) + deploys Helm chart via `helm_release`
   - **api-service/** - FastAPI REST API with AWS IAM authentication
   - **reservation-processor-service/** - K8s job processor that polls PGMQ and manages GPU pod lifecycle
   - **availability-updater-service/** - CronJob that tracks GPU availability
@@ -38,6 +41,8 @@ For infrastructure, we use OpenTofu (`tofu`), never run `tofu apply` directly - 
   - **migrations/** - Database migration scripts
   - **templates/** - Node bootstrap user-data scripts
 - **cli-tools/gpu-dev-cli/** - Python CLI for creating/listing/cancelling GPU reservations
+- **local/** - Local k3d development environment setup scripts
+- **docs/** - Architecture docs (HELM_MIGRATION, LOCAL_DEVELOPMENT, REMOTE_DEPLOYMENT, LIMITATIONS)
 
 # AGENT SECTION
 
@@ -191,92 +196,78 @@ kubectl exec -it postgres-primary-0 -n gpu-controlplane -- psql -U gpudev -d gpu
 
 ## Remaining Tasks
 
+### Helm Migration (In Progress)
+- **Phase A: Complete AWS deployment** - Build GPU base image, validate end-to-end reservations
+  - Run: `tofu taint null_resource.docker_build_and_push && tofu apply -target=null_resource.docker_build_and_push`
+  - Test: `gpu-dev reserve --gpu-type t4 --gpus 1 --hours 1`
+- **Phase C migration steps** - Run `tofu state rm` for CloudFront + old LB service, then `tofu apply`
+- **Phase D validation** - Test full local dev flow: `./local/teardown.sh && ./local/setup.sh`
+- **Phase G: Move SSH proxy to K8s** - Currently on ECS Fargate, should be a Helm-managed Deployment
+- **Phase G: Abstract storage** - Move direct EC2/S3 calls to provider abstraction layer
+
 ### High Priority - Bug Fixes
-- **Fix extend command warning cleanup** - When using `--extend`, the system doesn't remove the WARN_EXPIRES_IN_5MIN.txt file and doesn't reset the expiry warning tracking. Need to clear warning state or track history elsewhere.
+- **Fix extend command warning cleanup** - `--extend` doesn't remove WARN_EXPIRES_IN_5MIN.txt or reset expiry tracking
 
 ### High Priority - Usability
-- **FQDN for devservers** - Set up proper domain names for development server access
-- **Improve debugging and observability** - Add better CLI feedback for pod status, container logs, and error details:
-  - Real-time pod startup logs during `gpu-dev reserve`
-  - Container error messages when pods fail
-  - Image pull status and errors
-  - More detailed error messages with troubleshooting hints
-- **Interactive CLI for cancel/edit** - Make `gpu-dev cancel` and `gpu-dev edit` interactive when no reservation ID specified - show list with arrow selection
-- **Default reservation edit/cancel** - Auto-select reservation if user only has one active
+- **Improve debugging and observability** - Better CLI feedback for pod status, logs, errors
+- **Interactive CLI for cancel/edit** - Arrow-key selection when no reservation ID specified
+- **Default reservation edit/cancel** - Auto-select if user has only one active
 
 ### Medium Priority - Features
-- **Custom Docker image scaffold** - Create Dockerfile with pre-installed packages (Jupyter, etc.)
-- **Jupyter notebook integration** - Add `--jupyter` flag to enable Jupyter notebook and TensorBoard access
-- **Add user collaboration feature** - Add `--add-user <github_name>` flag to allow users to add someone to the server
-- **Add Docker CI image run** - Allow `gpu-dev ci-debug <testurl>` to download and run CI docker images
-- **Add Docker-in-Docker** - Add `--docker` flag at reserve time, use dind if feasible
+- **Jupyter notebook integration** - `--jupyter` flag for Jupyter Lab + TensorBoard
+- **Add user collaboration** - `--add-user <github_name>` to add SSH access for others
+- **Add Docker CI image run** - `gpu-dev ci-debug <testurl>` for CI debugging
 
 ### Medium Priority - Performance/Capacity
-- **Increase /dev/shm for NCCL** - Bump /dev/shm space from 64MB for NCCL requirements
-- **Scale up T4 instances** - Add 3 more T4 nodes (g4dn.12xlarge) to cluster
-- **Scale up L4 instances** - Add 3 more L4 nodes (g6.12xlarge) to cluster
-- **Add on-demand H100/H200/B200 capacity** - Add at least 2 nodes each of H100, H200, and B200 as on-demand capacity
+- **Scale up nodes** - More T4, L4, H100/H200/B200 capacity
+- **Increase /dev/shm** - Bump from 64MB for NCCL requirements
 
-### Lower Priority - Validation & Testing
-- **Validate CUDA version** - Add CUDA version validation and display in container startup
-- **Validate NVIDIA driver version** - Display and validate NVIDIA driver version
-- **Test wall messages** - Verify that wall message functionality works correctly
-- **Validate if expiration works as expected** - Test and verify pod cleanup and reservation expiry process
-- **Add tests for everything** - Implement comprehensive test suite for all components
-- **Add CloudWatch logs for pods** - Store pod logs in CloudWatch for better debugging and monitoring
-
-### Lower Priority - Enhancements
-- **Set HuggingFace cache location** - Set HF_HOME to /tmp or /workspace to prevent filling home directories
-- **Add verbose CLI output** - More detailed status and progress information for debugging
-- **Add nvcuvid.so support** - Enable NCU (NVIDIA Nsight Compute) support with nvcuvid.so library
-- **Add ghstack** - Install ghstack tool for GitHub stack management
-- **Simplify code + clean up** - Refactor and clean up codebase for maintainability
-
-### Future Features
-- Multi-server (16 GPU) reservations
-- GitHub organization/team verification
-- Usage monitoring and quotas
-- Multi-node communication for distributed training
+### Lower Priority
+- **Add tests** - Comprehensive test suite for all components
+- **CloudWatch logs for pods** - Pod log persistence
+- **Set HF_HOME** - Prevent filling home directories
+- **Simplify code** - Refactor and clean up
 
 ### Notes
-- **Max reservation time**: 48 hours (initial 24h + one 24h extension allowed)
+- **Max reservation time**: 48 hours (initial 24h + one 24h extension)
+- **Docker-in-Docker**: Now available via `--docker` flag (Phase E complete)
 
 ## System Architecture
 
-**Infrastructure (us-east-2):**
+**Infrastructure:**
 
-- **Current**: 2x p4d.24xlarge instances (8 A100 GPUs each = 16 total GPUs)
-- **Test**: 2x g4dn.12xlarge instances (4 T4 GPUs each = 8 total GPUs)
-- **Future**: 2x p5.48xlarge instances (8 H100 GPUs each = 16 total GPUs) when capacity available
+- **Prod (us-east-2)**: 2x p4d.24xlarge instances (8 A100 GPUs each = 16 total GPUs)
+- **Test (us-west-1)**: 2x g4dn.12xlarge instances (4 T4 GPUs each = 8 total GPUs)
+- **Local**: k3d cluster (CPU-only, no GPUs)
 - EKS cluster with GPU-optimized node groups
 - NVIDIA device plugin for GPU resource exposure
-- Single AZ deployment with cluster placement groups
+
+**Deployment Model:**
+
+- **Helm chart** (`charts/gpu-dev-server/`) manages all K8s resources (cloud-agnostic)
+- **OpenTofu** manages AWS infra (EKS, IAM, ALB, Route53) and deploys Helm chart via `helm_release`
+- `CLOUD_PROVIDER` env var gates AWS-specific Python code
 
 **Reservation System:**
 
-- **API Service**: Public REST API with AWS IAM authentication and CloudFront HTTPS
-- **PostgreSQL + PGMQ**: Database for all state and message queue for job processing
-- **Job Processor Pod**: Continuously polls PGMQ and manages pod lifecycle
+- **API Service**: REST API with AWS IAM auth, HTTPS via ALB at `api.<domain>`
+- **PostgreSQL + PGMQ**: Database + message queue for job processing
+- **Job Processor Pod**: Polls PGMQ, manages pod lifecycle
 - **GPU Dev Pods**: K8s pods with GPU allocation (1/2/4/8/16 GPUs)
 - **SSH Access**: NodePort services for direct pod access
+- **Docker-in-Docker**: Optional DinD sidecar via `--docker` flag
 
-**Control Plane Infrastructure (gpu-controlplane namespace):**
+**Control Plane (gpu-controlplane namespace, Helm-managed):**
 
 - PostgreSQL primary-replica with PGMQ extension
-- API Service (FastAPI) with CloudFront HTTPS and LoadBalancer
-- Job Processor Pod for reservation management
-- Registry pull-through cache for ghcr.io images
-- SSH Proxy service
-
-**Authentication & Access:**
-
-- **API Authentication**: AWS IAM STS → time-limited API keys (2 hours)
-- **SSH Authentication**: GitHub public key fetching and injection
-- **SSH Access**: Copy-pasteable commands with NodePort
+- API Service (FastAPI) with NodePort → ALB HTTPS
+- Reservation Processor Pod
+- Registry pull-through caches (ghcr.io, Docker Hub, native)
+- CronJobs (availability updater, reservation expiry)
 
 **CLI Tool:**
 
 - Python CLI with config at `~/.config/gpu-dev/config.json`
 - Commands: `reserve`, `list`, `cancel`, `extend`, `config`, `connect`, `status`, `avail`, `login`
+- `--docker` flag for Docker-in-Docker support
 - Authentication: AWS credentials → API key (automatic refresh)
-- Real-time polling until reservation is ready

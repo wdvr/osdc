@@ -78,6 +78,26 @@ spec:
               mountPath: /var/lib/postgresql/data-config
             - name: init-scripts
               mountPath: /docker-entrypoint-initdb.d
+          {{- if gt (int .Values.postgres.replica.replicas) 0 }}
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/bash
+                  - -c
+                  - |
+                    # Wait for postgres to accept connections
+                    for i in $(seq 1 30); do
+                      if pg_isready -U $POSTGRES_USER -d $POSTGRES_DB 2>/dev/null; then
+                        break
+                      fi
+                      sleep 2
+                    done
+                    # Create replicator user if it doesn't exist (idempotent)
+                    psql -U $POSTGRES_USER -d $POSTGRES_DB -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='$REPLICATION_USER') THEN CREATE ROLE $REPLICATION_USER WITH REPLICATION LOGIN PASSWORD '$REPLICATION_PASSWORD'; END IF; END \$\$;" 2>/dev/null || true
+                    # Ensure PGMQ extension exists
+                    psql -U $POSTGRES_USER -d $POSTGRES_DB -c "CREATE EXTENSION IF NOT EXISTS pgmq; CREATE EXTENSION IF NOT EXISTS pg_partman;" 2>/dev/null || true
+          {{- end }}
           resources:
             {{- toYaml .Values.postgres.primary.resources | nindent 12 }}
           livenessProbe:

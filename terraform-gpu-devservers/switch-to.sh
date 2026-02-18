@@ -20,6 +20,7 @@ case $ENVIRONMENT in
         echo "Switching to local k3d environment..."
         if command -v gpu-dev >/dev/null 2>&1; then
             gpu-dev config environment local
+            gpu-dev config set api_url http://localhost:8000
         fi
         kubectl config use-context k3d-gpu-dev-local
         if command -v kubens >/dev/null 2>&1; then
@@ -34,10 +35,12 @@ case $ENVIRONMENT in
     "prod")
         REGION="us-east-2"
         WORKSPACE="prod"
+        API_URL="https://api.devservers.io"
         ;;
     "test")
         REGION="us-west-1"
         WORKSPACE="default"
+        API_URL="https://api.test.devservers.io"
         ;;
     *)
         echo "Error: Environment must be 'prod', 'test', or 'local'"
@@ -75,8 +78,15 @@ fi
 echo "🏗️  Selecting Terraform workspace: $WORKSPACE..."
 tofu workspace select $WORKSPACE
 
+# Set API URL
+echo "🌐 Setting API URL to $API_URL..."
+if command -v gpu-dev >/dev/null 2>&1; then
+    gpu-dev config set api_url "$API_URL"
+fi
+
 echo ""
 echo "✅ Successfully switched to $ENVIRONMENT environment!"
 echo "   Region: $REGION"
 echo "   Workspace: $WORKSPACE"
 echo "   Namespace: gpu-dev"
+echo "   API URL: $API_URL"

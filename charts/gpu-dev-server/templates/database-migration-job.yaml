@@ -9,10 +9,6 @@ metadata:
   labels:
     {{- include "gpu-dev-server.labels" . | nindent 4 }}
     app: database-migration
-  annotations:
-    "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "-10"
-    "helm.sh/hook-delete-policy": before-hook-creation
 data:
   {{- range $path, $bytes := .Files.Glob "database/schema/*.sql" }}
   {{ base $path }}: |
@@ -28,10 +24,6 @@ metadata:
   labels:
     {{- include "gpu-dev-server.labels" . | nindent 4 }}
     app: database-migration
-  annotations:
-    "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "-10"
-    "helm.sh/hook-delete-policy": before-hook-creation
 data:
   {{- range $path, $bytes := .Files.Glob "database/fixtures/*.sql" }}
   {{ base $path }}: |
@@ -46,13 +38,9 @@ metadata:
   labels:
     {{- include "gpu-dev-server.labels" . | nindent 4 }}
     app: database-migration
-  annotations:
-    "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "-5"
-    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   ttlSecondsAfterFinished: 3600
-  backoffLimit: 3
+  backoffLimit: 5
   template:
     metadata:
       labels:

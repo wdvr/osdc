@@ -84,16 +84,8 @@ data:
     #!/bin/bash
     set -e
 
-    echo "Creating replication user..."
+    echo "Installing PGMQ and pg_partman extensions..."
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-      DO \$\$
-      BEGIN
-        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${REPLICATION_USER}') THEN
-          CREATE ROLE ${REPLICATION_USER} WITH REPLICATION LOGIN PASSWORD '${REPLICATION_PASSWORD}';
-        END IF;
-      END
-      \$\$;
-
       CREATE EXTENSION IF NOT EXISTS pgmq;
       CREATE EXTENSION IF NOT EXISTS pg_partman;
 
@@ -101,6 +93,21 @@ data:
       GRANT ALL ON ALL TABLES IN SCHEMA pgmq TO ${POSTGRES_USER};
       GRANT ALL ON ALL SEQUENCES IN SCHEMA pgmq TO ${POSTGRES_USER};
     EOSQL
+    echo "PGMQ and pg_partman extensions enabled."
 
-    echo "PGMQ extension enabled and replication user created."
+    if [ -n "${REPLICATION_USER}" ] && [ -n "${REPLICATION_PASSWORD}" ]; then
+      echo "Creating replication user..."
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        DO \$\$
+        BEGIN
+          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${REPLICATION_USER}') THEN
+            CREATE ROLE ${REPLICATION_USER} WITH REPLICATION LOGIN PASSWORD '${REPLICATION_PASSWORD}';
+          END IF;
+        END
+        \$\$;
+      EOSQL
+      echo "Replication user created."
+    else
+      echo "Replication not configured, skipping replication user."
+    fi
 {{- end }}

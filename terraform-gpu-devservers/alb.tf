@@ -181,6 +181,77 @@ resource "aws_route53_record" "ssh_proxy" {
   }
 }
 
+# =============================================================================
+# API Service via ALB (replaces CloudFront)
+# =============================================================================
+
+# Target group for API service (routes to NodePort on CPU nodes)
+resource "aws_lb_target_group" "api_service" {
+  count       = local.effective_domain_name != "" ? 1 : 0
+  name        = substr("${var.prefix}-api-svc", 0, 32)
+  port        = 30080  # NodePort for API service
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.gpu_dev_vpc.id
+  target_type = "instance"
+
+  health_check {
+    enabled             = true
+    path                = "/health"
+    port                = "traffic-port"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+    matcher             = "200"
+  }
+
+  deregistration_delay = 30
+
+  tags = {
+    Name        = "${var.prefix}-api-service-tg"
+    Environment = local.current_config.environment
+  }
+}
+
+# Auto-register CPU nodes with API target group
+resource "aws_autoscaling_attachment" "api_service" {
+  count                  = local.effective_domain_name != "" ? 1 : 0
+  autoscaling_group_name = aws_autoscaling_group.cpu_nodes.name
+  lb_target_group_arn    = aws_lb_target_group.api_service[0].arn
+}
+
+# Listener rule: api.domain → API service target group
+resource "aws_lb_listener_rule" "api_service" {
+  count        = local.effective_domain_name != "" ? 1 : 0
+  listener_arn = aws_lb_listener.jupyter_https[0].arn
+  priority     = 10  # Higher priority than default
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api_service[0].arn
+  }
+
+  condition {
+    host_header {
+      values = ["api.${local.effective_domain_name}"]
+    }
+  }
+}
+
+# Route53 record: api.domain → ALB
+resource "aws_route53_record" "api_service" {
+  count   = local.effective_domain_name != "" ? 1 : 0
+  zone_id = local.hosted_zone_id
+  name    = "api.${local.effective_domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.jupyter_alb[0].dns_name
+    zone_id                = aws_lb.jupyter_alb[0].zone_id
+    evaluate_target_health = true
+  }
+}
+
 # Pass ALB information to Lambda functions
 locals {
   alb_env_vars = local.effective_domain_name != "" ? {
@@ -191,6 +262,12 @@ locals {
     JUPYTER_ALB_DNS            = aws_lb.jupyter_alb[0].dns_name
     SSH_PROXY_ENDPOINT         = "ssh.${local.effective_domain_name}"
   } : {}
+}
+
+# API Service URL (HTTPS via ALB - replaces CloudFront)
+output "api_service_url" {
+  description = "API service URL (HTTPS via ALB)"
+  value       = local.effective_domain_name != "" ? "https://api.${local.effective_domain_name}" : null
 }
 
 # Outputs

@@ -8,14 +8,19 @@ metadata:
     {{- include "gpu-dev-server.labels" . | nindent 4 }}
     app: reservation-processor
 data:
+  CLOUD_PROVIDER: {{ default "aws" .Values.cloudProvider.name | quote }}
   QUEUE_NAME: {{ .Values.reservationProcessor.config.queueName | quote }}
   POLL_INTERVAL_SECONDS: {{ .Values.reservationProcessor.config.pollIntervalSeconds | quote }}
   VISIBILITY_TIMEOUT_SECONDS: {{ .Values.reservationProcessor.config.visibilityTimeoutSeconds | quote }}
   BATCH_SIZE: {{ .Values.reservationProcessor.config.batchSize | quote }}
-  REGION: {{ .Values.cloudProvider.region | quote }}
+  REGION: {{ default "us-east-2" .Values.cloudProvider.region | quote }}
+  AWS_DEFAULT_REGION: {{ default "us-east-2" .Values.cloudProvider.region | quote }}
+  EKS_CLUSTER_NAME: {{ default "local" .Values.cloudProvider.aws.eksClusterName | quote }}
+  PRIMARY_AVAILABILITY_ZONE: {{ default "local" .Values.cloudProvider.aws.primaryAvailabilityZone | quote }}
+  {{- if .Values.reservationProcessor.config.buildkitRegistryUrl }}
+  BUILDKIT_REGISTRY_URL: {{ .Values.reservationProcessor.config.buildkitRegistryUrl | quote }}
+  {{- end }}
   {{- if eq .Values.cloudProvider.name "aws" }}
-  EKS_CLUSTER_NAME: {{ .Values.cloudProvider.aws.eksClusterName | quote }}
-  PRIMARY_AVAILABILITY_ZONE: {{ .Values.cloudProvider.aws.primaryAvailabilityZone | quote }}
   EFS_SECURITY_GROUP_ID: {{ .Values.cloudProvider.aws.efsSecurityGroupId | quote }}
   EFS_SUBNET_IDS: {{ .Values.cloudProvider.aws.efsSubnetIds | quote }}
   CCACHE_SHARED_EFS_ID: {{ .Values.cloudProvider.aws.ccacheSharedEfsId | quote }}

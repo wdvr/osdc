@@ -193,7 +193,9 @@ def _transform_to_api_format(message: Dict[str, Any]) -> Dict[str, Any]:
         env_vars["RECREATE_ENV"] = "true" if message["recreate_env"] else "false"
     if message.get("preserve_entrypoint"):
         env_vars["PRESERVE_ENTRYPOINT"] = "true" if message["preserve_entrypoint"] else "false"
-    
+    if message.get("docker_enabled"):
+        env_vars["DOCKER_ENABLED"] = "true"
+
     # Add any custom env vars if they exist in the message
     if message.get("env_vars"):
         env_vars.update(message["env_vars"])
@@ -565,6 +567,7 @@ class ReservationManager:
         no_persistent_disk: bool = False,
         dockerimage: Optional[str] = None,
         preserve_entrypoint: bool = False,
+        docker_enabled: bool = False,
         disk_name: Optional[str] = None,
         node_labels: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
@@ -637,6 +640,8 @@ class ReservationManager:
                 message["dockerimage"] = dockerimage
             # Always include preserve_entrypoint flag (don't make it conditional)
             message["preserve_entrypoint"] = preserve_entrypoint
+            if docker_enabled:
+                message["docker_enabled"] = True
 
             # Add disk_name if provided
             if disk_name:
@@ -670,6 +675,7 @@ class ReservationManager:
         dockerimage: Optional[str] = None,
         no_persistent_disk: bool = False,
         preserve_entrypoint: bool = False,
+        docker_enabled: bool = False,
         disk_name: Optional[str] = None,
         node_labels: Optional[Dict[str, str]] = None,
     ) -> Optional[List[str]]:
@@ -745,6 +751,8 @@ class ReservationManager:
                     message["dockerimage"] = dockerimage
                 # Always include preserve_entrypoint flag (don't make it conditional)
                 message["preserve_entrypoint"] = preserve_entrypoint
+                if docker_enabled:
+                    message["docker_enabled"] = True
 
                 # Add disk_name if provided (only for master node in multinode setup)
                 if disk_name and node_idx == 0:

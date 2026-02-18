@@ -1,0 +1,14 @@
+{{- if .Values.buildkit.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: buildkit-service-account
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: buildkit
+  {{- with .Values.buildkit.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -123,18 +123,9 @@ resource "aws_iam_role_policy" "buildkit_job_policy" {
   })
 }
 
-# Service account for BuildKit jobs
-resource "kubernetes_service_account" "buildkit" {
-  metadata {
-    name      = "buildkit-service-account"
-    namespace = kubernetes_namespace.gpu_dev.metadata[0].name
-    annotations = {
-      "eks.amazonaws.com/role-arn" = aws_iam_role.buildkit_job_role.arn
-    }
-  }
-
-  depends_on = [aws_autoscaling_group.cpu_nodes]
-}
+# BuildKit service account is now managed by the Helm chart
+# (charts/gpu-dev-server/templates/rbac/buildkit-sa.yaml)
+# To migrate: tofu state rm kubernetes_service_account.buildkit
 
 # Output values for Lambda environment variables
 output "ecr_repository_url" {

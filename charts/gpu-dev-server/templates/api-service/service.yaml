@@ -19,7 +19,7 @@ spec:
   selector:
     app: api-service
 ---
-# Public LoadBalancer service
+# Public service (NodePort for ALB routing, or LoadBalancer for direct access)
 apiVersion: v1
 kind: Service
 metadata:
@@ -35,6 +35,9 @@ spec:
       port: {{ .Values.apiService.service.port }}
       targetPort: {{ .Values.apiService.service.targetPort }}
       protocol: TCP
+      {{- if and (eq .Values.apiService.service.type "NodePort") .Values.apiService.service.nodePort }}
+      nodePort: {{ .Values.apiService.service.nodePort }}
+      {{- end }}
   selector:
     app: api-service
 {{- end }}

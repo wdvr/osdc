@@ -1,4 +1,51 @@
 {{- if .Values.registry.native.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-native-config
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: registry-native
+data:
+  config.yml: |
+    version: 0.1
+    log:
+      level: info
+      fields:
+        service: registry
+    storage:
+      filesystem:
+        rootdirectory: /var/lib/registry
+      cache:
+        blobdescriptor: inmemory
+      delete:
+        enabled: true
+    http:
+      addr: :5000
+      headers:
+        X-Content-Type-Options: [nosniff]
+{{- if .Values.registry.native.tls.enabled }}
+      tls:
+        certificate: /certs/tls.crt
+        key: /certs/tls.key
+{{- end }}
+---
+{{- if and .Values.registry.native.tls.enabled (not .Values.registry.native.tls.existingSecret) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-native-tls
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: registry-native
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ .Values.registry.native.tls.cert | b64enc | quote }}
+  tls.key: {{ .Values.registry.native.tls.key | b64enc | quote }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,11 +59,16 @@ spec:
   selector:
     matchLabels:
       app: registry-native
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
         app: registry-native
     spec:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       {{- with .Values.registry.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -31,11 +83,11 @@ spec:
           ports:
             - containerPort: 5000
               name: registry
-          env:
-            - name: REGISTRY_STORAGE_DELETE_ENABLED
-              value: "true"
           volumeMounts:
-            - name: registry-data
+            - name: config
+              mountPath: /etc/docker/registry
+              readOnly: true
+            - name: data
               mountPath: /var/lib/registry
             {{- if .Values.registry.native.tls.enabled }}
             - name: registry-certs
@@ -44,19 +96,40 @@ spec:
             {{- end }}
           resources:
             requests:
-              cpu: "100m"
+              cpu: "200m"
               memory: "256Mi"
             limits:
-              cpu: "500m"
-              memory: "512Mi"
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5000
+              {{- if .Values.registry.native.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5000
+              {{- if .Values.registry.native.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
       volumes:
-        - name: registry-data
+        - name: config
+          configMap:
+            name: registry-native-config
+        - name: data
           persistentVolumeClaim:
             claimName: registry-native-data
         {{- if .Values.registry.native.tls.enabled }}
         - name: registry-certs
           secret:
-            secretName: registry-native-tls
+            secretName: {{ default "registry-native-tls" .Values.registry.native.tls.existingSecret }}
         {{- end }}
 ---
 apiVersion: v1
@@ -70,7 +143,9 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  {{- if .Values.storage.class }}
   storageClassName: {{ include "gpu-dev-server.storageClass" . }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.storage.registry.size }}

@@ -48,23 +48,27 @@ def create_buildkit_job(
 
     logger.info(f"Dockerfile build for reservation {reservation_id}: job={job_name}, image={full_image_uri}")
 
-    # First check if image already exists in ECR - if so, skip build entirely
-    import boto3
-    ecr_client = boto3.client('ecr', region_name=os.environ.get('REGION', 'us-east-2'))
-    repository_name = ecr_repository_url.split('/')[-1]
+    # Check if image already exists in registry - skip build if so
+    cloud_provider = os.environ.get("CLOUD_PROVIDER", "aws")
+    if cloud_provider == "aws":
+        import boto3
+        ecr_client = boto3.client('ecr', region_name=os.environ.get('REGION', 'us-east-2'))
+        repository_name = ecr_repository_url.split('/')[-1]
 
-    try:
-        response = ecr_client.describe_images(
-            repositoryName=repository_name,
-            imageIds=[{'imageTag': image_tag}]
-        )
-        if response.get('imageDetails'):
-            logger.info(f"Image {full_image_uri} already exists in ECR, skipping build")
-            return (job_name, True)  # Return job name and cached=True
-    except ecr_client.exceptions.ImageNotFoundException:
-        logger.info(f"Image {image_tag} not found in ECR, will build it")
-    except Exception as e:
-        logger.warning(f"Error checking ECR for existing image: {str(e)}, will proceed with build check")
+        try:
+            response = ecr_client.describe_images(
+                repositoryName=repository_name,
+                imageIds=[{'imageTag': image_tag}]
+            )
+            if response.get('imageDetails'):
+                logger.info(f"Image {full_image_uri} already exists in ECR, skipping build")
+                return (job_name, True)
+        except ecr_client.exceptions.ImageNotFoundException:
+            logger.info(f"Image {image_tag} not found in ECR, will build it")
+        except Exception as e:
+            logger.warning(f"Error checking ECR for existing image: {str(e)}, will proceed with build check")
+    else:
+        logger.info(f"Non-AWS provider ({cloud_provider}), skipping ECR cache check")
 
     # Image doesn't exist - check if job is already building it
     batch_v1 = client.BatchV1Api(k8s_client)
@@ -104,37 +108,19 @@ def create_buildkit_job(
 
     logger.info(f"Creating BuildKit job {job_name} to build {full_image_uri}")
 
-    # BuildKit container - back to working approach
-    buildkit_container = client.V1Container(
-        name="buildkit",
-        image="moby/buildkit:master",
-        command=["/bin/sh"],
-        args=[
-            "-c",
-            f"""
-            set -ex
-            echo "[BUILDKIT] Starting daemonless build for reservation {reservation_id}"
-
-            # Install AWS CLI
+    # Build the auth setup script based on cloud provider
+    if cloud_provider == "aws":
+        auth_script = f"""
+            # Install AWS CLI for ECR auth
             echo "[BUILDKIT] Installing AWS CLI..."
             apk add --no-cache aws-cli
             echo "[BUILDKIT] AWS CLI installation completed"
 
-            # Decode and extract build context
-            echo "[BUILDKIT] Preparing build context..."
-            echo "{dockerfile_base64_data}" | base64 -d > /tmp/build_context.tar.gz
-            mkdir -p /tmp/work
-            cd /tmp/work
-            tar -xzf /tmp/build_context.tar.gz
-            echo "[BUILDKIT] Build context extracted, files:"
-            ls -la
-
-            # Setup ECR authentication - create proper Docker config
+            # Setup ECR authentication
             echo "[BUILDKIT] Setting up ECR authentication..."
             ECR_REGISTRY="{ecr_repository_url.split('/')[0]}"
             ECR_TOKEN=$(aws ecr get-login-password --region {os.environ.get('REGION', 'us-east-2')})
 
-            # Create Docker config directory and auth file
             mkdir -p ~/.docker
             cat > ~/.docker/config.json << EOF
 {{
@@ -146,19 +132,50 @@ def create_buildkit_job(
 }}
 EOF
             echo "[BUILDKIT] Docker config created"
+"""
+    else:
+        # Non-AWS: push to local/native registry without auth
+        auth_script = """
+            echo "[BUILDKIT] Non-AWS build - no registry auth needed"
+"""
 
-            # Build with BuildKit daemonless mode with registry cache
-            # mode=max caches ALL intermediate layers, not just final result
-            CACHE_URI="{ecr_repository_url.split(':')[0]}:cache"
-            echo "[BUILDKIT] Starting BuildKit build with registry cache (mode=max)..."
-            echo "[BUILDKIT] Cache location: $CACHE_URI"
+    # Cache args: use registry cache on AWS, skip on local
+    cache_base = ecr_repository_url.split(':')[0] if ':' in ecr_repository_url else ecr_repository_url
+    if cloud_provider == "aws":
+        cache_args = f"""--export-cache type=registry,ref={cache_base}:cache,mode=max \\
+                --import-cache type=registry,ref={cache_base}:cache"""
+    else:
+        cache_args = ""
+
+    buildkit_container = client.V1Container(
+        name="buildkit",
+        image="moby/buildkit:master",
+        command=["/bin/sh"],
+        args=[
+            "-c",
+            f"""
+            set -ex
+            echo "[BUILDKIT] Starting daemonless build for reservation {reservation_id}"
+
+            # Decode and extract build context
+            echo "[BUILDKIT] Preparing build context..."
+            echo "{dockerfile_base64_data}" | base64 -d > /tmp/build_context.tar.gz
+            mkdir -p /tmp/work
+            cd /tmp/work
+            tar -xzf /tmp/build_context.tar.gz
+            echo "[BUILDKIT] Build context extracted, files:"
+            ls -la
+
+{auth_script}
+
+            # Build with BuildKit daemonless mode
+            echo "[BUILDKIT] Starting BuildKit build..."
             buildctl-daemonless.sh build \\
                 --frontend dockerfile.v0 \\
                 --local context=/tmp/work \\
                 --local dockerfile=/tmp/work \\
                 --output type=image,name={full_image_uri},push=true \\
-                --export-cache type=registry,ref=$CACHE_URI,mode=max \\
-                --import-cache type=registry,ref=$CACHE_URI
+                {cache_args}
 
             echo "[BUILDKIT] Build completed successfully: {full_image_uri}"
             """

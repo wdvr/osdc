@@ -67,6 +67,9 @@ apiService:
   nodeSelector: {}
   tolerations: []
 
+buildkit:
+  enabled: false  # No BuildKit locally (no ECR)
+
 reservationProcessor:
   image:
     repository: "gpu-dev-processor"
@@ -76,6 +79,7 @@ reservationProcessor:
     gpuDevContainerImage: "gpu-dev-pod:local"
     imagePullPolicy: "IfNotPresent"
     visibilityTimeoutSeconds: "300"
+    buildkitRegistryUrl: "registry-native.gpu-controlplane.svc.cluster.local:5000"
   resources:
     requests:
       cpu: "100m"

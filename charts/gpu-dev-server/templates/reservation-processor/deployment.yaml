@@ -26,6 +26,28 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        - name: wait-for-schema
+          image: "{{ .Values.databaseMigration.image.repository }}:{{ .Values.databaseMigration.image.tag }}"
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              echo "Waiting for database schema to be ready..."
+              until PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                -h {{ include "gpu-dev-server.postgresPrimaryService" . }} \
+                -U {{ .Values.postgres.auth.username }} \
+                -d {{ .Values.postgres.auth.database }} \
+                -c "SELECT 1 FROM api_users LIMIT 1" > /dev/null 2>&1; do
+                echo "Schema not ready - sleeping"
+                sleep 3
+              done
+              echo "Database schema is ready!"
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gpu-dev-server.postgresSecretName" . }}
+                  key: {{ .Values.postgres.auth.existingSecretKey }}
       containers:
         - name: reservation-processor
           image: "{{ .Values.reservationProcessor.image.repository }}:{{ .Values.reservationProcessor.image.tag }}"
