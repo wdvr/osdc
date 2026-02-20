@@ -270,9 +270,8 @@ locals {
         { key = "cr2", id = null, instance_count = 2 },                   # H200 on-demand (2 instances)
       ]
       b200 = [
-        { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance)
-        { key = "cr1", id = "cr-08e7fee0b8dc3de5e", instance_count = 3 }, # B200 reservation (3 instances)
-        { key = "cr2", id = null, instance_count = 2 },                   # B200 on-demand (2 instances)
+        { key = "cr0", id = "cr-0c366fb8339a10f69", instance_count = 1 }, # B200 reservation (1 instance, us-east-2a)
+        { key = "cr1", id = "cr-08e7fee0b8dc3de5e", instance_count = 2 }, # B200 reservation (2 of 3 CR slots, 1 freed for other team)
       ]
       # T4 and L4 don't have capacity reservations - managed via supported_gpu_types fallback
     }
