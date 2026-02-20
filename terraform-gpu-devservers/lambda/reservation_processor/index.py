@@ -1329,7 +1329,8 @@ def coordinate_multinode_reservation(master_reservation_id: str, total_nodes: in
             f"Multinode reservation needs {total_gpus_needed} {gpu_type} GPUs ({total_nodes} nodes × {gpus_per_node} GPUs)")
 
         # Check if enough resources are available for the entire multinode reservation
-        available_gpus = check_gpu_availability(gpu_type)
+        # For multinode, we check total across nodes (each node gets gpus_per_node)
+        available_gpus, _ = check_gpu_availability(gpu_type)
 
         if available_gpus >= total_gpus_needed:
             # Sufficient resources - start parallel processing for all nodes
@@ -1845,18 +1846,20 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
         if is_multinode:
             logger.info(
                 f"Multinode node: skipping individual resource check, coordinator already validated resources")
-            available_gpus = requested_gpus  # Assume coordinator validated
+            total_available_gpus = requested_gpus
+            max_per_node = requested_gpus
         else:
-            available_gpus = check_gpu_availability(gpu_type)
+            total_available_gpus, max_per_node = check_gpu_availability(gpu_type)
 
-        if available_gpus >= requested_gpus:
+        # Use max_per_node for scheduling decision: all GPUs must come from a single node
+        if max_per_node >= requested_gpus:
             # Update status to show we're preparing the machine
             reservation_id = reservation_request.get("reservation_id")
             if reservation_id:
                 update_reservation_status(
                     reservation_id,
                     "preparing",
-                    f"Found {available_gpus} available {gpu_type.upper()} GPUs - preparing resources",
+                    f"Found {total_available_gpus} available {gpu_type.upper()} GPUs - preparing resources",
                 )
 
             # Create reservation
@@ -1867,14 +1870,14 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
             allocate_gpu_resources(reservation_id, reservation_request)
             return True  # Successfully processed
         else:
-            # Insufficient resources - set to queued and let scheduled Lambda handle it
+            # Insufficient resources on any single node - queue and let scheduled Lambda handle it
             reservation_id = reservation_request.get("reservation_id")
 
             if reservation_id:
                 # Calculate queue position and estimated wait time
                 gpu_type = reservation_request.get("gpu_type", "a100")
                 queue_info = calculate_queue_position_and_wait_time(
-                    reservation_id, requested_gpus, gpu_type, available_gpus
+                    reservation_id, requested_gpus, gpu_type, total_available_gpus
                 )
 
                 # Update reservation with queue information and set to queued status
@@ -1882,14 +1885,16 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                     reservation_id,
                     queue_info["position"],
                     queue_info["estimated_wait_minutes"],
-                    available_gpus,
+                    total_available_gpus,
                 )
 
                 # Provide more specific queued message based on availability
-                if available_gpus == 0:
+                if total_available_gpus == 0:
                     queue_message = f"No {gpu_type.upper()} nodes available - position #{queue_info.get('position', '?')} in queue"
+                elif max_per_node == 0:
+                    queue_message = f"No schedulable {gpu_type.upper()} nodes with free GPUs - position #{queue_info.get('position', '?')} in queue"
                 else:
-                    queue_message = f"Need {requested_gpus} {gpu_type.upper()} GPUs, only {available_gpus} available - position #{queue_info.get('position', '?')}"
+                    queue_message = f"Need {requested_gpus} {gpu_type.upper()} GPUs on one node, max {max_per_node} available on any single node - position #{queue_info.get('position', '?')}"
 
                 update_reservation_status(
                     reservation_id,
@@ -1975,37 +1980,44 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
     return True, "Valid request"
 
 
-def check_gpu_availability(gpu_type: str = None) -> int:
-    """Check available GPU capacity using K8s API, optionally filtered by GPU type"""
+def check_gpu_availability(gpu_type: str = None) -> tuple:
+    """Check available GPU capacity using K8s API, optionally filtered by GPU type.
+
+    Returns (total_available, max_on_single_node). All GPUs for a pod must be
+    scheduled on a single node, so max_on_single_node is the correct value to
+    use when deciding whether a request of size N can be fulfilled immediately.
+    """
     try:
         # Set up K8s client
         k8s_client = get_k8s_client()
 
         if gpu_type:
             # Check for schedulable nodes with specific GPU type
-            available_gpus = check_schedulable_gpus_for_type(
+            total_gpus, max_per_node = check_schedulable_gpus_for_type(
                 k8s_client, gpu_type)
             logger.info(
-                f"Schedulable {gpu_type.upper()} GPUs: {available_gpus}")
+                f"Schedulable {gpu_type.upper()} GPUs: {total_gpus} total, {max_per_node} max on single node")
 
             # Update availability table with real-time data
             try:
                 update_gpu_availability_table(
-                    gpu_type, available_gpus, k8s_client)
+                    gpu_type, total_gpus, k8s_client)
             except Exception as update_error:
                 logger.warning(
                     f"Failed to update availability table for {gpu_type}: {update_error}"
                 )
-                # Don't fail the reservation processing if availability update fails
 
-            return available_gpus
+            return (total_gpus, max_per_node)
         else:
             gpu_tracker = K8sGPUTracker(k8s_client)
             capacity_info = gpu_tracker.get_gpu_capacity_info()
+            available = capacity_info["available_gpus"]
             logger.info(
-                f"K8s GPU status: {capacity_info['available_gpus']}/{capacity_info['total_gpus']} GPUs available"
+                f"K8s GPU status: {available}/{capacity_info['total_gpus']} GPUs available"
             )
-            return capacity_info["available_gpus"]
+            # Without type filter we can't determine per-node max easily,
+            # return total for both (callers without gpu_type don't schedule pods directly)
+            return (available, available)
 
     except Exception as e:
         logger.error(f"Error checking GPU availability from K8s: {str(e)}")
@@ -2014,14 +2026,20 @@ def check_gpu_availability(gpu_type: str = None) -> int:
         ) from e
 
 
-def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
-    """Check how many GPUs are available on schedulable nodes of the specified type"""
+def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> tuple:
+    """Check GPU availability on schedulable nodes of the specified type.
+
+    Returns (total_available, max_on_single_node) because all GPUs for a pod
+    must come from a single node - the total across nodes is not schedulable
+    as a single request.
+    """
     try:
         v1 = client.CoreV1Api(k8s_client)
 
         # Get all nodes with the specified GPU type that are ready and schedulable
         nodes = v1.list_node()
         schedulable_gpus = 0
+        max_on_single_node = 0
 
         for node in nodes.items:
             # Check if node has the right GPU type label
@@ -2039,11 +2057,12 @@ def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
             # Get available GPUs on this node
             node_gpus = get_available_gpus_on_node(v1, node)
             schedulable_gpus += node_gpus
+            max_on_single_node = max(max_on_single_node, node_gpus)
             logger.info(
                 f"Node {node.metadata.name}: {node_gpus} available {gpu_type.upper()} GPUs"
             )
 
-        return schedulable_gpus
+        return (schedulable_gpus, max_on_single_node)
 
     except Exception as e:
         logger.error(
@@ -4594,9 +4613,11 @@ EOF
                 "GpuType": gpu_type,
                 **({} if target_az is None else {"topology.kubernetes.io/zone": target_az})
             },
-            # Node affinity for profiling-dedicated preference
-            # If user requests nsight=true, prefer profiling-dedicated nodes
-            # Otherwise, prefer non-profiling-dedicated nodes (DCGM nodes)
+            # Affinity rules for GPU scheduling:
+            # 1. Node affinity: prefer profiling-dedicated nodes if nsight requested
+            # 2. Pod affinity: prefer nodes already running gpu-dev pods (bin-packing)
+            #    This fills up nodes before spreading to empty ones, keeping whole
+            #    nodes free for large (e.g. 8-GPU) reservations.
             affinity=client.V1Affinity(
                 node_affinity=client.V1NodeAffinity(
                     preferred_during_scheduling_ignored_during_execution=[
@@ -4613,7 +4634,20 @@ EOF
                             )
                         )
                     ]
-                )
+                ),
+                pod_affinity=client.V1PodAffinity(
+                    preferred_during_scheduling_ignored_during_execution=[
+                        client.V1WeightedPodAffinityTerm(
+                            weight=50,
+                            pod_affinity_term=client.V1PodAffinityTerm(
+                                label_selector=client.V1LabelSelector(
+                                    match_labels={"app": "gpu-dev-pod"}
+                                ),
+                                topology_key="kubernetes.io/hostname",
+                            )
+                        )
+                    ]
+                ),
             ) if not gpu_type.startswith("cpu-") else None,
             tolerations=[
                 client.V1Toleration(
@@ -6639,17 +6673,19 @@ def process_scheduled_queue_management():
                 gpu_type = reservation.get("gpu_type", "h100")
 
                 # Check if this reservation can be allocated now - validate GPU type availability
-                type_available_gpus = check_gpu_availability(gpu_type)
-                if type_available_gpus >= requested_gpus:
+                # Use max_per_node: all GPUs for a pod must come from a single node
+                type_total_gpus, type_max_per_node = check_gpu_availability(gpu_type)
+                type_available_gpus = type_total_gpus  # Keep for messages/ETA
+                if type_max_per_node >= requested_gpus:
                     logger.info(
-                        f"Allocating {requested_gpus} {gpu_type.upper()} GPUs for reservation {reservation_id} - {type_available_gpus} available"
+                        f"Allocating {requested_gpus} {gpu_type.upper()} GPUs for reservation {reservation_id} - {type_max_per_node} available on single node ({type_total_gpus} total)"
                     )
 
                     # Update status to preparing
                     update_reservation_status(
                         reservation_id,
                         "preparing",
-                        f"Found {type_available_gpus} available {gpu_type.upper()} GPUs - preparing environment",
+                        f"Found {type_total_gpus} available {gpu_type.upper()} GPUs - preparing environment",
                     )
 
                     # Try to create the actual resources

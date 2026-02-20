@@ -362,7 +362,10 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
     }
   }
 
-  # Add capacity reservation specification for instances that have reservations configured
+  # Capacity reservation specification:
+  # - With CR: target the specific reservation
+  # - Without CR (on-demand): explicitly set "none" so AWS doesn't auto-match
+  #   on-demand instances to targeted CRs in the same AZ (steals CR slots)
   dynamic "capacity_reservation_specification" {
     for_each = each.value.capacity_reservation_id != null ? [1] : []
     content {
@@ -370,6 +373,13 @@ resource "aws_launch_template" "gpu_dev_launch_template" {
       capacity_reservation_target {
         capacity_reservation_id = each.value.capacity_reservation_id
       }
+    }
+  }
+
+  dynamic "capacity_reservation_specification" {
+    for_each = each.value.capacity_reservation_id == null ? [1] : []
+    content {
+      capacity_reservation_preference = "none"
     }
   }
 
