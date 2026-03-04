@@ -4197,45 +4197,67 @@ EOFREADME
                             chattr +h /home/dev/lost+found 2>/dev/null || chmod 700 /home/dev/lost+found
                         fi
 
-                        # Install git-clone-fast helper (uses in-cluster cache for speed)
-                        echo "[STARTUP] Installing git-clone-fast helper..."
-                        cat > /usr/local/bin/git-clone-fast << 'CLONESCRIPT'
-#!/bin/bash
-# git-clone-fast: Clone pytorch/pytorch using in-cluster cache
-# Usage: git-clone-fast [destination]
-#
-# Uses a local git object cache to avoid downloading ~5GB from GitHub.
-# After clone, origin points to GitHub — push/pull/fetch all go to GitHub.
+                        # Install git cache wrapper — transparently accelerates pytorch clones
+                        echo "[STARTUP] Installing git cache wrapper..."
 
+                        cat > /usr/local/bin/git-clone-cached << 'GITCACHESCRIPT'
+#!/bin/bash
+# Clones pytorch/pytorch from in-cluster cache, then sets origin to GitHub.
 CACHE="git://git-cache.gpu-controlplane.svc.cluster.local"
 GITHUB="https://github.com/pytorch/pytorch.git"
-DEST="${1:-pytorch}"
+GIT="/usr/bin/git"
+DEST="${{1:-pytorch}}"
 
 if [ -d "$DEST" ]; then
     echo "Error: $DEST already exists"
     exit 1
 fi
 
-echo "Step 1/3: Cloning from in-cluster cache (fast)..."
-if ! git clone "$CACHE/pytorch.git" "$DEST" --recurse-submodules; then
-    echo "Cache unavailable, falling back to GitHub..."
-    git clone "$GITHUB" "$DEST" --recurse-submodules
+echo "[git-cache] Cloning pytorch from in-cluster cache..."
+if ! "$GIT" clone "$CACHE/pytorch.git" "$DEST" --recurse-submodules 2>/dev/null; then
+    echo "[git-cache] Cache miss — cloning from GitHub..."
+    "$GIT" clone "$GITHUB" "$DEST" --recurse-submodules
     exit $?
 fi
 
 cd "$DEST"
+"$GIT" remote set-url origin "$GITHUB"
+echo "[git-cache] Fetching latest from GitHub..."
+"$GIT" fetch origin
+"$GIT" checkout "$("$GIT" symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||')" 2>/dev/null
+echo "[git-cache] Done — origin is GitHub, all git ops go there directly."
+GITCACHESCRIPT
+                        chmod +x /usr/local/bin/git-clone-cached
 
-echo "Step 2/3: Setting origin to GitHub..."
-git remote set-url origin "$GITHUB"
+                        cat > /usr/local/bin/git << 'GITWRAPPER'
+#!/bin/bash
+# Transparent cache wrapper — intercepts pytorch clone, passes everything else through
+GIT="/usr/bin/git"
 
-echo "Step 3/3: Fetching latest from GitHub..."
-git fetch origin
-git checkout "$(git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||')" 2>/dev/null
+if [ "$1" = "clone" ]; then
+    for arg in "$@"; do
+        case "$arg" in
+            *github.com*pytorch/pytorch*)
+                DEST=""
+                FOUND_URL=false
+                for a in "$@"; do
+                    case "$a" in
+                        clone) ;;
+                        -*) ;;
+                        *github.com*pytorch/pytorch*) FOUND_URL=true ;;
+                        *) if $FOUND_URL; then DEST="$a"; fi ;;
+                    esac
+                done
+                exec /usr/local/bin/git-clone-cached ${{DEST:+"$DEST"}}
+                ;;
+        esac
+    done
+fi
 
-echo "Done! Origin is GitHub — all git operations go there directly."
-CLONESCRIPT
-                        chmod +x /usr/local/bin/git-clone-fast
-                        echo "[STARTUP] ✓ git-clone-fast installed (run 'git-clone-fast' to clone pytorch)"
+exec "$GIT" "$@"
+GITWRAPPER
+                        chmod +x /usr/local/bin/git
+                        echo "[STARTUP] ✓ git cache wrapper installed (git clone pytorch auto-uses cache)"
 
                         echo "[STARTUP] Configuring SSH..."
                         mkdir -p /run/sshd
