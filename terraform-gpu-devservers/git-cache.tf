@@ -1,10 +1,11 @@
-# Git Mirror Service - In-cluster cache for fast git clone operations
-# Deploys a bare mirror of pytorch/pytorch served via git daemon
-# User pods auto-configured with url.insteadOf for transparent use
+# Git Cache Service - In-cluster object cache for fast git clone operations
+# Maintains a bare copy of pytorch/pytorch, refreshed every 15 minutes.
+# User pods get a `git-clone-fast` helper that clones from the cache,
+# then sets origin to GitHub — all subsequent git ops go to GitHub directly.
 
-resource "kubernetes_persistent_volume_claim" "git_mirror_cache" {
+resource "kubernetes_persistent_volume_claim" "git_cache" {
   metadata {
-    name      = "git-mirror-cache"
+    name      = "git-cache"
     namespace = "gpu-controlplane"
   }
 
@@ -20,12 +21,12 @@ resource "kubernetes_persistent_volume_claim" "git_mirror_cache" {
   }
 }
 
-resource "kubernetes_deployment" "git_mirror" {
+resource "kubernetes_deployment" "git_cache" {
   metadata {
-    name      = "git-mirror"
+    name      = "git-cache"
     namespace = "gpu-controlplane"
     labels = {
-      app = "git-mirror"
+      app = "git-cache"
     }
   }
 
@@ -34,14 +35,14 @@ resource "kubernetes_deployment" "git_mirror" {
 
     selector {
       match_labels = {
-        app = "git-mirror"
+        app = "git-cache"
       }
     }
 
     template {
       metadata {
         labels = {
-          app = "git-mirror"
+          app = "git-cache"
         }
       }
 
@@ -57,23 +58,23 @@ resource "kubernetes_deployment" "git_mirror" {
           effect   = "NoSchedule"
         }
 
-        # Init: clone mirror if not already present
+        # Init: populate cache if empty
         init_container {
-          name              = "initial-mirror"
+          name              = "seed-cache"
           image             = "alpine/git:latest"
           image_pull_policy = "IfNotPresent"
           command           = ["/bin/sh", "-c"]
           args = [<<-EOT
-            echo "[INIT] Setting up git mirror..."
+            echo "[CACHE] Seeding git object cache..."
             REPO_DIR="/git-cache/pytorch.git"
             if [ -d "$REPO_DIR" ]; then
-              echo "[INIT] Mirror pytorch already exists, updating..."
+              echo "[CACHE] Cache exists, refreshing..."
               cd "$REPO_DIR" && git remote update --prune || true
             else
-              echo "[INIT] Creating mirror of pytorch/pytorch..."
+              echo "[CACHE] Cold start - fetching pytorch/pytorch objects..."
               git clone --mirror https://github.com/pytorch/pytorch.git "$REPO_DIR"
             fi
-            echo "[INIT] Mirror setup complete"
+            echo "[CACHE] Seed complete"
           EOT
           ]
 
@@ -83,14 +84,14 @@ resource "kubernetes_deployment" "git_mirror" {
           }
         }
 
-        # Git daemon: serves repos read-only over git:// protocol
+        # Git daemon: serves cached objects read-only over git:// protocol
         container {
           name              = "git-daemon"
           image             = "alpine/git:latest"
           image_pull_policy = "IfNotPresent"
           command           = ["/bin/sh", "-c"]
           args = [<<-EOT
-            echo "[GIT-MIRROR] Starting git daemon..."
+            echo "[GIT-CACHE] Starting git daemon (read-only object server)..."
             for repo in /git-cache/*.git; do
               touch "$repo/git-daemon-export-ok"
             done
@@ -135,23 +136,23 @@ resource "kubernetes_deployment" "git_mirror" {
           }
         }
 
-        # Sidecar: updates mirror every 15 minutes
+        # Sidecar: refreshes cache every 15 minutes
         container {
-          name              = "mirror-updater"
+          name              = "cache-updater"
           image             = "alpine/git:latest"
           image_pull_policy = "IfNotPresent"
           command           = ["/bin/sh", "-c"]
           args = [<<-EOT
-            echo "[UPDATER] Starting mirror update loop..."
+            echo "[CACHE] Starting cache refresh loop..."
             while true; do
               REPO_DIR="/git-cache/pytorch.git"
               if [ -d "$REPO_DIR" ]; then
-                echo "[UPDATER] Updating pytorch mirror..."
+                echo "[CACHE] Refreshing pytorch cache..."
                 cd "$REPO_DIR"
-                git remote update --prune 2>&1 || echo "[UPDATER] WARNING: Failed to update"
-                echo "[UPDATER] Updated at $(date)"
+                git remote update --prune 2>&1 || echo "[CACHE] WARNING: Refresh failed"
+                echo "[CACHE] Refreshed at $(date)"
               fi
-              echo "[UPDATER] Next update in 900s..."
+              echo "[CACHE] Next refresh in 900s..."
               sleep 900
             done
           EOT
@@ -177,7 +178,7 @@ resource "kubernetes_deployment" "git_mirror" {
         volume {
           name = "git-cache"
           persistent_volume_claim {
-            claim_name = kubernetes_persistent_volume_claim.git_mirror_cache.metadata[0].name
+            claim_name = kubernetes_persistent_volume_claim.git_cache.metadata[0].name
           }
         }
       }
@@ -185,12 +186,12 @@ resource "kubernetes_deployment" "git_mirror" {
   }
 }
 
-resource "kubernetes_service" "git_mirror" {
+resource "kubernetes_service" "git_cache" {
   metadata {
-    name      = "git-mirror"
+    name      = "git-cache"
     namespace = "gpu-controlplane"
     labels = {
-      app = "git-mirror"
+      app = "git-cache"
     }
   }
 
@@ -205,7 +206,7 @@ resource "kubernetes_service" "git_mirror" {
     }
 
     selector = {
-      app = "git-mirror"
+      app = "git-cache"
     }
   }
 }
