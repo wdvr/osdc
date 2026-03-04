@@ -34,6 +34,9 @@ resource "kubernetes_deployment" "git_cache" {
     }
   }
 
+  # Don't wait for rollout - init container clones pytorch which takes 10-30 minutes
+  wait_for_rollout = false
+
   spec {
     replicas = 1
 
