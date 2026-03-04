@@ -1093,6 +1093,13 @@ def scan_all_reservations_with_prefix(table, reservation_prefix: str) -> list:
     return matching_items
 
 
+def record_trace_event(trace_data: dict, event_name: str) -> None:
+    """Record a timing event in trace data"""
+    if trace_data is not None:
+        import time
+        trace_data[event_name] = time.time()
+
+
 def handler(event, context):
     """Main Lambda handler"""
     try:
@@ -1774,6 +1781,16 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
         # Parse the reservation request
         reservation_request = json.loads(record["body"])
 
+        # Initialize trace if requested
+        trace_enabled = reservation_request.get("trace", False)
+        trace_data = {}
+        if trace_enabled:
+            import time
+            trace_data["lambda_receive"] = time.time()
+            # CLI start time passed from client
+            if "trace_cli_start" in reservation_request:
+                trace_data["cli_start"] = reservation_request["trace_cli_start"]
+
         logger.info(f"Processing reservation: {reservation_request}")
 
         # Check if this is a multinode reservation
@@ -1827,6 +1844,7 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 # Store initial record
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
                 reservations_table.put_item(Item=initial_record)
+                record_trace_event(trace_data if trace_enabled else None, "dynamodb_initial_write")
 
                 logger.info(
                     f"Created initial reservation record: {reservation_id}")
@@ -1879,7 +1897,7 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
             logger.info(f"Created reservation: {reservation_id}")
 
             # Allocate resources (K8s pod creation would go here)
-            allocate_gpu_resources(reservation_id, reservation_request)
+            allocate_gpu_resources(reservation_id, reservation_request, trace_data if trace_enabled else None)
             return True  # Successfully processed
         else:
             # Insufficient resources - set to queued and let scheduled Lambda handle it
@@ -2248,9 +2266,11 @@ def create_reservation(request: dict[str, Any]) -> str:
         raise
 
 
-def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None:
+def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_data: dict = None) -> None:
     """Allocate GPU resources via K8s pod creation"""
     try:
+        record_trace_event(trace_data, "allocate_start")
+
         gpu_count = request.get("gpu_count", 1)
         gpu_type = request.get("gpu_type", "a100")
         user_id = request.get("user_id")
@@ -2313,6 +2333,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 detailed_status=f"Building custom Docker image from Dockerfile"
             )
 
+            record_trace_event(trace_data, "docker_build_start")
             try:
                 # Create BuildKit job to build the image
                 # Use short reservation ID as tag
@@ -2374,10 +2395,12 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     if build_result["success"]:
                         logger.info(
                             f"Docker build successful for {reservation_id}")
+                        record_trace_event(trace_data, "docker_build_end")
                         # Use the built image
                         dockerimage = f"{ECR_REPOSITORY_URL}:{actual_image_tag}"
                         logger.info(f"Will use built image: {dockerimage}")
                     else:
+                        record_trace_event(trace_data, "docker_build_failed")
                         build_logs = build_result.get('logs', 'No logs available')
                         logger.error(
                             f"Docker build failed for {reservation_id}: {build_result['message']}")
@@ -2408,7 +2431,9 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         elif dockerimage:
             logger.info(f"Custom Docker image specified: {dockerimage}")
 
+        record_trace_event(trace_data, "github_keys_fetch_start")
         github_public_key = get_github_public_key(github_user, validate=True)
+        record_trace_event(trace_data, "github_keys_fetch_end")
         if not github_public_key:
             raise ValueError(
                 f"Could not fetch GitHub public key for GitHub user '{github_user}'"
@@ -2476,12 +2501,14 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 logger.info(f"Creating persistent disk for user {user_id}, disk_name={disk_name or 'default'}")
 
                 # Use new snapshot-first function
+                record_trace_event(trace_data, "disk_create_start")
                 persistent_volume_id, is_new_disk, disk_warning = create_disk_from_snapshot_or_empty(
                     user_id=user_id,
                     availability_zone=target_az,
                     disk_name=disk_name,
                     reservation_id=reservation_id
                 )
+                record_trace_event(trace_data, "disk_create_end")
 
                 logger.info(f"Persistent disk ready: {persistent_volume_id} (is_new={is_new_disk})")
 
@@ -2543,7 +2570,9 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     "preparing",
                     "Setting up shared storage (/shared) for user collaboration",
                 )
+                record_trace_event(trace_data, "efs_setup_start")
                 efs_filesystem_id = create_or_find_user_efs(user_id)
+                record_trace_event(trace_data, "efs_setup_end")
                 logger.info(
                     f"EFS filesystem {efs_filesystem_id} ready for user {user_id}")
             else:
@@ -2565,6 +2594,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
         # Create Kubernetes pod and services
         jupyter_enabled = request.get("jupyter_enabled", False)
+        record_trace_event(trace_data, "k8s_resources_create_start")
         node_port, jupyter_port = create_kubernetes_resources(
             pod_name=pod_name,
             gpu_count=gpu_count,
@@ -2583,7 +2613,9 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             target_az=target_az,
             preserve_entrypoint=preserve_entrypoint,
             node_labels=node_labels,
+            trace_data=trace_data,
         )
+        record_trace_event(trace_data, "k8s_resources_create_end")
 
         # Update status: Pod created, waiting for container to start
         if is_multinode:
@@ -2596,12 +2628,15 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         )
 
         # Get node IPs - public for DNS, private for proxy routing
+        record_trace_event(trace_data, "node_ip_fetch_start")
         node_public_ip = get_pod_node_public_ip(pod_name)
         node_private_ip = get_pod_node_private_ip(pod_name)
+        record_trace_event(trace_data, "node_ip_fetch_end")
 
         # Generate domain name if DNS is enabled
         domain_name = None
         domain_ssh_command = None
+        record_trace_event(trace_data, "dns_setup_start")
         if get_dns_enabled():
             # Get the preferred name from the request
             preferred_name = request.get("name")
@@ -2623,6 +2658,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
                 logger.info(
                     f"Created domain name {domain_name} for reservation {reservation_id}")
+        record_trace_event(trace_data, "dns_setup_end")
 
         # Generate SSH command (use ProxyCommand with domain if available, otherwise fallback to direct IP+port)
         if domain_name:
@@ -2661,6 +2697,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             f"MAIN FLOW: Pod is ready, checking SSH daemon status from logs for {reservation_id}"
         )
 
+        record_trace_event(trace_data, "ssh_ready_check_start")
         ssh_ready = False
         try:
             v1 = client.CoreV1Api(k8s_client)
@@ -2692,6 +2729,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             logger.warning(f"Could not check SSH daemon logs: {e}")
             # Assume ready if pod is running (NLB will handle routing)
             ssh_ready = True
+        record_trace_event(trace_data, "ssh_ready_check_end")
 
         if ssh_ready:
             # Update status: Finalizing connection
@@ -2706,6 +2744,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
             if domain_name:
                 logger.info(
                     f"Domain name exists ({domain_name}), checking if ALB is enabled for reservation {reservation_id}")
+                record_trace_event(trace_data, "alb_setup_start")
                 try:
                     from shared.alb_utils import (
                         is_alb_enabled,
@@ -2775,8 +2814,10 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 except Exception as alb_error:
                     logger.error(f"Failed to setup ALB/NLB: {alb_error}")
                     # Continue with NodePort fallback
+                record_trace_event(trace_data, "alb_setup_end")
 
             # Update reservation with connection details and mark as active
+            record_trace_event(trace_data, "connection_info_update_start")
             update_reservation_connection_info(
                 reservation_id=reservation_id,
                 ssh_command=ssh_command,
@@ -2795,6 +2836,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 alb_config=alb_config,
                 preserve_entrypoint=preserve_entrypoint,
             )
+            record_trace_event(trace_data, "connection_info_update_end")
 
             # Trigger availability table update after successful reservation
             try:
@@ -2831,12 +2873,29 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
 
         # GPU allocation handled automatically by K8s scheduler
 
+        # Store trace data in DynamoDB if tracing is enabled
+        record_trace_event(trace_data, "allocate_complete")
+        if trace_data:
+            try:
+                update_reservation_fields(reservation_id, trace_data=trace_data)
+                logger.info(f"Stored trace data for reservation {reservation_id}")
+            except Exception as trace_error:
+                logger.warning(f"Failed to store trace data: {trace_error}")
+
         logger.info(
             f"Successfully created pod {pod_name} with SSH access on port {node_port}"
         )
 
     except Exception as e:
         logger.error(f"Error allocating GPU resources: {str(e)}")
+        # Store trace data even on failure if tracing is enabled
+        record_trace_event(trace_data, "allocate_failed")
+        if trace_data:
+            try:
+                update_reservation_fields(reservation_id, trace_data=trace_data)
+                logger.info(f"Stored trace data for failed reservation {reservation_id}")
+            except Exception as trace_error:
+                logger.warning(f"Failed to store trace data on error: {trace_error}")
         # Update reservation status to failed
         update_reservation_status(
             reservation_id, "failed", f"Resource allocation failed: {str(e)}"
@@ -3078,6 +3137,7 @@ def create_kubernetes_resources(
     target_az: str = None,
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
+    trace_data: dict = None,
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
@@ -3197,14 +3257,18 @@ def create_kubernetes_resources(
 
                 # Create SSH service if it doesn't exist
                 if not existing_service_port:
+                    record_trace_event(trace_data, "k8s_ssh_service_create_start")
                     create_service(k8s_client, pod_name, node_port)
+                    record_trace_event(trace_data, "k8s_ssh_service_create_end")
                     logger.info(
                         f"Created new service {pod_name}-ssh on port {node_port}"
                     )
 
                 # Create headless service for multi-node communication
                 try:
+                    record_trace_event(trace_data, "k8s_headless_service_create_start")
                     create_headless_service(k8s_client, pod_name)
+                    record_trace_event(trace_data, "k8s_headless_service_create_end")
                 except Exception as headless_error:
                     logger.warning(
                         f"Failed to create headless service: {headless_error}")
@@ -3212,7 +3276,9 @@ def create_kubernetes_resources(
 
                 # Create Jupyter service if it doesn't exist
                 if not existing_jupyter_port:
+                    record_trace_event(trace_data, "k8s_jupyter_service_create_start")
                     create_jupyter_service(k8s_client, pod_name, jupyter_port)
+                    record_trace_event(trace_data, "k8s_jupyter_service_create_end")
                     logger.info(
                         f"Created new service {pod_name}-jupyter on port {jupyter_port}"
                     )
@@ -3265,14 +3331,18 @@ def create_kubernetes_resources(
 
                 # Create SSH service if it doesn't exist
                 if not existing_service_port:
+                    record_trace_event(trace_data, "k8s_ssh_service_create_start_2")
                     create_service(k8s_client, pod_name, node_port)
+                    record_trace_event(trace_data, "k8s_ssh_service_create_end_2")
                     logger.info(
                         f"Created new service {pod_name}-ssh on port {node_port}"
                     )
 
                 # Create headless service for multi-node communication
                 try:
+                    record_trace_event(trace_data, "k8s_headless_service_create_start_2")
                     create_headless_service(k8s_client, pod_name)
+                    record_trace_event(trace_data, "k8s_headless_service_create_end_2")
                 except Exception as headless_error:
                     logger.warning(
                         f"Failed to create headless service: {headless_error}")
@@ -3295,7 +3365,9 @@ def create_kubernetes_resources(
                 f"Background monitoring already active for reservation {reservation_id}, skipping duplicate")
 
         # Remove reservation_id to avoid blocking
+        record_trace_event(trace_data, "pod_ready_wait_start")
         wait_for_pod_ready(k8s_client, pod_name)
+        record_trace_event(trace_data, "pod_ready_wait_end")
         update_reservation_status(
             reservation_id, "preparing", f"Pod is ready, setting up services"
         )
@@ -4796,8 +4868,10 @@ EOF
         )
 
         # Create pod
+        record_trace_event(trace_data, "k8s_pod_create_start")
         pod = client.V1Pod(metadata=pod_metadata, spec=pod_spec)
         v1.create_namespaced_pod(namespace="gpu-dev", body=pod)
+        record_trace_event(trace_data, "k8s_pod_create_end")
         logger.info(f"Created pod {pod_name}")
 
     except Exception as e:
