@@ -900,14 +900,17 @@ class ReservationManager:
             ]
 
             initial_expires_at = None
+            full_reservation_id = reservation_id
             if matching_reservations:
                 initial_expires_at = matching_reservations[0].get("expires_at", "")
+                full_reservation_id = matching_reservations[0].get("reservation_id", reservation_id)
 
             # Send message to Lambda to extend reservation
             # Lambda will handle both the expiration timestamp update and any necessary pod updates
             message = {
                 "action": "extend_reservation",
-                "reservation_id": reservation_id,
+                "reservation_id": full_reservation_id,
+                "user_id": user_id,
                 "extension_hours": extension_hours,
                 "version": get_version(),
             }

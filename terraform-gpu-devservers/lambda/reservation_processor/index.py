@@ -1148,18 +1148,31 @@ def handler(event, context):
                         validate_cli_version(message_body)
                     except ValueError as version_error:
                         error_str = str(version_error)
-                        # Write error to operations table (for CLI polling)
-                        operation_id = message_body.get("operation_id")
-                        write_operation_result(operation_id, "failed", error_str)
-                        # Also update reservation status if applicable
+                        action = message_body.get("action")
                         reservation_id = message_body.get("reservation_id")
-                        if reservation_id:
-                            update_reservation_status(
-                                reservation_id=reservation_id,
-                                status="failed",
-                                detailed_status="CLI version validation failed",
-                                failure_reason=error_str
-                            )
+
+                        # For extend actions, write to extension_error so CLI polling detects it
+                        if action == "extend_reservation" and reservation_id:
+                            try:
+                                reservation = find_reservation_by_prefix(
+                                    reservation_id, message_body.get("user_id"))
+                                update_reservation_error(
+                                    reservation["reservation_id"], error_str, "extension_error")
+                            except Exception as lookup_err:
+                                logger.error(
+                                    f"Could not write extension_error for {reservation_id}: {lookup_err}")
+                        else:
+                            # Write error to operations table (for CLI polling)
+                            operation_id = message_body.get("operation_id")
+                            write_operation_result(operation_id, "failed", error_str)
+                            # Also update reservation status if applicable
+                            if reservation_id:
+                                update_reservation_status(
+                                    reservation_id=reservation_id,
+                                    status="failed",
+                                    detailed_status="CLI version validation failed",
+                                    failure_reason=error_str
+                                )
                         logger.error(f"Version validation failed: {error_str}")
                         delete_sqs_message(record)
                         continue
@@ -7952,6 +7965,7 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
         message = json.loads(record["body"])
         reservation_id = message.get("reservation_id")
         extension_hours = message.get("extension_hours")
+        user_id = message.get("user_id")
 
         if not all([reservation_id, extension_hours]):
             logger.error(
@@ -7962,7 +7976,7 @@ def process_extend_reservation_action(record: dict[str, Any]) -> bool:
             f"Processing extend reservation: {reservation_id} by {extension_hours} hours")
 
         try:
-            reservation = find_reservation_by_prefix(reservation_id)
+            reservation = find_reservation_by_prefix(reservation_id, user_id)
             full_reservation_id = reservation["reservation_id"]
             logger.info(
                 f"Found reservation {full_reservation_id} (prefix: {reservation_id})")
