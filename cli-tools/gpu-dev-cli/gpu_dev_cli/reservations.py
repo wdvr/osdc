@@ -1003,7 +1003,7 @@ class ReservationManager:
                 return
 
             reservation = response["Item"]
-            trace_data = reservation.get("trace", {})
+            trace_data = reservation.get("trace_data", {})
 
             if not trace_data:
                 console.print("[yellow]No trace data available (trace flag not enabled)[/yellow]")
@@ -1017,10 +1017,12 @@ class ReservationManager:
             table.add_column("Details", style="dim")
 
             # Sort trace events by timestamp
+            # Handle both Decimal (from DynamoDB) and float/int types
+            from decimal import Decimal
             events = []
             for key, value in trace_data.items():
-                if isinstance(value, (int, float)):
-                    events.append((key, value))
+                if isinstance(value, (int, float, Decimal)):
+                    events.append((key, float(value)))
 
             events.sort(key=lambda x: x[1])
 
