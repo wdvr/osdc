@@ -3645,8 +3645,65 @@ def create_pod(
                         run_as_user=0,
                         run_as_group=0
                     ),
+                ),
+            ] + ([
+                # Disk warming init container - pre-warms EBS volume restored from snapshot
+                # Only runs for existing persistent disks (not new/empty disks)
+                client.V1Container(
+                    name="disk-warmer",
+                    image="alpine:latest",
+                    image_pull_policy="IfNotPresent",
+                    command=["/bin/sh"],
+                    args=[
+                        "-c",
+                        """
+                        echo "[DISK-WARM] Starting EBS volume pre-warming..."
+                        START_TIME=$(date +%s)
+
+                        # Stage 1: Warm filesystem metadata (fast, enables ls/find/git status)
+                        echo "[DISK-WARM] Stage 1: Warming filesystem metadata..."
+                        find /home/dev -type f -o -type d > /dev/null 2>&1
+                        STAGE1_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 1 complete in $((STAGE1_TIME - START_TIME))s"
+
+                        # Stage 2: Warm critical directories (git, build cache, source)
+                        echo "[DISK-WARM] Stage 2: Warming critical files..."
+                        for dir in /home/dev/.git /home/dev/.cache /home/dev/pytorch/.git /home/dev/fbsource/.git; do
+                            if [ -d "$dir" ]; then
+                                echo "[DISK-WARM]   Warming $dir..."
+                                find "$dir" -type f -exec cat {} > /dev/null 2>&1 \\;
+                            fi
+                        done
+                        STAGE2_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 2 complete in $((STAGE2_TIME - STAGE1_TIME))s"
+
+                        # Stage 3: Warm remaining files in background-friendly way
+                        echo "[DISK-WARM] Stage 3: Warming remaining files..."
+                        find /home/dev -type f -not -path '/home/dev/.git/*' \\
+                            -not -path '/home/dev/.cache/*' \\
+                            -not -path '/home/dev/pytorch/.git/*' \\
+                            -exec cat {} > /dev/null 2>&1 \\;
+                        END_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 3 complete in $((END_TIME - STAGE2_TIME))s"
+
+                        TOTAL_FILES=$(find /home/dev -type f 2>/dev/null | wc -l)
+                        echo "[DISK-WARM] Complete: warmed $TOTAL_FILES files in $((END_TIME - START_TIME))s"
+                        """,
+                    ],
+                    volume_mounts=[
+                        client.V1VolumeMount(
+                            name="dev-home", mount_path="/home/dev"),
+                    ],
+                    security_context=client.V1SecurityContext(
+                        run_as_user=0,
+                        run_as_group=0
+                    ),
+                    resources=client.V1ResourceRequirements(
+                        requests={"cpu": "500m", "memory": "256Mi"},
+                        limits={"cpu": "2000m", "memory": "1Gi"}
+                    ),
                 )
-            ],
+            ] if (use_persistent_disk and not is_new_disk) else []),
             containers=[
                 client.V1Container(
                     name="gpu-dev",
@@ -4139,6 +4196,14 @@ EOFREADME
                             echo "[STARTUP] Hiding lost+found directory (normal for ext4 filesystem)"
                             chattr +h /home/dev/lost+found 2>/dev/null || chmod 700 /home/dev/lost+found
                         fi
+
+                        # Configure git to use in-cluster mirror for faster clones
+                        echo "[STARTUP] Configuring git mirror for faster clones..."
+                        GIT_MIRROR="git://git-mirror.gpu-controlplane.svc.cluster.local"
+                        # Set up insteadOf so 'git clone https://github.com/pytorch/pytorch' uses the mirror
+                        su - dev -c "git config --global url.\\"$GIT_MIRROR/pytorch\\".insteadOf \\"https://github.com/pytorch/pytorch\\""
+                        su - dev -c "git config --global url.\\"$GIT_MIRROR/pytorch\\".insteadOf \\"git@github.com:pytorch/pytorch\\""
+                        echo "[STARTUP] ✓ Git mirror configured (clone from in-cluster cache)"
 
                         echo "[STARTUP] Configuring SSH..."
                         mkdir -p /run/sshd
