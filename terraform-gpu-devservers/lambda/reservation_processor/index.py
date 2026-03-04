@@ -4202,7 +4202,7 @@ EOFREADME
 
                         cat > /usr/local/bin/git-clone-cached << 'GITCACHESCRIPT'
 #!/bin/bash
-# Clones pytorch/pytorch from in-cluster cache, then sets origin to GitHub.
+# Clones pytorch/pytorch + submodules from in-cluster cache, then sets origin to GitHub.
 CACHE="git://git-cache.gpu-controlplane.svc.cluster.local"
 GITHUB="https://github.com/pytorch/pytorch.git"
 GIT="/usr/bin/git"
@@ -4213,18 +4213,40 @@ if [ -d "$DEST" ]; then
     exit 1
 fi
 
+# Step 1: Clone main repo from cache (no submodules yet)
 echo "[git-cache] Cloning pytorch from in-cluster cache..."
-if ! "$GIT" clone "$CACHE/pytorch.git" "$DEST" --recurse-submodules 2>/dev/null; then
-    echo "[git-cache] Cache miss — cloning from GitHub..."
+if ! "$GIT" clone "$CACHE/pytorch.git" "$DEST" 2>/dev/null; then
+    echo "[git-cache] Cache miss — cloning from GitHub with submodules..."
     "$GIT" clone "$GITHUB" "$DEST" --recurse-submodules
     exit $?
 fi
 
 cd "$DEST"
+
+# Step 2: Set origin to GitHub
 "$GIT" remote set-url origin "$GITHUB"
-echo "[git-cache] Fetching latest from GitHub..."
+
+# Step 3: Clone submodules from cache using temporary insteadOf rules
+# Maps github URLs to cache names: https://github.com/org/repo -> git://cache/org_repo
+echo "[git-cache] Cloning submodules from cache..."
+"$GIT" config --file .gitmodules --get-regexp 'url' | awk '{{print $2}}' | while read url; do
+    name=$(echo "$url" | sed 's|https://github.com/||;s|/|_|g;s|\.git$||').git
+    "$GIT" config --global url."$CACHE/$name".insteadOf "$url"
+done
+
+# Init submodules — uses cache via insteadOf
+"$GIT" submodule update --init --recursive 2>/dev/null
+
+# Step 4: Remove temporary insteadOf rules
+"$GIT" config --file .gitmodules --get-regexp 'url' | awk '{{print $2}}' | while read url; do
+    "$GIT" config --global --unset-all url."$CACHE/$(echo "$url" | sed 's|https://github.com/||;s|/|_|g;s|\.git$||').git".insteadOf 2>/dev/null
+done
+
+# Step 5: Fetch latest from GitHub
+echo "[git-cache] Syncing latest from GitHub..."
 "$GIT" fetch origin
 "$GIT" checkout "$("$GIT" symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||')" 2>/dev/null
+
 echo "[git-cache] Done — origin is GitHub, all git ops go there directly."
 GITCACHESCRIPT
                         chmod +x /usr/local/bin/git-clone-cached
