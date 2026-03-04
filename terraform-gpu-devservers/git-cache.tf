@@ -19,6 +19,10 @@ resource "kubernetes_persistent_volume_claim" "git_cache" {
       }
     }
   }
+
+  # Don't wait for PVC to be bound - gp3 storage class uses WaitForFirstConsumer
+  # so the volume won't be provisioned until the deployment pod actually uses it
+  wait_until_bound = false
 }
 
 resource "kubernetes_deployment" "git_cache" {
