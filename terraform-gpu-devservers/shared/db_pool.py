@@ -208,10 +208,11 @@ def _get_connection_with_timeout(
                     logger.warning(f"Stale connection detected (attempt {health_check_attempts}), closing and retrying")
                     
                     try:
-                        # Close the bad connection (removes from pool)
-                        conn.close()
+                        # Return connection to pool, marking it as bad so it gets closed
+                        # This properly notifies the pool that this connection slot is free
+                        pool_instance.putconn(conn, close=True)
                     except Exception as close_error:
-                        logger.debug(f"Error closing stale connection: {close_error}")
+                        logger.debug(f"Error returning stale connection to pool: {close_error}")
                     
                     # Check if we've exceeded max health check retries
                     if health_check_attempts >= HEALTH_CHECK_MAX_RETRIES:

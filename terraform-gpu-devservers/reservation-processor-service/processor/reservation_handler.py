@@ -1064,25 +1064,6 @@ def find_reservation_by_prefix(reservation_id: str, user_id: str = None) -> dict
         raise
 
 
-# query_user_reservations_with_prefix removed - DynamoDB-specific function no longer needed
-# Use list_reservations_by_user() from shared.reservation_db instead
-
-def query_user_reservations_with_prefix_REMOVED(table, user_id: str, reservation_prefix: str) -> list:
-    """REMOVED: Query user reservations using UserIndex GSI and filter by prefix"""
-    # This function has been removed as part of the PostgreSQL migration
-    # Use list_reservations_by_user() from shared.reservation_db instead
-    raise NotImplementedError("This function has been migrated to PostgreSQL. Use list_reservations_by_user() instead.")
-
-
-# scan_all_reservations_with_prefix removed - DynamoDB-specific function no longer needed
-# Use get_reservation() with LIKE queries in PostgreSQL instead
-
-def scan_all_reservations_with_prefix_REMOVED(table, reservation_prefix: str) -> list:
-    """REMOVED: Scan all reservations with prefix - fallback when no user_id provided"""
-    # This function has been removed as part of the PostgreSQL migration
-    raise NotImplementedError("This function has been migrated to PostgreSQL. Use appropriate query functions instead.")
-
-
 def handler(event, context):
     """Main Lambda handler"""
     try:
@@ -1155,7 +1136,7 @@ def handler(event, context):
                         success = process_jupyter_action(record)
                     elif action == "add_user":
                         success = process_add_user_action(record)
-                    elif action == "extend_reservation":
+                    elif action in ["extend_reservation", "extend"]:
                         success = process_extend_reservation_action(record)
                     elif action == "delete_disk":
                         success = process_delete_disk_action(record)
@@ -3739,8 +3720,65 @@ def create_pod(
                         run_as_user=0,
                         run_as_group=0
                     ),
+                ),
+            ] + ([
+                # Disk warming init container - pre-warms EBS volume restored from snapshot
+                # Only runs for existing persistent disks (not new/empty disks)
+                client.V1Container(
+                    name="disk-warmer",
+                    image="alpine:latest",
+                    image_pull_policy="IfNotPresent",
+                    command=["/bin/sh"],
+                    args=[
+                        "-c",
+                        """
+                        echo "[DISK-WARM] Starting EBS volume pre-warming..."
+                        START_TIME=$(date +%s)
+
+                        # Stage 1: Warm filesystem metadata (fast, enables ls/find/git status)
+                        echo "[DISK-WARM] Stage 1: Warming filesystem metadata..."
+                        find /home/dev -type f -o -type d > /dev/null 2>&1
+                        STAGE1_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 1 complete in $((STAGE1_TIME - START_TIME))s"
+
+                        # Stage 2: Warm critical directories (git, build cache, source)
+                        echo "[DISK-WARM] Stage 2: Warming critical files..."
+                        for dir in /home/dev/.git /home/dev/.cache /home/dev/pytorch/.git /home/dev/fbsource/.git; do
+                            if [ -d "$dir" ]; then
+                                echo "[DISK-WARM]   Warming $dir..."
+                                find "$dir" -type f -exec cat {} > /dev/null 2>&1 \\;
+                            fi
+                        done
+                        STAGE2_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 2 complete in $((STAGE2_TIME - STAGE1_TIME))s"
+
+                        # Stage 3: Warm remaining files in background-friendly way
+                        echo "[DISK-WARM] Stage 3: Warming remaining files..."
+                        find /home/dev -type f -not -path '/home/dev/.git/*' \\
+                            -not -path '/home/dev/.cache/*' \\
+                            -not -path '/home/dev/pytorch/.git/*' \\
+                            -exec cat {} > /dev/null 2>&1 \\;
+                        END_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 3 complete in $((END_TIME - STAGE2_TIME))s"
+
+                        TOTAL_FILES=$(find /home/dev -type f 2>/dev/null | wc -l)
+                        echo "[DISK-WARM] Complete: warmed $TOTAL_FILES files in $((END_TIME - START_TIME))s"
+                        """,
+                    ],
+                    volume_mounts=[
+                        client.V1VolumeMount(
+                            name="dev-home", mount_path="/home/dev"),
+                    ],
+                    security_context=client.V1SecurityContext(
+                        run_as_user=0,
+                        run_as_group=0
+                    ),
+                    resources=client.V1ResourceRequirements(
+                        requests={"cpu": "500m", "memory": "256Mi"},
+                        limits={"cpu": "2000m", "memory": "1Gi"}
+                    ),
                 )
-            ],
+            ] if (use_persistent_disk and not is_new_disk) else []),
             containers=[
                 client.V1Container(
                     name="gpu-dev",
@@ -4028,20 +4066,20 @@ export GPU_DEV_USER_ID="{user_id or 'dev'}"
 check_warnings() {{
     # Check for startup script still running
     if [ -f /home/dev/STARTUP_SCRIPT_RUNNING.txt ]; then
-        echo -e "\\033[1;33m\$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
+        echo -e "\\033[1;33m$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
     fi
     # Check for expiry warnings
     for warning_file in /home/dev/WARN_EXPIRES_IN_*MIN.txt; do
-        if [ -f "\$warning_file" ]; then
-            minutes=\$(echo "\$warning_file" | sed 's/.*WARN_EXPIRES_IN_\\([0-9]*\\)MIN.txt/\\1/')
-            echo -e "\\033[1;31m🚨 URGENT: Server expires in <\${{minutes}} minutes! 🚨\\033[0m"
+        if [ -f "$warning_file" ]; then
+            minutes=$(echo "$warning_file" | sed 's/.*WARN_EXPIRES_IN_\\([0-9]*\\)MIN.txt/\\1/')
+            echo -e "\\033[1;31m🚨 URGENT: Server expires in <${{minutes}} minutes! 🚨\\033[0m"
             return
         fi
     done 2>/dev/null
 }}
 
 # Run warning check before every command prompt
-PROMPT_COMMAND="check_warnings; \$PROMPT_COMMAND"
+PROMPT_COMMAND="check_warnings; $PROMPT_COMMAND"
 EOF_BASHRC_EXT
 
                         cat > /home/dev/.zshrc_ext << EOF_ZSHRC_EXT
@@ -4056,16 +4094,16 @@ export GPU_DEV_USER_ID="{user_id or 'dev'}"
 check_warnings() {{
     # Check for startup script still running
     if [[ -f /home/dev/STARTUP_SCRIPT_RUNNING.txt ]]; then
-        echo -e "\\033[1;33m\$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
+        echo -e "\\033[1;33m$(cat /home/dev/STARTUP_SCRIPT_RUNNING.txt)\\033[0m"
     fi
     # Check for expiry warnings
     setopt NULL_GLOB 2>/dev/null
     local warning_files=(/home/dev/WARN_EXPIRES_IN_*MIN.txt)
-    if [[ \${{#warning_files[@]}} -gt 0 ]] && [[ -f "\${{warning_files[1]}}" ]]; then
-        local minutes="\${{warning_files[1]:t:r}}"
-        minutes="\${{minutes#WARN_EXPIRES_IN_}}"
-        minutes="\${{minutes%MIN}}"
-        echo -e "\\033[1;31m🚨 URGENT: Server expires in <\${{minutes}} minutes! 🚨\\033[0m"
+    if [[ ${{#warning_files[@]}} -gt 0 ]] && [[ -f "${{warning_files[1]}}" ]]; then
+        local minutes="${{warning_files[1]:t:r}}"
+        minutes="${{minutes#WARN_EXPIRES_IN_}}"
+        minutes="${{minutes%MIN}}"
+        echo -e "\\033[1;31m🚨 URGENT: Server expires in <${{minutes}} minutes! 🚨\\033[0m"
     fi
 }}
 
@@ -4233,6 +4271,14 @@ EOFREADME
                             echo "[STARTUP] Hiding lost+found directory (normal for ext4 filesystem)"
                             chattr +h /home/dev/lost+found 2>/dev/null || chmod 700 /home/dev/lost+found
                         fi
+
+                        # Configure git to use in-cluster mirror for faster clones
+                        echo "[STARTUP] Configuring git mirror for faster clones..."
+                        GIT_MIRROR="git://git-mirror.gpu-controlplane.svc.cluster.local"
+                        # Set up insteadOf so 'git clone https://github.com/pytorch/pytorch' uses the mirror
+                        su - dev -c "git config --global url.\\"$GIT_MIRROR/pytorch\\".insteadOf \\"https://github.com/pytorch/pytorch\\""
+                        su - dev -c "git config --global url.\\"$GIT_MIRROR/pytorch\\".insteadOf \\"git@github.com:pytorch/pytorch\\""
+                        echo "[STARTUP] ✓ Git mirror configured (clone from in-cluster cache)"
 
                         echo "[STARTUP] Configuring SSH..."
                         mkdir -p /run/sshd

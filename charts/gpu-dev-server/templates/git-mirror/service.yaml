@@ -1,0 +1,19 @@
+{{- if .Values.gitMirror.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-mirror
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: git-mirror
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9418
+      targetPort: 9418
+      protocol: TCP
+      name: git
+  selector:
+    app: git-mirror
+{{- end }}

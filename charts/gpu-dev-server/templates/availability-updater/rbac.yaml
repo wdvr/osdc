@@ -1,0 +1,33 @@
+{{- if .Values.availabilityUpdater.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: availability-updater-role
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+rules:
+  # Node access for GPU availability checks
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Pod access for GPU request tracking
+  - apiGroups: [""]
+    resources: ["pods", "pods/status"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: availability-updater-binding
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: availability-updater-role
+subjects:
+  - kind: ServiceAccount
+    name: availability-updater-sa
+    namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+{{- end }}

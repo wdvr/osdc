@@ -1,0 +1,22 @@
+apiVersion: v2
+name: gpu-dev-server
+description: GPU Development Server Infrastructure - On-demand GPU development environments
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - gpu
+  - kubernetes
+  - development
+  - pytorch
+  - cuda
+maintainers:
+  - name: GPU Dev Team
+home: https://github.com/your-org/osdc
+sources:
+  - https://github.com/your-org/osdc
+dependencies:
+  - name: nvidia-device-plugin
+    version: "0.14.0"
+    repository: https://nvidia.github.io/k8s-device-plugin
+    condition: nvidia.devicePlugin.enabled

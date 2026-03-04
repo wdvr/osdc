@@ -790,11 +790,6 @@ class ReservationManager:
             
             # Note: API currently only supports filtering by current user
             # user_filter="all" functionality would need admin API endpoint
-            if user_filter and user_filter != "all":
-                console.print(
-                    "[yellow]⚠️  Filtering by specific user not yet supported "
-                    "via API. Showing your reservations.[/yellow]"
-                )
             
             # Call API with pagination
             # For now, request a large limit (500) to get most reservations
@@ -952,11 +947,11 @@ class ReservationManager:
             return False
 
     def extend_reservation(self, reservation_id: str, user_id: str, extension_hours: float) -> bool:
-        """Extend an active reservation by the specified number of hours"""
+        """Extend an active reservation by the specified number of hours (minimum 1)"""
         try:
             # Send extend request via API
             # Job processor will handle the expiration timestamp update and pod updates
-            self.api_client.extend_job(reservation_id, int(extension_hours))
+            self.api_client.extend_job(reservation_id, extension_hours)
 
             console.print(
                 f"[yellow]⏳ Extension request submitted for reservation {reservation_id[:8]}...[/yellow]"

@@ -1,0 +1,52 @@
+{{- if .Values.availabilityUpdater.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: availability-updater
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: availability-updater
+spec:
+  schedule: {{ .Values.availabilityUpdater.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: availability-updater
+    spec:
+      activeDeadlineSeconds: 600
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: availability-updater
+        spec:
+          serviceAccountName: availability-updater-sa
+          restartPolicy: Never
+          {{- with .Values.availabilityUpdater.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: updater
+              image: "{{ .Values.availabilityUpdater.image.repository }}:{{ .Values.availabilityUpdater.image.tag }}"
+              imagePullPolicy: {{ .Values.availabilityUpdater.image.pullPolicy }}
+              envFrom:
+                - configMapRef:
+                    name: availability-updater-config
+              env:
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "gpu-dev-server.postgresSecretName" . }}
+                      key: {{ .Values.postgres.auth.existingSecretKey }}
+              resources:
+                {{- toYaml .Values.availabilityUpdater.resources | nindent 16 }}
+{{- end }}

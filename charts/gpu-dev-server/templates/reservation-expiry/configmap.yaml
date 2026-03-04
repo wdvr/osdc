@@ -1,0 +1,21 @@
+{{- if .Values.reservationExpiry.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reservation-expiry-config
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: reservation-expiry
+data:
+  AWS_REGION: {{ .Values.cloudProvider.region | quote }}
+  REGION: {{ .Values.cloudProvider.region | quote }}
+  {{- if eq .Values.cloudProvider.name "aws" }}
+  EKS_CLUSTER_NAME: {{ .Values.cloudProvider.aws.eksClusterName | quote }}
+  {{- end }}
+  {{- if eq .Values.cloudProvider.name "gcp" }}
+  GKE_CLUSTER_NAME: {{ .Values.cloudProvider.gcp.gkeClusterName | quote }}
+  {{- end }}
+  WARNING_MINUTES: {{ .Values.reservationExpiry.config.warningMinutes | quote }}
+  GRACE_PERIOD_SECONDS: {{ .Values.reservationExpiry.config.gracePeriodSeconds | quote }}
+{{- end }}

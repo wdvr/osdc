@@ -7,7 +7,6 @@ Used by ssh with: ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' user@host
 import sys
 import asyncio
 import websockets
-import ssl as ssl_module
 
 
 async def tunnel_ssh(target_host: str, target_port: int):
@@ -19,9 +18,10 @@ async def tunnel_ssh(target_host: str, target_port: int):
         target_port: Target SSH port
     """
     # Determine proxy URL based on target host
-    if ".test.devservers.io" in target_host:
+    # Use endswith() for security - prevents hostname spoofing like "fake.devservers.io.attacker.com"
+    if target_host.endswith(".test.devservers.io"):
         proxy_host = "ssh.test.devservers.io"
-    elif ".devservers.io" in target_host:
+    elif target_host.endswith(".devservers.io"):
         proxy_host = "ssh.devservers.io"
     else:
         print(f"Error: Unsupported domain: {target_host}", file=sys.stderr)
@@ -34,7 +34,7 @@ async def tunnel_ssh(target_host: str, target_port: int):
         # Connect to WebSocket proxy
         async with websockets.connect(ws_url) as websocket:
             # Set up stdin/stdout for SSH
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             reader = asyncio.StreamReader()
             protocol = asyncio.StreamReaderProtocol(reader)
 
@@ -54,10 +54,10 @@ async def tunnel_ssh(target_host: str, target_port: int):
                         if not data:
                             break
                         await websocket.send(data)
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     print(f"Error in stdin_to_ws: {e}", file=sys.stderr)
-                finally:
-                    await websocket.close()
 
             async def ws_to_stdout():
                 """Forward WebSocket to stdout"""
@@ -66,13 +66,29 @@ async def tunnel_ssh(target_host: str, target_port: int):
                         if isinstance(message, bytes):
                             writer.write(message)
                             await writer.drain()
+                except asyncio.CancelledError:
+                    raise
                 except websockets.exceptions.ConnectionClosed:
                     pass
                 except Exception as e:
                     print(f"Error in ws_to_stdout: {e}", file=sys.stderr)
 
-            # Run both directions concurrently
-            await asyncio.gather(stdin_to_ws(), ws_to_stdout())
+            # Run both directions concurrently; when one finishes, cancel the other
+            tasks = [
+                asyncio.create_task(stdin_to_ws()),
+                asyncio.create_task(ws_to_stdout()),
+            ]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            for task in pending:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            # Propagate exceptions from completed tasks
+            for task in done:
+                task.result()
 
     except websockets.exceptions.InvalidStatusCode as e:
         print(f"Error connecting to proxy: HTTP {e.status_code}", file=sys.stderr)

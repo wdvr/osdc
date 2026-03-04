@@ -151,11 +151,15 @@ def process_message(msg_id: int) -> bool:
             # Delete message from queue on success
             if delete_message(msg_id):
                 logger.info(f"Message {msg_id} deleted from queue")
-                return True
             else:
-                logger.error(f"Failed to delete message {msg_id} - will retry")
-                # Return False so job fails and message becomes visible again
-                return False
+                # Processing succeeded but deletion failed. Return True anyway
+                # to avoid duplicate work -- the handler is idempotent and the
+                # message will expire from PGMQ after the visibility timeout.
+                logger.warning(
+                    f"Message {msg_id} processed successfully but queue deletion failed. "
+                    f"Message will expire from PGMQ automatically."
+                )
+            return True
         else:
             logger.error(f"Handler returned error for message {msg_id}: {result}")
             return False
