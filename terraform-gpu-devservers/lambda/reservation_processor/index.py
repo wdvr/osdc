@@ -4197,13 +4197,48 @@ EOFREADME
                             chattr +h /home/dev/lost+found 2>/dev/null || chmod 700 /home/dev/lost+found
                         fi
 
-                        # Configure git to use in-cluster mirror for faster clones
-                        echo "[STARTUP] Configuring git mirror for faster clones..."
-                        GIT_MIRROR="git://git-mirror.gpu-controlplane.svc.cluster.local"
-                        # Set up insteadOf so 'git clone https://github.com/pytorch/pytorch' uses the mirror
-                        su - dev -c "git config --global url.\\"$GIT_MIRROR/pytorch\\".insteadOf \\"https://github.com/pytorch/pytorch\\""
-                        su - dev -c "git config --global url.\\"$GIT_MIRROR/pytorch\\".insteadOf \\"git@github.com:pytorch/pytorch\\""
-                        echo "[STARTUP] ✓ Git mirror configured (clone from in-cluster cache)"
+                        # Install git-clone-fast helper for cached pytorch clones
+                        echo "[STARTUP] Installing git-clone-fast helper..."
+                        cat > /usr/local/bin/git-clone-fast << 'CLONESCRIPT'
+#!/bin/bash
+# git-clone-fast: Clone pytorch/pytorch from in-cluster mirror, then sync with GitHub
+# Usage: git-clone-fast [destination]
+#
+# 1. Clones from the in-cluster mirror (fast - no GitHub roundtrip)
+# 2. Switches origin to GitHub
+# 3. Fetches latest commits from GitHub (small delta)
+#
+# After this, all git operations (pull, push, fetch) go to GitHub as normal.
+
+MIRROR="git://git-mirror.gpu-controlplane.svc.cluster.local"
+GITHUB="https://github.com/pytorch/pytorch.git"
+DEST="${1:-pytorch}"
+
+if [ -d "$DEST" ]; then
+    echo "Error: $DEST already exists"
+    exit 1
+fi
+
+echo "Step 1/3: Cloning from in-cluster mirror (fast)..."
+if ! git clone "$MIRROR/pytorch.git" "$DEST" --recurse-submodules; then
+    echo "Mirror unavailable, falling back to GitHub..."
+    git clone "$GITHUB" "$DEST" --recurse-submodules
+    exit $?
+fi
+
+cd "$DEST"
+
+echo "Step 2/3: Switching origin to GitHub..."
+git remote set-url origin "$GITHUB"
+
+echo "Step 3/3: Syncing latest from GitHub..."
+git fetch origin
+git checkout "$(git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||')" 2>/dev/null
+
+echo "Done! All future git pull/push goes to GitHub."
+CLONESCRIPT
+                        chmod +x /usr/local/bin/git-clone-fast
+                        echo "[STARTUP] ✓ git-clone-fast installed (run 'git-clone-fast' to clone pytorch)"
 
                         echo "[STARTUP] Configuring SSH..."
                         mkdir -p /run/sshd
