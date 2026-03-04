@@ -1097,7 +1097,9 @@ def record_trace_event(trace_data: dict, event_name: str) -> None:
     """Record a timing event in trace data"""
     if trace_data is not None:
         import time
-        trace_data[event_name] = time.time()
+        from decimal import Decimal
+        # Convert float to Decimal for DynamoDB compatibility
+        trace_data[event_name] = Decimal(str(time.time()))
 
 
 def handler(event, context):
@@ -1786,10 +1788,12 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
         trace_data = {}
         if trace_enabled:
             import time
-            trace_data["lambda_receive"] = time.time()
-            # CLI start time passed from client
+            from decimal import Decimal
+            # Convert floats to Decimal for DynamoDB compatibility
+            trace_data["lambda_receive"] = Decimal(str(time.time()))
+            # CLI start time passed from client (also needs Decimal conversion)
             if "trace_cli_start" in reservation_request:
-                trace_data["cli_start"] = reservation_request["trace_cli_start"]
+                trace_data["cli_start"] = Decimal(str(reservation_request["trace_cli_start"]))
 
         logger.info(f"Processing reservation: {reservation_request}")
 
