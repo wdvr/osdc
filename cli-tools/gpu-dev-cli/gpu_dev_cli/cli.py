@@ -540,6 +540,11 @@ def main(ctx: click.Context) -> None:
     help="Enable verbose debug output",
 )
 @click.option(
+    "--trace",
+    is_flag=True,
+    help="Enable timing trace - shows duration of each reservation step",
+)
+@click.option(
     "--dockerfile",
     type=click.Path(exists=True, readable=True),
     help="Path to custom Dockerfile to use instead of default container image (max 512KB)",
@@ -580,6 +585,7 @@ def reserve(
     interactive: Optional[bool],
     distributed: bool,
     verbose: bool,
+    trace: bool,
     dockerfile: Optional[str],
     dockerimage: Optional[str],
     preserve_entrypoint: bool,
@@ -1239,6 +1245,7 @@ def reserve(
                     preserve_entrypoint=preserve_entrypoint,
                     disk_name=disk,
                     node_labels=node_labels if node_labels else None,
+                    trace=trace,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 
@@ -1289,6 +1296,9 @@ def reserve(
                     rprint(
                         f"[yellow]💡 Use 'gpu-dev show {reservation_ids[0][:8]}' to check connection details later[/yellow]"
                     )
+                elif trace:
+                    # Display timing trace
+                    reservation_mgr.display_reservation_trace(reservation_ids[0])
         else:
             rprint("[red]❌ Failed to create reservation[/red]")
 

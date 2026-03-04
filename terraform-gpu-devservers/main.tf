@@ -95,7 +95,7 @@ locals {
         "cpu-arm" = {
           instance_type       = "c7g.4xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 3
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
@@ -103,7 +103,7 @@ locals {
         "cpu-x86" = {
           instance_type       = "c7i.4xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 3
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"
