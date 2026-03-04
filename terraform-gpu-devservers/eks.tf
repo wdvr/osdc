@@ -229,8 +229,9 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
   health_check_grace_period = 300
 
   # Use dynamic instance count from capacity reservation
-  min_size         = each.value.instance_count
-  max_size         = each.value.instance_count
+  # CPU types with min/max_instance_count support autoscaling (Lambda adjusts desired_capacity)
+  min_size         = try(each.value.gpu_config.min_instance_count, each.value.instance_count)
+  max_size         = try(each.value.gpu_config.max_instance_count, each.value.instance_count)
   desired_capacity = each.value.instance_count
 
   # Don't wait for instances to become healthy - prevents Terraform failures when AWS can't place instances
@@ -304,6 +305,12 @@ resource "aws_autoscaling_group" "gpu_dev_nodes" {
     key                 = "CapacityReservation"
     value               = each.value.capacity_reservation_id != null ? each.value.capacity_reservation_id : "none"
     propagate_at_launch = true
+  }
+
+  # Prevent terraform from resetting desired_capacity on apply — Lambda manages it for autoscaled CPU ASGs.
+  # Safe for GPU ASGs too since their min=max=desired so desired_capacity never drifts.
+  lifecycle {
+    ignore_changes = [desired_capacity]
   }
 }
 

@@ -5,8 +5,10 @@ Updates GPU availability table when ASG instances launch/terminate
 
 import json
 import logging
+import math
 import os
-from typing import Dict, Any
+import time
+from typing import Dict, Any, List
 
 import boto3
 
@@ -124,21 +126,24 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
             logger.info(
                 f"CPU ASG calculation: {running_instances} instances * {max_users_per_node} slots = {total_gpus} total slots")
 
+            # Track per-node pod counts for autoscaling decisions
+            node_pod_counts = {}  # node_name -> gpu_dev_pod_count
+
             # Check actual pod usage on CPU nodes
             if k8s_client is not None:
                 try:
                     logger.info(f"Checking CPU node availability for {gpu_type}")
-                    # Count available slots by checking pod count on each node
+                    from kubernetes import client
                     v1 = client.CoreV1Api(k8s_client)
                     nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
 
                     total_available_slots = 0
                     for node in nodes.items:
                         if is_node_ready_and_schedulable(node):
-                            # Count gpu-dev pods on this node
                             pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={node.metadata.name}")
                             gpu_dev_pods = [p for p in pods.items if p.metadata.name.startswith('gpu-dev-')]
                             used_slots = len(gpu_dev_pods)
+                            node_pod_counts[node.metadata.name] = used_slots
                             available_slots = max(0, max_users_per_node - used_slots)
                             total_available_slots += available_slots
 
@@ -149,6 +154,28 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                     available_gpus = total_gpus
             else:
                 available_gpus = total_gpus
+
+            # --- CPU autoscaling logic ---
+            asg_min_size = matching_asgs[0]["MinSize"]
+            asg_max_size = matching_asgs[0]["MaxSize"]
+            current_desired = matching_asgs[0]["DesiredCapacity"]
+            asg_name_for_scaling = matching_asgs[0]["AutoScalingGroupName"]
+
+            # Only autoscale if min != max (autoscaling is enabled for this ASG)
+            if asg_min_size < asg_max_size:
+                try:
+                    autoscale_cpu_asg(
+                        asg_name=asg_name_for_scaling,
+                        current_desired=current_desired,
+                        asg_min_size=asg_min_size,
+                        asg_max_size=asg_max_size,
+                        total_available_slots=available_gpus,
+                        max_users_per_node=max_users_per_node,
+                        node_pod_counts=node_pod_counts,
+                        matching_asgs=matching_asgs,
+                    )
+                except Exception as scale_error:
+                    logger.error(f"CPU autoscaling failed for {gpu_type}: {scale_error}")
         else:
             # GPU nodes - use existing logic
             total_gpus = running_instances * gpus_per_instance
@@ -223,6 +250,13 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
             full_nodes_available = available_gpus  # Each "GPU" represents one CPU node slot
             max_reservable = 1 if available_gpus > 0 else 0  # Max 1 CPU node per reservation
 
+        # For CPU types with autoscaling, report scalable total based on max ASG size
+        scalable_total = 0
+        if is_cpu_type and matching_asgs:
+            asg_max = matching_asgs[0].get("MaxSize", 0)
+            if asg_max > matching_asgs[0].get("MinSize", 0):
+                scalable_total = asg_max * max_users_per_node
+
         # Update DynamoDB table
         table = dynamodb.Table(AVAILABILITY_TABLE)
 
@@ -231,15 +265,13 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                 "gpu_type": gpu_type,
                 "total_gpus": total_gpus,
                 "available_gpus": available_gpus,
+                "scalable_total": scalable_total,
                 "max_reservable": max_reservable,
                 "full_nodes_available": full_nodes_available,
                 "running_instances": running_instances,
                 "desired_capacity": desired_capacity,
                 "gpus_per_instance": gpus_per_instance,
-                "last_updated": context.aws_request_id
-                if "context" in locals()
-                else "unknown",
-                "last_updated_timestamp": int(time.time()) if "time" in dir() else 0,
+                "last_updated_timestamp": int(time.time()),
             }
         )
 
@@ -250,9 +282,6 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
     except Exception as e:
         logger.error(f"Error updating availability for {gpu_type}: {str(e)}")
         raise
-
-
-import time
 
 
 def check_schedulable_gpus_for_type(k8s_client, gpu_type: str) -> int:
@@ -365,3 +394,108 @@ def get_available_gpus_on_node(v1_api, node) -> int:
             f"Error getting available GPUs on node {node.metadata.name}: {str(e)}"
         )
         return 0
+
+
+# --- CPU Autoscaling ---
+
+MIN_SPARE_SLOTS = 2   # Minimum spare CPU slots to keep available
+SCALE_DOWN_HYSTERESIS = 3  # Extra spare slots above MIN before scaling down (one full node worth)
+
+
+def autoscale_cpu_asg(
+    asg_name: str,
+    current_desired: int,
+    asg_min_size: int,
+    asg_max_size: int,
+    total_available_slots: int,
+    max_users_per_node: int,
+    node_pod_counts: Dict[str, int],
+    matching_asgs: List[Dict],
+) -> None:
+    """Scale CPU ASG up/down based on spare slot availability"""
+    logger.info(
+        f"Autoscale check: asg={asg_name} desired={current_desired} "
+        f"available_slots={total_available_slots} min={asg_min_size} max={asg_max_size}"
+    )
+
+    # Scale UP: fewer spare slots than minimum buffer
+    if total_available_slots < MIN_SPARE_SLOTS:
+        slots_needed = MIN_SPARE_SLOTS - total_available_slots
+        nodes_to_add = math.ceil(slots_needed / max_users_per_node)
+        new_desired = min(current_desired + nodes_to_add, asg_max_size)
+        if new_desired > current_desired:
+            logger.info(f"Scaling UP {asg_name}: {current_desired} -> {new_desired} (need {slots_needed} more slots)")
+            autoscaling.set_desired_capacity(
+                AutoScalingGroupName=asg_name,
+                DesiredCapacity=new_desired,
+            )
+            return
+
+    # Scale DOWN: more spare slots than needed (with hysteresis to avoid flapping)
+    scale_down_threshold = MIN_SPARE_SLOTS + max_users_per_node + SCALE_DOWN_HYSTERESIS
+    if total_available_slots > scale_down_threshold and current_desired > asg_min_size:
+        # Protect nodes that have active gpu-dev pods, unprotect empty ones
+        _update_instance_protection(matching_asgs, node_pod_counts)
+
+        excess_slots = total_available_slots - MIN_SPARE_SLOTS
+        nodes_to_remove = excess_slots // max_users_per_node
+        new_desired = max(current_desired - nodes_to_remove, asg_min_size)
+        if new_desired < current_desired:
+            logger.info(f"Scaling DOWN {asg_name}: {current_desired} -> {new_desired} ({excess_slots} excess slots)")
+            autoscaling.set_desired_capacity(
+                AutoScalingGroupName=asg_name,
+                DesiredCapacity=new_desired,
+            )
+            return
+
+    logger.info(f"No scaling action needed for {asg_name}")
+
+
+def _update_instance_protection(matching_asgs: List[Dict], node_pod_counts: Dict[str, int]) -> None:
+    """Set instance protection on nodes with active pods, remove from empty nodes"""
+    for asg in matching_asgs:
+        asg_name = asg["AutoScalingGroupName"]
+        in_service_instances = [
+            inst for inst in asg["Instances"]
+            if inst["LifecycleState"] == "InService"
+        ]
+
+        if not in_service_instances:
+            continue
+
+        # Build instance_id -> node_name mapping via EC2 private DNS
+        ec2 = boto3.client("ec2")
+        instance_ids = [inst["InstanceId"] for inst in in_service_instances]
+        ec2_response = ec2.describe_instances(InstanceIds=instance_ids)
+
+        instance_node_map = {}
+        for reservation in ec2_response.get("Reservations", []):
+            for instance in reservation.get("Instances", []):
+                # K8s node name is the EC2 private DNS name
+                private_dns = instance.get("PrivateDnsName", "")
+                instance_node_map[instance["InstanceId"]] = private_dns
+
+        protect_ids = []
+        unprotect_ids = []
+        for instance_id, node_name in instance_node_map.items():
+            pod_count = node_pod_counts.get(node_name, 0)
+            if pod_count > 0:
+                protect_ids.append(instance_id)
+            else:
+                unprotect_ids.append(instance_id)
+
+        if protect_ids:
+            logger.info(f"Setting instance protection on {len(protect_ids)} instances with active pods")
+            autoscaling.set_instance_protection(
+                InstanceIds=protect_ids,
+                AutoScalingGroupName=asg_name,
+                ProtectedFromScaleIn=True,
+            )
+
+        if unprotect_ids:
+            logger.info(f"Removing instance protection from {len(unprotect_ids)} empty instances")
+            autoscaling.set_instance_protection(
+                InstanceIds=unprotect_ids,
+                AutoScalingGroupName=asg_name,
+                ProtectedFromScaleIn=False,
+            )
