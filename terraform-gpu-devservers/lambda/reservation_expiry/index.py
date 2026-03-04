@@ -1576,9 +1576,22 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
                                 logger.warning(f"Error updating DynamoDB for snapshot completion: {update_error}")
                                 # Don't fail cleanup if DynamoDB update fails
 
-                        # Step 4: Delete the EBS volume after snapshot completes
+                        # Step 4: Detach and delete the EBS volume after snapshot completes
                         try:
                             logger.info(f"Deleting EBS volume {volume_id} after successful snapshot")
+                            # Detach first if still attached (prevents VolumeInUse errors)
+                            try:
+                                vol_desc = ec2_client.describe_volumes(VolumeIds=[volume_id])
+                                attachments = vol_desc['Volumes'][0].get('Attachments', [])
+                                if attachments:
+                                    logger.info(f"Volume {volume_id} still attached to {attachments[0].get('InstanceId')} - detaching first")
+                                    ec2_client.detach_volume(VolumeId=volume_id, Force=True)
+                                    waiter = ec2_client.get_waiter('volume_available')
+                                    waiter.wait(VolumeIds=[volume_id], WaiterConfig={'Delay': 5, 'MaxAttempts': 24})
+                                    logger.info(f"Volume {volume_id} detached successfully")
+                            except Exception as detach_error:
+                                logger.warning(f"Error detaching volume {volume_id}: {detach_error}")
+
                             ec2_client.delete_volume(VolumeId=volume_id)
                             logger.info(f"Successfully deleted volume {volume_id}")
 

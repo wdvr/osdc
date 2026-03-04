@@ -2504,23 +2504,23 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                     logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
-
-                # Check if this is a "disk in use" error - these should fail the reservation
                 error_msg = str(disk_error)
-                if "is currently in use" in error_msg or "already in use" in error_msg:
-                    # Don't fall back - fail the reservation with clear error
+
+                # If user explicitly requested a disk (disk_name set), never silently fall back
+                # Also fail for "disk in use" errors regardless
+                if disk_name or "is currently in use" in error_msg or "already in use" in error_msg:
                     update_reservation_status(
                         reservation_id,
                         "failed",
-                        failure_reason=error_msg
+                        failure_reason=f"Persistent disk setup failed: {error_msg}"
                     )
                     raise RuntimeError(f"Cannot create reservation: {error_msg}")
 
-                # For other errors, continue without persistent disk (backwards compatibility)
+                # Only fall back to non-persistent for old-style reservations without explicit disk_name
                 logger.warning(f"Falling back to non-persistent storage due to disk error: {disk_error}")
                 use_persistent_disk = False
-                persistent_volume_id = None  # Clear any volume that was set before the error
-                is_new_disk = True  # EmptyDir volume will need shell environment setup
+                persistent_volume_id = None
+                is_new_disk = True
                 update_reservation_status(
                     reservation_id,
                     "preparing",
