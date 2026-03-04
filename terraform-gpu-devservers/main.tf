@@ -95,18 +95,22 @@ locals {
         "cpu-arm" = {
           instance_type       = "c7g.4xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 0
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
+          karpenter_managed   = true
+          karpenter_max_nodes = 30
         }
         "cpu-x86" = {
           instance_type       = "c7i.4xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 0
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"
+          karpenter_managed   = true
+          karpenter_max_nodes = 30
         }
         "t4" = {
           instance_type       = "g4dn.12xlarge"
@@ -221,18 +225,22 @@ locals {
         "cpu-arm" = {
           instance_type       = "c7g.8xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 0
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "arm64"
+          karpenter_managed   = true
+          karpenter_max_nodes = 30
         }
         "cpu-x86" = {
           instance_type       = "c7i.8xlarge"
           instance_types      = null
-          instance_count      = 30
+          instance_count      = 0
           gpus_per_instance   = 0
           use_placement_group = false
           architecture        = "x86_64"
+          karpenter_managed   = true
+          karpenter_max_nodes = 30
         }
       }
     }
