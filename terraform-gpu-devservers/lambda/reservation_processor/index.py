@@ -3721,64 +3721,7 @@ def create_pod(
                         run_as_group=0
                     ),
                 ),
-            ] + ([
-                # Disk warming init container - pre-warms EBS volume restored from snapshot
-                # Only runs for existing persistent disks (not new/empty disks)
-                client.V1Container(
-                    name="disk-warmer",
-                    image="alpine:latest",
-                    image_pull_policy="IfNotPresent",
-                    command=["/bin/sh"],
-                    args=[
-                        "-c",
-                        """
-                        echo "[DISK-WARM] Starting EBS volume pre-warming..."
-                        START_TIME=$(date +%s)
-
-                        # Stage 1: Warm filesystem metadata (fast, enables ls/find/git status)
-                        echo "[DISK-WARM] Stage 1: Warming filesystem metadata..."
-                        find /home/dev -type f -o -type d > /dev/null 2>&1
-                        STAGE1_TIME=$(date +%s)
-                        echo "[DISK-WARM] Stage 1 complete in $((STAGE1_TIME - START_TIME))s"
-
-                        # Stage 2: Warm critical directories (git, build cache, source)
-                        echo "[DISK-WARM] Stage 2: Warming critical files..."
-                        for dir in /home/dev/.git /home/dev/.cache /home/dev/pytorch/.git /home/dev/fbsource/.git; do
-                            if [ -d "$dir" ]; then
-                                echo "[DISK-WARM]   Warming $dir..."
-                                find "$dir" -type f -exec cat {} > /dev/null 2>&1 \\;
-                            fi
-                        done
-                        STAGE2_TIME=$(date +%s)
-                        echo "[DISK-WARM] Stage 2 complete in $((STAGE2_TIME - STAGE1_TIME))s"
-
-                        # Stage 3: Warm remaining files in background-friendly way
-                        echo "[DISK-WARM] Stage 3: Warming remaining files..."
-                        find /home/dev -type f -not -path '/home/dev/.git/*' \\
-                            -not -path '/home/dev/.cache/*' \\
-                            -not -path '/home/dev/pytorch/.git/*' \\
-                            -exec cat {} > /dev/null 2>&1 \\;
-                        END_TIME=$(date +%s)
-                        echo "[DISK-WARM] Stage 3 complete in $((END_TIME - STAGE2_TIME))s"
-
-                        TOTAL_FILES=$(find /home/dev -type f 2>/dev/null | wc -l)
-                        echo "[DISK-WARM] Complete: warmed $TOTAL_FILES files in $((END_TIME - START_TIME))s"
-                        """,
-                    ],
-                    volume_mounts=[
-                        client.V1VolumeMount(
-                            name="dev-home", mount_path="/home/dev"),
-                    ],
-                    security_context=client.V1SecurityContext(
-                        run_as_user=0,
-                        run_as_group=0
-                    ),
-                    resources=client.V1ResourceRequirements(
-                        requests={"cpu": "500m", "memory": "256Mi"},
-                        limits={"cpu": "2000m", "memory": "1Gi"}
-                    ),
-                )
-            ] if (use_persistent_disk and not is_new_disk) else []),
+            ],
             containers=[
                 client.V1Container(
                     name="gpu-dev",
@@ -4785,7 +4728,70 @@ EOF
                         run_as_group=0 if dockerimage else None
                     ),
                 )
-            ],
+            ] + ([
+                # Disk warming sidecar - runs in background, prioritizes git repos
+                # Only runs for restored persistent disks (not new/empty disks)
+                client.V1Container(
+                    name="disk-warmer",
+                    image="alpine:latest",
+                    image_pull_policy="IfNotPresent",
+                    command=["/bin/sh"],
+                    args=[
+                        "-c",
+                        """
+                        echo "[DISK-WARM] Starting background EBS warming (non-blocking)..."
+                        START_TIME=$(date +%s)
+
+                        # Stage 1: Warm filesystem metadata (enables fast ls/find)
+                        echo "[DISK-WARM] Stage 1: Warming filesystem metadata..."
+                        find /home/dev -type f -o -type d > /dev/null 2>&1
+                        STAGE1_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 1 complete in $((STAGE1_TIME - START_TIME))s"
+
+                        # Stage 2: PRIORITY - Warm git repos for fast git status
+                        echo "[DISK-WARM] Stage 2: Warming git repos (priority)..."
+                        for dir in /home/dev/.git /home/dev/pytorch/.git /home/dev/fbsource/.git; do
+                            if [ -d "$dir" ]; then
+                                echo "[DISK-WARM]   Warming $dir..."
+                                find "$dir" -type f -exec cat {} > /dev/null 2>&1 \\;
+                            fi
+                        done
+                        STAGE2_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 2 complete in $((STAGE2_TIME - STAGE1_TIME))s"
+
+                        # Stage 3: Warm remaining files (skip .cache - ccache is in EFS)
+                        echo "[DISK-WARM] Stage 3: Warming remaining files (background)..."
+                        find /home/dev -type f \\
+                            -not -path '/home/dev/.git/*' \\
+                            -not -path '/home/dev/.cache/*' \\
+                            -not -path '/home/dev/pytorch/.git/*' \\
+                            -not -path '/home/dev/fbsource/.git/*' \\
+                            -exec cat {} > /dev/null 2>&1 \\;
+                        END_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 3 complete in $((END_TIME - STAGE2_TIME))s"
+
+                        TOTAL_TIME=$((END_TIME - START_TIME))
+                        echo "[DISK-WARM] Complete: disk warming finished in ${TOTAL_TIME}s"
+
+                        # Keep container alive after warming completes
+                        echo "[DISK-WARM] Warming complete, sleeping..."
+                        sleep infinity
+                        """,
+                    ],
+                    volume_mounts=[
+                        client.V1VolumeMount(
+                            name="dev-home", mount_path="/home/dev", read_only=True),
+                    ],
+                    security_context=client.V1SecurityContext(
+                        run_as_user=0,
+                        run_as_group=0
+                    ),
+                    resources=client.V1ResourceRequirements(
+                        requests={"cpu": "100m", "memory": "128Mi"},
+                        limits={"cpu": "1000m", "memory": "512Mi"}
+                    ),
+                )
+            ] if (use_persistent_disk and not is_new_disk) else []),
             volumes=[
                 # Dynamic volume based on persistent disk availability
                 client.V1Volume(
