@@ -3699,9 +3699,15 @@ def create_pod(
                         echo '{github_public_key}' > /home/dev/.ssh/authorized_keys
                         chmod 700 /home/dev/.ssh
                         chmod 600 /home/dev/.ssh/authorized_keys
+                        chown -R 1081:1081 /home/dev/.ssh
 
-                        # Ensure proper ownership of entire home directory
-                        chown -R 1081:1081 /home/dev
+                        # Only run expensive chown -R on NEW disks (takes 30-40s on restored disks with 100K+ files)
+                        if [ "{is_new_disk}" = "True" ]; then
+                            echo "[INIT] New disk detected - setting ownership of all files..."
+                            chown -R 1081:1081 /home/dev
+                        else
+                            echo "[INIT] Existing disk - skipping recursive chown (files already have correct ownership)"
+                        fi
 
                         # Create marker file to verify init completed
                         echo "SSH keys initialized at $(date)" > /home/dev/.ssh/init_complete
