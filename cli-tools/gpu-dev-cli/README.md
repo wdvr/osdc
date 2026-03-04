@@ -1,6 +1,8 @@
 # GPU Developer CLI
 
-A command-line tool for reserving and managing GPU development servers on AWS EKS.
+**ODC (Open Dev Cloud)** - Command-line tool for reserving and managing GPU development servers on AWS EKS.
+
+*Formerly known as OSDC (Open Source Developer Cloud)*
 
 ## Table of Contents
 
@@ -285,6 +287,18 @@ Shows file listing from the latest snapshot of a disk.
 gpu-dev disk rename <OLD_NAME> <NEW_NAME>
 ```
 Renames an existing disk.
+
+#### `gpu-dev disk clone`
+```bash
+gpu-dev disk clone <SOURCE_DISK> <NEW_DISK_NAME>
+```
+Creates a copy of an existing disk from its latest snapshot.
+
+#### `gpu-dev disk unlock`
+```bash
+gpu-dev disk unlock <DISK_NAME>
+```
+Unlocks a disk that may be locked due to failed operations or cleanup issues.
 
 ### `gpu-dev help`
 

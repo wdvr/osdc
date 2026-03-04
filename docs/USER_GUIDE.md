@@ -1,6 +1,8 @@
-# ODC User Guide -- v1
+# ODC User Guide
 
-**Open Developer Cloud** - High-Performance GPU Development Platform
+**Open Dev Cloud** - High-Performance GPU Development Platform
+
+*Formerly known as OSDC (Open Source Developer Cloud)*
 
 ---
 
@@ -534,6 +536,12 @@ gpu-dev disk list-content my-project
 # Rename a disk
 gpu-dev disk rename old-name new-name
 
+# Clone a disk (creates a copy)
+gpu-dev disk clone source-disk new-disk-name
+
+# Unlock a locked disk (if needed for cleanup)
+gpu-dev disk unlock my-project
+
 # Delete a disk (snapshots kept for 30 days)
 gpu-dev disk delete my-project
 ```
@@ -986,6 +994,24 @@ gpu-dev edit <reservation-id> --extend
 - Maximum extension: 24 additional hours
 - Total maximum: 48 hours
 
+### Edit Reservation Features
+
+You can modify several aspects of an active reservation:
+
+```bash
+# Enable Jupyter Lab on an existing reservation
+gpu-dev edit <reservation-id> --enable-jupyter
+
+# Disable Jupyter Lab
+gpu-dev edit <reservation-id> --disable-jupyter
+
+# Add a collaborator (by GitHub username)
+gpu-dev edit <reservation-id> --add-user colleague-username
+
+# Extend the duration
+gpu-dev edit <reservation-id> --extend
+```
+
 ### Cancel a Reservation
 
 ```bash
@@ -1403,6 +1429,8 @@ A: Reserve more GPUs, or use a GPU type with better CPU ratio (like A10G or T4).
 | `gpu-dev disk delete NAME` | Delete a disk |
 | `gpu-dev disk list-content NAME` | View disk contents |
 | `gpu-dev disk rename OLD NEW` | Rename a disk |
+| `gpu-dev disk clone SOURCE NEW` | Clone a disk |
+| `gpu-dev disk unlock NAME` | Unlock a locked disk |
 | `gpu-dev config show` | Show configuration |
 | `gpu-dev config set KEY VALUE` | Set a config value |
 | `gpu-dev config ssh-include enable` | Enable SSH config integration |
