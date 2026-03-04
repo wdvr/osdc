@@ -94,25 +94,31 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
             if asg["AutoScalingGroupName"].startswith(asg_name_prefix)
         ]
 
-        if not matching_asgs:
-            logger.warning(f"No ASGs found matching pattern: {asg_name_prefix}*")
-            return
-
-        asg_names = [asg["AutoScalingGroupName"] for asg in matching_asgs]
-        logger.info(f"Found {len(matching_asgs)} ASGs: {asg_names}")
-
-        # Calculate total availability metrics across all matching ASGs
-        desired_capacity = sum(asg["DesiredCapacity"] for asg in matching_asgs)
-        running_instances = sum(
-            len([
-                instance for instance in asg["Instances"]
-                if instance["LifecycleState"] == "InService"
-            ]) for asg in matching_asgs
-        )
-
         # Get GPU configuration for this type
         gpu_config = SUPPORTED_GPU_TYPES.get(gpu_type, {})
         gpus_per_instance = gpu_config.get("gpus_per_instance", 8)
+        is_karpenter_managed = gpu_config.get("karpenter_managed", False)
+
+        if not matching_asgs and not is_karpenter_managed:
+            logger.warning(f"No ASGs found matching pattern: {asg_name_prefix}* and not Karpenter-managed")
+            return
+
+        if is_karpenter_managed:
+            logger.info(f"{gpu_type} is Karpenter-managed, skipping ASG checks")
+            desired_capacity = 0
+            running_instances = 0
+        else:
+            asg_names = [asg["AutoScalingGroupName"] for asg in matching_asgs]
+            logger.info(f"Found {len(matching_asgs)} ASGs: {asg_names}")
+
+            # Calculate total availability metrics across all matching ASGs
+            desired_capacity = sum(asg["DesiredCapacity"] for asg in matching_asgs)
+            running_instances = sum(
+                len([
+                    instance for instance in asg["Instances"]
+                    if instance["LifecycleState"] == "InService"
+                ]) for asg in matching_asgs
+            )
 
         # Handle CPU-only nodes differently (they don't have GPUs)
         is_cpu_type = gpus_per_instance == 0
@@ -120,15 +126,24 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
         if is_cpu_type:
             # For CPU nodes, report instance slots (assuming 3 users per node)
             max_users_per_node = 3
+
+            # For Karpenter-managed nodes, get actual running count from K8s (not ASG)
+            if is_karpenter_managed and k8s_client is not None:
+                from kubernetes import client
+                v1 = client.CoreV1Api(k8s_client)
+                nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
+                running_instances = len([n for n in nodes.items if is_node_ready_and_schedulable(n)])
+                logger.info(f"Karpenter-managed {gpu_type}: {running_instances} nodes from K8s API")
+
             total_gpus = running_instances * max_users_per_node
             logger.info(
-                f"CPU ASG calculation: {running_instances} instances * {max_users_per_node} slots = {total_gpus} total slots")
+                f"CPU calculation: {running_instances} instances * {max_users_per_node} slots = {total_gpus} total slots")
 
             # Check actual pod usage on CPU nodes
             if k8s_client is not None:
                 try:
                     logger.info(f"Checking CPU node availability for {gpu_type}")
-                    # Count available slots by checking pod count on each node
+                    from kubernetes import client
                     v1 = client.CoreV1Api(k8s_client)
                     nodes = v1.list_node(label_selector=f"GpuType={gpu_type}")
 
@@ -223,6 +238,14 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
             full_nodes_available = available_gpus  # Each "GPU" represents one CPU node slot
             max_reservable = 1 if available_gpus > 0 else 0  # Max 1 CPU node per reservation
 
+        # For Karpenter-managed CPU types, report scalable total based on max node limit
+        scalable_total = 0
+        if is_cpu_type and is_karpenter_managed:
+            karpenter_max = gpu_config.get("karpenter_max_nodes", 0)
+            if karpenter_max > 0:
+                scalable_total = karpenter_max * max_users_per_node
+                logger.info(f"Karpenter-managed {gpu_type}: scalable_total = {karpenter_max} nodes * {max_users_per_node} = {scalable_total}")
+
         # Update DynamoDB table
         table = dynamodb.Table(AVAILABILITY_TABLE)
 
@@ -231,15 +254,13 @@ def update_gpu_availability(gpu_type: str, k8s_client=None) -> None:
                 "gpu_type": gpu_type,
                 "total_gpus": total_gpus,
                 "available_gpus": available_gpus,
+                "scalable_total": scalable_total,
                 "max_reservable": max_reservable,
                 "full_nodes_available": full_nodes_available,
                 "running_instances": running_instances,
                 "desired_capacity": desired_capacity,
                 "gpus_per_instance": gpus_per_instance,
-                "last_updated": context.aws_request_id
-                if "context" in locals()
-                else "unknown",
-                "last_updated_timestamp": int(time.time()) if "time" in dir() else 0,
+                "last_updated_timestamp": int(time.time()),
             }
         )
 

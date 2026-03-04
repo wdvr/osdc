@@ -191,6 +191,7 @@ locals {
         instance_count = cr_config != null ? cr_config.instance_count : gpu_config.instance_count
       }
     ]
+    if !try(gpu_config.karpenter_managed, false) # Skip types managed by Karpenter
   ])
 
   # Convert to map for for_each
