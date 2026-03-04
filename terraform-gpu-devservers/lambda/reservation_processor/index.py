@@ -3237,6 +3237,7 @@ def create_kubernetes_resources(
                         target_az=target_az,
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
+                        trace_data=trace_data,
                     )
                     logger.info(f"Created new pod {pod_name} with Jupyter")
                     update_reservation_status(
@@ -3321,6 +3322,7 @@ def create_kubernetes_resources(
                         target_az=target_az,
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
+                        trace_data=trace_data,
                     )
                     logger.info(f"Created new pod {pod_name} without Jupyter")
                     update_reservation_status(
@@ -3596,6 +3598,7 @@ def create_pod(
     target_az: str = None,
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
+    trace_data: dict = None,
 ):
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
