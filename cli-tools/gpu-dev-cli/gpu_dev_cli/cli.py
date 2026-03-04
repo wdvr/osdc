@@ -2441,14 +2441,17 @@ def _show_availability() -> None:
                 available = info.get("available", 0)
                 max_reservable = info.get("max_reservable", 0)
                 total = info.get("total", 0)
+                scalable_total = info.get("scalable_total", 0)
                 full_nodes_available = info.get("full_nodes_available", 0)
                 gpus_per_instance = info.get("gpus_per_instance", 0)
                 queue_length = info.get("queue_length", 0)
                 est_wait = info.get("estimated_wait_minutes", 0)
 
-                # Format wait time
+                # Format wait time — for autoscaled CPU types, show scale-up estimate
                 if available > 0:
                     wait_display = "Available now"
+                elif scalable_total > 0 and available == 0:
+                    wait_display = "~3min (scaling up)"
                 elif est_wait == 0:
                     wait_display = "Unknown"
                 elif est_wait < 60:
@@ -2461,10 +2464,13 @@ def _show_availability() -> None:
                     else:
                         wait_display = f"{hours}h {minutes}min"
 
+                # Show total as "current / scalable" for autoscaled types
+                if scalable_total > 0:
+                    total_display = f"{total} / {scalable_total}"
+                else:
+                    total_display = str(total)
+
                 # Color code availability based on full nodes available
-                # Red: 0 GPUs available
-                # Yellow: Some GPUs available but no full node
-                # Green: At least one full node available
                 if available == 0:
                     available_display = f"[red]{available}[/red]"
                 elif full_nodes_available > 0:
@@ -2476,7 +2482,7 @@ def _show_availability() -> None:
                     gpu_type.upper(),
                     available_display,
                     str(max_reservable),
-                    str(total),
+                    total_display,
                     str(queue_length),
                     arch,
                     wait_display,
@@ -2583,12 +2589,15 @@ def _show_availability_watch(interval: int) -> None:
                             last_arch = arch
                             available = info.get("available", 0)
                             total = info.get("total", 0)
+                            scalable_total = info.get("scalable_total", 0)
                             queue_length = info.get("queue_length", 0)
                             est_wait = info.get("estimated_wait_minutes", 0)
 
                             # Format wait time
                             if available > 0:
                                 wait_display = "Available now"
+                            elif scalable_total > 0 and available == 0:
+                                wait_display = "~3min (scaling up)"
                             elif est_wait == 0:
                                 wait_display = "Unknown"
                             elif est_wait < 60:
@@ -2601,6 +2610,12 @@ def _show_availability_watch(interval: int) -> None:
                                 else:
                                     wait_display = f"{hours}h {minutes}min"
 
+                            # Show total as "current / scalable" for autoscaled types
+                            if scalable_total > 0:
+                                total_display = f"{total} / {scalable_total}"
+                            else:
+                                total_display = str(total)
+
                             # Color code availability
                             if available > 0:
                                 available_display = f"[green]{available}[/green]"
@@ -2610,7 +2625,7 @@ def _show_availability_watch(interval: int) -> None:
                             table.add_row(
                                 gpu_type.upper(),
                                 available_display,
-                                str(total),
+                                total_display,
                                 str(queue_length),
                                 arch,
                                 wait_display,

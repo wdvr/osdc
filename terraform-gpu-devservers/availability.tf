@@ -106,7 +106,16 @@ resource "aws_iam_role_policy" "availability_updater_policy" {
       {
         Effect = "Allow"
         Action = [
-          "autoscaling:DescribeAutoScalingGroups"
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:SetInstanceProtection"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeInstances"
         ]
         Resource = "*"
       },

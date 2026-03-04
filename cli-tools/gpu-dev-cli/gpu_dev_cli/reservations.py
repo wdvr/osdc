@@ -959,6 +959,7 @@ class ReservationManager:
                 availability_info[gpu_type] = {
                     "available": int(item.get("available_gpus", 0)),
                     "total": int(item.get("total_gpus", 0)),
+                    "scalable_total": int(item.get("scalable_total", 0)),
                     "max_reservable": int(item.get("max_reservable", 0)),
                     "full_nodes_available": int(item.get("full_nodes_available", 0)),
                     "gpus_per_instance": int(item.get("gpus_per_instance", 0)),
