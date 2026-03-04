@@ -212,6 +212,32 @@ reservationExpiry:
       value: "cpu-only"
       effect: "NoSchedule"
 
+# Git Mirror - in-cluster cache for fast git clone
+gitMirror:
+  enabled: true
+  # Repos to mirror (bare clones updated periodically)
+  repos:
+    - name: pytorch
+      url: https://github.com/pytorch/pytorch.git
+  # Update interval in seconds (900 = 15 minutes)
+  updateIntervalSeconds: 900
+  storage:
+    size: "20Gi"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  nodeSelector:
+    NodeType: "cpu"
+  tolerations:
+    - key: "node-role"
+      operator: "Equal"
+      value: "cpu-only"
+      effect: "NoSchedule"
+
 # NVIDIA GPU Operator / Device Plugin
 nvidia:
   devicePlugin:

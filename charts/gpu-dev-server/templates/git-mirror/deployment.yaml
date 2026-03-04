@@ -1,0 +1,118 @@
+{{- if .Values.gitMirror.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-mirror
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: git-mirror
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: git-mirror
+  template:
+    metadata:
+      labels:
+        app: git-mirror
+    spec:
+      {{- with .Values.gitMirror.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gitMirror.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: initial-mirror
+          image: alpine/git:latest
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - |
+              echo "[INIT] Setting up git mirror..."
+              {{- range .Values.gitMirror.repos }}
+              REPO_DIR="/git-cache/{{ .name }}.git"
+              if [ -d "$REPO_DIR" ]; then
+                echo "[INIT] Mirror {{ .name }} already exists, skipping initial clone"
+              else
+                echo "[INIT] Creating mirror of {{ .url }}..."
+                git clone --mirror {{ .url }} "$REPO_DIR"
+                echo "[INIT] Mirror {{ .name }} created successfully"
+              fi
+              {{- end }}
+              echo "[INIT] Initial mirror setup complete"
+          volumeMounts:
+            - name: git-cache
+              mountPath: /git-cache
+      containers:
+        - name: git-daemon
+          image: alpine/git:latest
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - |
+              echo "[GIT-MIRROR] Starting git daemon..."
+              # Enable git daemon export for all repos
+              for repo in /git-cache/*.git; do
+                touch "$repo/git-daemon-export-ok"
+              done
+              # Start git daemon serving repos read-only
+              git daemon \
+                --verbose \
+                --export-all \
+                --base-path=/git-cache \
+                --reuseaddr \
+                --strict-paths \
+                /git-cache
+          ports:
+            - containerPort: 9418
+              name: git
+          volumeMounts:
+            - name: git-cache
+              mountPath: /git-cache
+              readOnly: true
+          resources:
+            {{- toYaml .Values.gitMirror.resources | nindent 12 }}
+          livenessProbe:
+            tcpSocket:
+              port: 9418
+            initialDelaySeconds: 10
+            periodSeconds: 30
+        - name: mirror-updater
+          image: alpine/git:latest
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - |
+              echo "[UPDATER] Starting mirror update loop..."
+              while true; do
+                {{- range .Values.gitMirror.repos }}
+                REPO_DIR="/git-cache/{{ .name }}.git"
+                if [ -d "$REPO_DIR" ]; then
+                  echo "[UPDATER] Updating mirror {{ .name }}..."
+                  cd "$REPO_DIR"
+                  git remote update --prune 2>&1 || echo "[UPDATER] WARNING: Failed to update {{ .name }}"
+                  echo "[UPDATER] {{ .name }} updated at $(date)"
+                fi
+                {{- end }}
+                echo "[UPDATER] Next update in {{ .Values.gitMirror.updateIntervalSeconds }}s..."
+                sleep {{ .Values.gitMirror.updateIntervalSeconds }}
+              done
+          volumeMounts:
+            - name: git-cache
+              mountPath: /git-cache
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+      volumes:
+        - name: git-cache
+          persistentVolumeClaim:
+            claimName: git-mirror-cache
+{{- end }}

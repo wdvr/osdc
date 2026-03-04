@@ -1,0 +1,17 @@
+{{- if .Values.gitMirror.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: git-mirror-cache
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app: git-mirror
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ include "gpu-dev-server.storageClass" . }}
+  resources:
+    requests:
+      storage: {{ .Values.gitMirror.storage.size }}
+{{- end }}
