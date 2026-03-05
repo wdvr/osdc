@@ -59,6 +59,63 @@ ENV CUDA_13_PATH=/usr/local/cuda-13.0
 ENV PATH=/usr/local/cuda-12.8/bin:/usr/local/cuda-13.0/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}
 
+# Install EFA support for multi-node GPU communication
+# Build dependencies for AWS OFI-NCCL plugin
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        autoconf \
+        automake \
+        libtool \
+        pkg-config \
+        libhwloc-dev \
+        pciutils \
+        kmod \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install AWS EFA installer (includes libfabric, EFA tools, and OpenMPI with EFA support)
+# Version 1.47.0 is the latest stable release as of Jan 2025
+RUN cd /tmp && \
+    curl -O https://efa-installer.amazonaws.com/aws-efa-installer-1.47.0.tar.gz && \
+    tar -xf aws-efa-installer-1.47.0.tar.gz && \
+    cd aws-efa-installer && \
+    ./efa_installer.sh -y --skip-kmod --skip-limit-conf --no-verify --mpi=openmpi4 && \
+    cd / && \
+    rm -rf /tmp/aws-efa-installer*
+
+# Build and install AWS OFI-NCCL plugin (bridges NCCL to libfabric/EFA)
+# This is the critical component that allows NCCL to use EFA for inter-node communication
+# Using master branch (verified working with NCCL 2.25.1)
+RUN cd /tmp && \
+    git clone https://github.com/aws/aws-ofi-nccl.git && \
+    cd aws-ofi-nccl && \
+    ./autogen.sh && \
+    ./configure --prefix=/opt/aws-ofi-nccl \
+                --with-libfabric=/opt/amazon/efa \
+                --with-cuda=/usr/local/cuda \
+                --with-mpi=/opt/amazon/openmpi && \
+    make -j$(nproc) && \
+    make install && \
+    cd / && \
+    rm -rf /tmp/aws-ofi-nccl
+
+# Clone NCCL tests for performance benchmarking (not building yet, will build at runtime if needed)
+RUN cd /opt && \
+    git clone https://github.com/NVIDIA/nccl-tests.git && \
+    cd nccl-tests && \
+    echo "NCCL tests cloned, build with: make MPI=1 MPI_HOME=/opt/amazon/openmpi CUDA_HOME=/usr/local/cuda"
+
+# Set environment variables for EFA and NCCL
+ENV PATH=/opt/amazon/openmpi/bin:/opt/amazon/efa/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/aws-ofi-nccl/lib:/opt/amazon/openmpi/lib:/opt/amazon/efa/lib:${LD_LIBRARY_PATH}
+ENV FI_PROVIDER=efa
+ENV FI_EFA_USE_DEVICE_RDMA=1
+ENV NCCL_DEBUG=INFO
+ENV NCCL_NET_PLUGIN=/opt/aws-ofi-nccl/lib/libnccl-net.so
+ENV NCCL_ALGO=ring,tree
+ENV NCCL_IB_HCA=^mlx
+ENV SUPPORTS_EFA=true
+
 # Install Python packages (Jupyter and common ML packages)
 RUN pip install --no-cache-dir \
         jupyterlab \

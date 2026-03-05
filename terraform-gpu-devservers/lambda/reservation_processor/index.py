@@ -4616,7 +4616,9 @@ EOF
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
                             # SYS_ADMIN required for NVIDIA GPU profiling (ncu, nsys)
-                            add=["IPC_LOCK", "SYS_ADMIN"]
+                            # SYS_RESOURCE required for EFA RDMA memory registration
+                            # IPC_LOCK required for pinning memory for RDMA operations
+                            add=["IPC_LOCK", "SYS_ADMIN", "SYS_RESOURCE"]
                         ),
                         # Run as root when using custom Docker images to allow SSH setup
                         run_as_user=0 if dockerimage else None,
