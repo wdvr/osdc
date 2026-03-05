@@ -701,7 +701,10 @@ class ReservationManager:
     def get_connection_info(
         self, reservation_id: str, user_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Get SSH connection information for a reservation"""
+        """Get SSH connection information for a reservation
+
+        For multi-node reservations, returns info for all nodes in the group.
+        """
         try:
             # Query by user first (efficient), then filter by reservation_id prefix
             response = self.reservations_table.query(
@@ -734,7 +737,12 @@ class ReservationManager:
 
             reservation = matching_reservations[0]
 
-            return {
+            # Check if this is part of a multi-node group
+            is_multinode = reservation.get("is_multinode", False)
+            master_reservation_id = reservation.get("master_reservation_id")
+
+            # Build base connection info
+            connection_info = {
                 "ssh_command": reservation.get("ssh_command", "ssh user@pending"),
                 "pod_name": reservation.get("pod_name", "pending"),
                 "namespace": reservation.get("namespace", "default"),
@@ -759,7 +767,37 @@ class ReservationManager:
                 "ebs_volume_id": reservation.get("ebs_volume_id", ""),
                 "secondary_users": reservation.get("secondary_users", []),
                 "warning": reservation.get("warning", ""),
+                "is_multinode": is_multinode,
             }
+
+            # If multi-node, fetch all nodes in the group
+            if is_multinode and master_reservation_id:
+                # Find all reservations with the same master_reservation_id
+                multinode_reservations = [
+                    res for res in all_reservations
+                    if res.get("master_reservation_id") == master_reservation_id
+                ]
+
+                # Sort by node_index
+                multinode_reservations.sort(key=lambda r: r.get("node_index", 0))
+
+                # Add multi-node specific info
+                connection_info["total_nodes"] = len(multinode_reservations)
+                connection_info["nodes"] = []
+
+                for node_res in multinode_reservations:
+                    node_info = {
+                        "reservation_id": node_res.get("reservation_id"),
+                        "pod_name": node_res.get("pod_name"),
+                        "ssh_command": node_res.get("ssh_command", "ssh user@pending"),
+                        "node_index": node_res.get("node_index", 0),
+                        "status": node_res.get("status"),
+                        "name": node_res.get("name"),
+                        "fqdn": node_res.get("fqdn"),
+                    }
+                    connection_info["nodes"].append(node_info)
+
+            return connection_info
 
         except Exception as e:
             console.print(
