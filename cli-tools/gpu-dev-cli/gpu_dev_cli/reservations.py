@@ -768,6 +768,7 @@ class ReservationManager:
                 "secondary_users": reservation.get("secondary_users", []),
                 "warning": reservation.get("warning", ""),
                 "is_multinode": is_multinode,
+                "fqdn": reservation.get("fqdn", ""),
             }
 
             # If multi-node, fetch all nodes in the group
