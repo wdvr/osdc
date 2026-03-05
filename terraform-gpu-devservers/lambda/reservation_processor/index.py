@@ -1850,6 +1850,14 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 if reservation_request.get("dockerimage"):
                     initial_record["dockerimage"] = reservation_request["dockerimage"]
 
+                # Store disk preferences so queued reservations retain them
+                if reservation_request.get("disk_name"):
+                    initial_record["disk_name"] = reservation_request["disk_name"]
+                if "no_persistent_disk" in reservation_request:
+                    initial_record["no_persistent_disk"] = reservation_request["no_persistent_disk"]
+                if "recreate_env" in reservation_request:
+                    initial_record["recreate_env"] = reservation_request["recreate_env"]
+
                 # Store initial record
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
                 reservations_table.put_item(Item=initial_record)
@@ -2260,6 +2268,13 @@ def create_reservation(request: dict[str, Any]) -> str:
             reservation["cli_version"] = request["version"]
         if "preserve_entrypoint" in request:
             reservation["preserve_entrypoint"] = request["preserve_entrypoint"]
+        # Store disk preferences so queued reservations retain them
+        if "disk_name" in request:
+            reservation["disk_name"] = request["disk_name"]
+        if "no_persistent_disk" in request:
+            reservation["no_persistent_disk"] = request["no_persistent_disk"]
+        if "recreate_env" in request:
+            reservation["recreate_env"] = request["recreate_env"]
         # Store Lambda version that processed this reservation
         reservation["lambda_version"] = LAMBDA_VERSION
 
