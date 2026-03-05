@@ -2821,6 +2821,170 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
+@main.command(name="get-ssh-config")
+@click.argument("reservation_id", required=False)
+@click.pass_context
+def get_ssh_config_cmd(ctx: click.Context, reservation_id: Optional[str]) -> None:
+    """Download SSH config for a reservation (useful for added users)
+
+    Generates SSH config file for a reservation. Particularly useful for secondary
+    users added via --add-user who don't have the SSH config automatically created.
+
+    If no reservation ID is provided, shows your active reservations and lets you select one.
+
+    \b
+    Examples:
+        gpu-dev get-ssh-config                  # Interactive mode - select reservation
+        gpu-dev get-ssh-config abc12345         # Get config for reservation abc12345
+        gpu-dev get-ssh-config abc1             # Short form works too
+
+    This creates ~/.gpu-dev/<id>-sshconfig file for the reservation.
+
+    \b
+    For added users:
+    1. Original user: gpu-dev edit abc123 --add-user friend-username
+    2. Added user: gpu-dev get-ssh-config abc123
+    3. Added user: ssh gpu-dev-abc123 (or gpu-dev connect abc123)
+    """
+    try:
+        with Live(
+            Spinner("dots", text="📡 Fetching reservation details..."), console=console
+        ) as live:
+            config = load_config()
+
+            # Authenticate
+            try:
+                user_info = authenticate_user(config)
+                reservation_mgr = ReservationManager(config)
+            except RuntimeError as e:
+                live.stop()
+                rprint(f"[red]❌ {str(e)}[/red]")
+                return
+
+            # If no reservation ID provided, show interactive selection
+            if reservation_id is None:
+                reservations = reservation_mgr.list_reservations(
+                    user_filter=user_info["user_id"],
+                    statuses_to_include=["active"]
+                )
+
+                live.stop()
+
+                if not reservations:
+                    rprint("[yellow]📋 No active reservations found[/yellow]")
+                    return
+
+                if len(reservations) == 1:
+                    # Auto-select if only one active reservation
+                    reservation_id = reservations[0].get("reservation_id")
+                    rprint(
+                        f"[cyan]Getting SSH config for reservation {reservation_id[:8]}...[/cyan]\n")
+                else:
+                    # Interactive selection
+                    rprint("[cyan]🎯 Select reservation to get SSH config for:[/cyan]")
+                    selected_id = select_reservation_interactive(
+                        reservations, "get SSH config")
+                    if selected_id is None or selected_id == "__QUIT__":
+                        rprint("[yellow]Cancelled.[/yellow]")
+                        return
+                    reservation_id = selected_id
+                    rprint(
+                        f"\n[cyan]Getting SSH config for reservation {reservation_id[:8]}...[/cyan]\n")
+
+                live.start()
+
+            # Get connection info
+            connection_info = reservation_mgr.get_connection_info(
+                reservation_id, user_info["user_id"]
+            )
+
+        live.stop()
+
+        if not connection_info:
+            rprint(
+                f"[red]❌ Could not get connection info for {reservation_id}[/red]")
+            return
+
+        if connection_info["status"] != "active":
+            rprint(
+                f"[red]❌ Reservation is not active (status: {connection_info['status']})[/red]")
+            return
+
+        # Check if multi-node
+        is_multinode = connection_info.get("is_multinode", False)
+
+        if is_multinode:
+            # Multi-node - create configs for all nodes
+            nodes = connection_info.get("nodes", [])
+            if not nodes:
+                rprint("[red]❌ No nodes found for multi-node reservation[/red]")
+                return
+
+            rprint(f"[cyan]📁 Creating SSH configs for {len(nodes)} nodes...[/cyan]\n")
+
+            for node in nodes:
+                node_res_id = node.get("reservation_id")
+                pod_name = node.get("pod_name")
+                fqdn = node.get("fqdn")
+                node_name = node.get("name")
+                node_idx = node.get("node_index", 0)
+
+                if not fqdn or not pod_name or not node_res_id:
+                    rprint(f"[yellow]⚠️  Skipping Node {node_idx + 1}: Missing connection details[/yellow]")
+                    continue
+
+                config_path, use_include = create_ssh_config_for_reservation(
+                    fqdn, pod_name, node_res_id, node_name
+                )
+
+                if config_path:
+                    if use_include:
+                        rprint(f"[green]✅ Node {node_idx + 1}:[/green] [cyan]ssh {pod_name}[/cyan]")
+                    else:
+                        rprint(f"[green]✅ Node {node_idx + 1}:[/green] [cyan]ssh -F {config_path} {pod_name}[/cyan]")
+                else:
+                    rprint(f"[yellow]⚠️  Node {node_idx + 1}: Failed to create SSH config[/yellow]")
+
+            rprint(f"\n[green]✅ SSH configs created for all {len(nodes)} nodes[/green]")
+        else:
+            # Single-node - create one config
+            pod_name = connection_info.get("pod_name")
+            fqdn = connection_info.get("fqdn")
+            res_name = connection_info.get("name")
+
+            if not fqdn:
+                # Try to extract from ssh_command
+                ssh_command = connection_info.get("ssh_command", "")
+                import re
+                match = re.search(r'ssh.*?@([^\s]+)', ssh_command)
+                if match:
+                    fqdn = match.group(1)
+
+            if not fqdn or not pod_name:
+                rprint("[red]❌ Missing connection details (fqdn or pod_name)[/red]")
+                return
+
+            config_path, use_include = create_ssh_config_for_reservation(
+                fqdn, pod_name, reservation_id, res_name
+            )
+
+            if config_path:
+                rprint(f"[green]✅ SSH config created:[/green] [cyan]{config_path}[/cyan]\n")
+                if use_include:
+                    rprint(f"[green]🎉 You can now connect with:[/green] [cyan]ssh {pod_name}[/cyan]")
+                    rprint(f"[dim]   or:[/dim] [cyan]gpu-dev connect {reservation_id[:8]}[/cyan]")
+                else:
+                    rprint(f"[green]🎉 You can now connect with:[/green] [cyan]ssh -F {config_path} {pod_name}[/cyan]")
+                    rprint(f"[dim]   or:[/dim] [cyan]gpu-dev connect {reservation_id[:8]}[/cyan]")
+            else:
+                rprint("[red]❌ Failed to create SSH config[/red]")
+
+    except KeyboardInterrupt:
+        rprint("\n[yellow]Cancelled by user[/yellow]")
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
 @main.command()
 @click.pass_context
 def help(ctx: click.Context) -> None:
@@ -3349,6 +3513,9 @@ def edit(
                 )
                 rprint(
                     f"[blue]💡 {add_user} can now SSH to the server using their GitHub SSH keys[/blue]"
+                )
+                rprint(
+                    f"[blue]💡 Tell {add_user} to run:[/blue] [cyan]gpu-dev get-ssh-config {reservation_id[:8]}[/cyan]"
                 )
             else:
                 rprint(f"[red]❌ Failed to add user {add_user}[/red]")
