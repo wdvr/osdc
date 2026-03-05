@@ -2742,10 +2742,69 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
                 f"[red]❌ Reservation is not active (status: {connection_info['status']})[/red]")
             return
 
-        # Extract SSH command and execute it
-        ssh_command = connection_info.get("ssh_command", "")
+        # Check if this is a multi-node reservation
+        is_multinode = connection_info.get("is_multinode", False)
+
+        if is_multinode:
+            # Multi-node reservation - show node selection
+            nodes = connection_info.get("nodes", [])
+            if not nodes:
+                rprint("[red]❌ No nodes found for multi-node reservation[/red]")
+                return
+
+            # Check if all nodes are active
+            active_nodes = [n for n in nodes if n.get("status") == "active"]
+            if not active_nodes:
+                rprint("[red]❌ No active nodes in multi-node reservation[/red]")
+                return
+
+            # Show node selection
+            rprint(f"\n[cyan]🎯 Multi-node reservation with {len(nodes)} nodes:[/cyan]\n")
+
+            from rich.table import Table
+            table = Table(show_header=True, header_style="bold cyan", box=None)
+            table.add_column("Node", style="cyan")
+            table.add_column("Pod Name", style="green")
+            table.add_column("Status", style="yellow")
+            table.add_column("Command", style="dim")
+
+            for node in nodes:
+                status_display = "✅ Active" if node.get("status") == "active" else f"⏳ {node.get('status', 'unknown')}"
+                pod_name = node.get("pod_name", "unknown")
+                ssh_cmd_short = f"ssh {pod_name}" if pod_name != "unknown" else "N/A"
+
+                table.add_row(
+                    f"Node {node.get('node_index', 0) + 1}",
+                    pod_name,
+                    status_display,
+                    ssh_cmd_short
+                )
+
+            console.print(table)
+
+            # Interactive selection
+            from rich.prompt import Prompt
+            node_choices = [str(i+1) for i in range(len(active_nodes))]
+            node_choice = Prompt.ask(
+                "\n[cyan]Select node to connect to[/cyan]",
+                choices=node_choices + ["q"],
+                default="1"
+            )
+
+            if node_choice == "q":
+                rprint("[yellow]Connection cancelled[/yellow]")
+                return
+
+            selected_node = nodes[int(node_choice) - 1]
+            ssh_command = selected_node.get("ssh_command", "")
+            node_num = selected_node.get('node_index', 0) + 1
+            rprint(f"\n[cyan]Connecting to Node {node_num}...[/cyan]")
+        else:
+            # Single-node reservation
+            ssh_command = connection_info.get("ssh_command", "")
+
         if not ssh_command:
-            rprint("[red]❌ No SSH command available for this reservation[/red]")
+            rprint("[red]❌ No SSH command available for this node[/red]")
             return
 
         # Add agent forwarding if not already present
