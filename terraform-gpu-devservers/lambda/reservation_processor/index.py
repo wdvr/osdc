@@ -4284,84 +4284,78 @@ EOFREADME
 
                         cat > /usr/local/bin/git-clone-cached << 'GITCACHESCRIPT'
 #!/bin/bash
-# Clones pytorch/pytorch + submodules from in-cluster cache, then sets origin to GitHub.
-CACHE="git://git-cache.gpu-controlplane.svc.cluster.local"
-GITHUB="https://github.com/pytorch/pytorch.git"
+# Clones from bare .git tarball if available in cache (10x faster than git protocol)
+CACHE_URL="http://git-cache.gpu-controlplane.svc.cluster.local:8080"
 GIT="/usr/bin/git"
-DEST="${{1:-pytorch}}"
+GITHUB_URL="${{1}}"
+DEST="${{2}}"
+
+# If no URL provided, assume pytorch/pytorch
+if [ -z "$GITHUB_URL" ]; then
+    GITHUB_URL="https://github.com/pytorch/pytorch.git"
+    DEST="${{DEST:-pytorch}}"
+fi
+
+# Extract org/repo from GitHub URL and create cache tarball name
+# https://github.com/pytorch/pytorch.git -> pytorch_pytorch-git.tar.gz
+# https://github.com/ROCm/aiter.git -> ROCm_aiter-git.tar.gz
+if [[ "$GITHUB_URL" =~ github\.com[/:]([^/]+)/([^/\.]+) ]]; then
+    ORG="${{BASH_REMATCH[1]}}"
+    REPO="${{BASH_REMATCH[2]}}"
+    TARBALL="${{ORG}}_${{REPO}}-git.tar.gz"
+else
+    # Not a GitHub URL, fall back to direct clone
+    exec "$GIT" clone "$GITHUB_URL" "${{DEST:+"$DEST"}}"
+fi
+
+# Default destination to repo name if not specified
+if [ -z "$DEST" ]; then
+    DEST="$REPO"
+fi
 
 if [ -d "$DEST" ]; then
     echo "Error: $DEST already exists"
     exit 1
 fi
 
-# Step 1: Clone main repo from cache (no submodules yet)
-echo "[git-cache] Cloning pytorch from in-cluster cache..."
-if ! "$GIT" clone "$CACHE/pytorch.git" "$DEST" 2>/dev/null; then
-    echo "[git-cache] Cache miss — cloning from GitHub with submodules..."
-    "$GIT" clone "$GITHUB" "$DEST" --recurse-submodules
-    exit $?
+# Try to download from cache
+echo "[git-cache] Checking cache for $ORG/$REPO..."
+TOTAL_START=$(date +%s)
+
+mkdir -p "$DEST/.git"
+START=$(date +%s)
+if curl -sf "$CACHE_URL/$TARBALL" | tar -xz -C "$DEST/.git" --strip-components=1 2>/dev/null; then
+    END=$(date +%s)
+    echo "[git-cache] Downloaded .git in $((END - START))s"
+
+    # Configure as non-bare repository and set origin
+    cd "$DEST"
+    "$GIT" config --file .git/config core.bare false
+    "$GIT" config --file .git/config remote.origin.url "$GITHUB_URL"
+    "$GIT" config --file .git/config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+
+    echo "[git-cache] Checking out working tree..."
+    START=$(date +%s)
+    "$GIT" checkout -f HEAD 2>/dev/null
+    END=$(date +%s)
+    echo "[git-cache] Checkout took $((END - START))s"
+
+    TOTAL_END=$(date +%s)
+    echo "[git-cache] Total: $((TOTAL_END - TOTAL_START))s (from cache)"
+    exit 0
 fi
 
-cd "$DEST"
-
-# Step 2: Set origin to GitHub
-"$GIT" remote set-url origin "$GITHUB"
-
-# Step 3: Clone submodules from cache using temporary insteadOf rules
-# Maps github URLs to cache names: https://github.com/org/repo -> git://cache/org_repo
-echo "[git-cache] Cloning submodules from cache..."
-"$GIT" config --file .gitmodules --get-regexp 'url' | awk '{{print $2}}' | while read url; do
-    name=$(echo "$url" | sed 's|https://github.com/||;s|/|_|g;s|\.git$||').git
-    "$GIT" config --global url."$CACHE/$name".insteadOf "$url"
-done
-
-# Init submodules — uses cache via insteadOf
-"$GIT" submodule update --init --recursive 2>/dev/null
-
-# Step 4: Remove temporary insteadOf rules
-"$GIT" config --file .gitmodules --get-regexp 'url' | awk '{{print $2}}' | while read url; do
-    "$GIT" config --global --unset-all url."$CACHE/$(echo "$url" | sed 's|https://github.com/||;s|/|_|g;s|\.git$||').git".insteadOf 2>/dev/null
-done
-
-# Step 5: Fetch latest from GitHub
-echo "[git-cache] Syncing latest from GitHub..."
-"$GIT" fetch origin
-"$GIT" checkout "$("$GIT" symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||')" 2>/dev/null
-
-echo "[git-cache] Done — origin is GitHub, all git ops go there directly."
+# Fallback: clone from GitHub
+echo "[git-cache] Cache miss, cloning from GitHub..."
+rm -rf "$DEST"
+"$GIT" clone "$GITHUB_URL" "${{DEST:+"$DEST"}}"
 GITCACHESCRIPT
                         chmod +x /usr/local/bin/git-clone-cached
+                        echo "[STARTUP] ✓ git-clone-cached available (opt-in: use 'git-clone-cached pytorch' for cache)"
 
-                        cat > /usr/local/bin/git << 'GITWRAPPER'
-#!/bin/bash
-# Transparent cache wrapper — intercepts pytorch clone, passes everything else through
-GIT="/usr/bin/git"
-
-if [ "$1" = "clone" ]; then
-    for arg in "$@"; do
-        case "$arg" in
-            *github.com*pytorch/pytorch*)
-                DEST=""
-                FOUND_URL=false
-                for a in "$@"; do
-                    case "$a" in
-                        clone) ;;
-                        -*) ;;
-                        *github.com*pytorch/pytorch*) FOUND_URL=true ;;
-                        *) if $FOUND_URL; then DEST="$a"; fi ;;
-                    esac
-                done
-                exec /usr/local/bin/git-clone-cached ${{DEST:+"$DEST"}}
-                ;;
-        esac
-    done
-fi
-
-exec "$GIT" "$@"
-GITWRAPPER
-                        chmod +x /usr/local/bin/git
-                        echo "[STARTUP] ✓ git cache wrapper installed (git clone pytorch auto-uses cache)"
+                        # NOTE: Git wrapper disabled - cache is opt-in only via git-clone-cached command
+                        # Users can run: git-clone-cached pytorch
+                        # Instead of: git clone https://github.com/pytorch/pytorch.git
 
                         echo "[STARTUP] Configuring SSH..."
                         mkdir -p /run/sshd

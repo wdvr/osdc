@@ -100,6 +100,12 @@ resource "kubernetes_deployment" "git_cache" {
               fi
             done
 
+            # Create git-daemon-export-ok files for all repos
+            echo "[CACHE] Marking repos for git-daemon export..."
+            for repo in /git-cache/*.git; do
+              touch "$repo/git-daemon-export-ok"
+            done
+
             echo "[CACHE] Seed complete"
           EOT
           ]
@@ -110,30 +116,44 @@ resource "kubernetes_deployment" "git_cache" {
           }
         }
 
-        # Git daemon: serves cached objects read-only over git:// protocol
+        # HTTP server: serves pre-packaged tarballs (much faster than git-daemon)
         container {
-          name              = "git-daemon"
-          image             = "alpine/git:latest"
+          name              = "http-server"
+          image             = "nginx:alpine"
           image_pull_policy = "IfNotPresent"
-          command           = ["/bin/sh", "-c"]
+
+          command = ["/bin/sh", "-c"]
           args = [<<-EOT
-            echo "[GIT-CACHE] Starting git daemon (read-only object server)..."
-            for repo in /git-cache/*.git; do
-              touch "$repo/git-daemon-export-ok"
-            done
-            git daemon \
-              --verbose \
-              --export-all \
-              --base-path=/git-cache \
-              --reuseaddr \
-              --strict-paths \
-              /git-cache
+            # Create nginx config for simple file serving
+            cat > /etc/nginx/conf.d/default.conf << 'NGINXCONF'
+server {
+    listen 8080;
+    server_name _;
+
+    location / {
+        root /git-cache;
+        autoindex on;
+
+        # CORS headers for cross-namespace access
+        add_header Access-Control-Allow-Origin *;
+
+        # Disable buffering for faster streaming
+        proxy_buffering off;
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+    }
+}
+NGINXCONF
+
+            echo "[GIT-CACHE] Starting HTTP server on port 8080..."
+            exec nginx -g 'daemon off;'
           EOT
           ]
 
           port {
-            container_port = 9418
-            name           = "git"
+            container_port = 8080
+            name           = "http"
           }
 
           volume_mount {
@@ -162,15 +182,19 @@ resource "kubernetes_deployment" "git_cache" {
           }
         }
 
-        # Sidecar: refreshes all cached repos every hour
+        # Sidecar: refreshes cached repos and creates tarballs every hour
         container {
           name              = "cache-updater"
           image             = "alpine/git:latest"
           image_pull_policy = "IfNotPresent"
           command           = ["/bin/sh", "-c"]
           args = [<<-EOT
+            # Install tar if not present
+            apk add --no-cache tar pigz 2>/dev/null || true
+
             echo "[CACHE] Starting cache refresh loop (hourly)..."
             while true; do
+              # Refresh git repos
               for repo in /git-cache/*.git; do
                 if [ -d "$repo" ]; then
                   name=$(basename "$repo")
@@ -179,7 +203,8 @@ resource "kubernetes_deployment" "git_cache" {
                   git remote update --prune 2>&1 || echo "[CACHE] WARNING: Failed to refresh $name"
                 fi
               done
-              # Also pick up any new submodules
+
+              # Pick up any new submodules
               REPO_DIR="/git-cache/pytorch.git"
               if [ -d "$REPO_DIR" ]; then
                 cd "$REPO_DIR"
@@ -191,7 +216,32 @@ resource "kubernetes_deployment" "git_cache" {
                     git clone --mirror "$url" "$sub_dir" 2>/dev/null || true
                   fi
                 done
+
+                # Create bare .git tarball (much faster - no checkout needed!)
+                echo "[CACHE] Creating pytorch .git tarball..."
+                cd /git-cache
+                rm -f pytorch-git.tar.gz.tmp
+
+                # Just tar up the bare repo (pack files only, no working tree)
+                # Client will do git checkout after download (unavoidable anyway)
+                tar -czf pytorch-git.tar.gz.tmp -C /git-cache pytorch.git
+                mv pytorch-git.tar.gz.tmp pytorch-git.tar.gz
+
+                SIZE=$(du -sh pytorch-git.tar.gz | awk '{print $1}')
+                echo "[CACHE] Bare .git tarball created: $SIZE"
+
+                # Create tarballs for largest submodules (top 10 by size)
+                echo "[CACHE] Creating submodule tarballs..."
+                for repo in $(du -s /git-cache/*.git 2>/dev/null | sort -rn | head -11 | tail -10 | awk '{print $2}'); do
+                  name=$(basename "$repo")
+                  tarball="$${name%.git}-git.tar.gz"
+                  echo "[CACHE]   Creating $tarball..."
+                  rm -f "$tarball.tmp" 2>/dev/null
+                  tar -czf "$tarball.tmp" -C /git-cache "$name" 2>/dev/null && mv "$tarball.tmp" "$tarball" || echo "[CACHE]   WARNING: Failed to create $tarball"
+                done
+                echo "[CACHE] Submodule tarballs created"
               fi
+
               echo "[CACHE] Refresh complete at $(date). Next in 3600s (1 hour)..."
               sleep 3600
             done
@@ -239,10 +289,10 @@ resource "kubernetes_service" "git_cache" {
     type = "ClusterIP"
 
     port {
-      port        = 9418
-      target_port = 9418
+      port        = 8080
+      target_port = 8080
       protocol    = "TCP"
-      name        = "git"
+      name        = "http"
     }
 
     selector = {
