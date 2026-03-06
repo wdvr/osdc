@@ -15,7 +15,7 @@ resource "kubernetes_persistent_volume_claim" "git_cache" {
 
     resources {
       requests = {
-        storage = "50Gi"
+        storage = "100Gi"
       }
     }
   }
@@ -144,12 +144,12 @@ resource "kubernetes_deployment" "git_cache" {
 
           resources {
             requests = {
-              cpu    = "100m"
-              memory = "256Mi"
+              cpu    = "200m"
+              memory = "512Mi"
             }
             limits = {
-              cpu    = "500m"
-              memory = "1Gi"
+              cpu    = "1000m"
+              memory = "4Gi"
             }
           }
 
@@ -157,19 +157,19 @@ resource "kubernetes_deployment" "git_cache" {
             tcp_socket {
               port = 9418
             }
-            initial_delay_seconds = 10
-            period_seconds        = 30
+            initial_delay_seconds = 300
+            period_seconds        = 60
           }
         }
 
-        # Sidecar: refreshes all cached repos every 15 minutes
+        # Sidecar: refreshes all cached repos every hour
         container {
           name              = "cache-updater"
           image             = "alpine/git:latest"
           image_pull_policy = "IfNotPresent"
           command           = ["/bin/sh", "-c"]
           args = [<<-EOT
-            echo "[CACHE] Starting cache refresh loop..."
+            echo "[CACHE] Starting cache refresh loop (hourly)..."
             while true; do
               for repo in /git-cache/*.git; do
                 if [ -d "$repo" ]; then
@@ -192,8 +192,8 @@ resource "kubernetes_deployment" "git_cache" {
                   fi
                 done
               fi
-              echo "[CACHE] Refresh complete at $(date). Next in 900s..."
-              sleep 900
+              echo "[CACHE] Refresh complete at $(date). Next in 3600s (1 hour)..."
+              sleep 3600
             done
           EOT
           ]
@@ -205,12 +205,12 @@ resource "kubernetes_deployment" "git_cache" {
 
           resources {
             requests = {
-              cpu    = "100m"
-              memory = "256Mi"
+              cpu    = "500m"
+              memory = "2Gi"
             }
             limits = {
-              cpu    = "500m"
-              memory = "1Gi"
+              cpu    = "2000m"
+              memory = "8Gi"
             }
           }
         }
