@@ -60,7 +60,7 @@ ENV PATH=/usr/local/cuda-12.8/bin:/usr/local/cuda-13.0/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}
 
 # Install EFA support for multi-node GPU communication
-# Build dependencies for AWS OFI-NCCL plugin
+# Build dependencies for AWS OFI-NCCL plugin and EFA installer
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         autoconf \
@@ -70,6 +70,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libhwloc-dev \
         pciutils \
         kmod \
+        environment-modules \
+        tcl \
+        libnl-3-dev \
+        libnl-route-3-200 \
+        libnl-route-3-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
