@@ -60,7 +60,7 @@ ENV PATH=/usr/local/cuda-12.8/bin:/usr/local/cuda-13.0/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}
 
 # Install EFA support for multi-node GPU communication
-# Build dependencies for AWS OFI-NCCL plugin and EFA installer
+# Build dependencies for AWS OFI-NCCL plugin and manual EFA stack installation
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         autoconf \
@@ -70,23 +70,42 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libhwloc-dev \
         pciutils \
         kmod \
-        environment-modules \
-        tcl \
-        libnl-3-dev \
-        libnl-route-3-200 \
-        libnl-route-3-dev \
+        udev \
+        dmidecode \
+        ethtool \
+        rdma-core \
+        libibverbs-dev \
+        librdmacm-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install AWS EFA installer (includes libfabric, EFA tools, and OpenMPI with EFA support)
-# Version 1.47.0 is the latest stable release as of Jan 2025
+# Install libfabric (EFA transport layer)
 RUN cd /tmp && \
-    curl -O https://efa-installer.amazonaws.com/aws-efa-installer-1.47.0.tar.gz && \
-    tar -xf aws-efa-installer-1.47.0.tar.gz && \
-    cd aws-efa-installer && \
-    ./efa_installer.sh -y --skip-kmod --skip-limit-conf --no-verify --mpi=openmpi4 && \
+    curl -L https://github.com/ofiwg/libfabric/releases/download/v1.22.0/libfabric-1.22.0.tar.gz -o libfabric.tar.gz && \
+    tar -xf libfabric.tar.gz && \
+    cd libfabric-1.22.0 && \
+    ./configure --prefix=/opt/amazon/efa \
+                --enable-efa=yes \
+                --enable-sockets=yes && \
+    make -j$(nproc) && \
+    make install && \
     cd / && \
-    rm -rf /tmp/aws-efa-installer*
+    rm -rf /tmp/libfabric*
+
+# Install OpenMPI with libfabric support
+RUN cd /tmp && \
+    curl -L https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.6.tar.gz -o openmpi.tar.gz && \
+    tar -xf openmpi.tar.gz && \
+    cd openmpi-4.1.6 && \
+    ./configure --prefix=/opt/amazon/openmpi \
+                --with-libfabric=/opt/amazon/efa \
+                --with-cuda=/usr/local/cuda \
+                --enable-mpi-cxx \
+                --enable-mpi-fortran=no && \
+    make -j$(nproc) && \
+    make install && \
+    cd / && \
+    rm -rf /tmp/openmpi*
 
 # Build and install AWS OFI-NCCL plugin (bridges NCCL to libfabric/EFA)
 # This is the critical component that allows NCCL to use EFA for inter-node communication
