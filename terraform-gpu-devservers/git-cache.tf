@@ -19,6 +19,10 @@ resource "kubernetes_persistent_volume_claim" "git_cache" {
       }
     }
   }
+
+  # Don't wait for PVC to be bound - gp3 storage class uses WaitForFirstConsumer
+  # so the volume won't be provisioned until the deployment pod actually uses it
+  wait_until_bound = false
 }
 
 resource "kubernetes_deployment" "git_cache" {
@@ -29,6 +33,9 @@ resource "kubernetes_deployment" "git_cache" {
       app = "git-cache"
     }
   }
+
+  # Don't wait for rollout - init container clones pytorch which takes 10-30 minutes
+  wait_for_rollout = false
 
   spec {
     replicas = 1
