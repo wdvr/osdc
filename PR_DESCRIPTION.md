@@ -64,10 +64,11 @@ This PR consolidates 10 tested fixes and features into a single production-ready
 - **Problem**: PyTorch git clone taking 2+ minutes from GitHub
 - **Solution**: In-cluster git cache with HTTP tarball serving
   - nginx serves pre-packaged tarballs (pytorch-git.tar.gz + top 10 submodules)
-  - Transparent git wrapper intercepts GitHub clones
+  - **Opt-in via `git-clone-cached` command** (no git hijacking)
   - Hourly cache refresh
-- **Impact**: Main repo clone in 36s (33% faster), full clone ~130-140s (expected)
-- **Commits**: `1c9f17f`, `c172dc7`, `a492de9`
+- **Usage**: `git-clone-cached pytorch` for 36s clone (vs `git clone` for 54s)
+- **Impact**: Main repo 33% faster (36s vs 54s from GitHub)
+- **Commits**: `1c9f17f`, `c172dc7`, `e8eba97`
 
 ### 9. **Reservation Timing Trace** (`pr42-timing-trace`)
 - **Problem**: No visibility into reservation performance bottlenecks
