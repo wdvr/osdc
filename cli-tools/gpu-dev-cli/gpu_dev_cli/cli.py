@@ -2807,13 +2807,58 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
             rprint("[red]❌ No SSH command available for this node[/red]")
             return
 
+        # Auto-download SSH config if missing
+        from pathlib import Path
+        gpu_dev_dir = Path.home() / ".gpu-dev"
+        short_id = reservation_id[:8]
+        config_file = gpu_dev_dir / f"{short_id}-sshconfig"
+
+        if not config_file.exists():
+            rprint("[yellow]⚠️  SSH config not found, downloading...[/yellow]")
+
+            # Extract connection details from the connection_info
+            if is_multinode:
+                pod_name = selected_node.get("pod_name")
+                fqdn = selected_node.get("fqdn")
+                node_res_id = selected_node.get("reservation_id")
+                node_name = selected_node.get("name")
+            else:
+                pod_name = connection_info.get("pod_name")
+                fqdn = connection_info.get("fqdn")
+                node_res_id = reservation_id
+                node_name = connection_info.get("name")
+
+            if fqdn and pod_name and node_res_id:
+                from gpu_dev_cli.reservations import create_ssh_config_for_reservation
+                config_path, use_include = create_ssh_config_for_reservation(
+                    fqdn, pod_name, node_res_id, node_name
+                )
+                if config_path:
+                    rprint(f"[green]✅ SSH config created: {config_path}[/green]\n")
+                else:
+                    rprint("[yellow]⚠️  Failed to create SSH config, attempting connection anyway...[/yellow]\n")
+            else:
+                rprint("[yellow]⚠️  Missing connection details, attempting connection anyway...[/yellow]\n")
+
         # Add agent forwarding if not already present
         if "-A" not in ssh_command and "-o ForwardAgent=yes" not in ssh_command:
             ssh_command = ssh_command.replace("ssh ", "ssh -A ", 1)
 
-        # Parse and execute the command
+        # Parse and execute the command, capturing exit code for auth failures
         rprint(f"[dim]Executing: {ssh_command}[/dim]\n")
-        subprocess.run(ssh_command, shell=True)
+        result = subprocess.run(ssh_command, shell=True)
+
+        # Check for auth failure (SSH exits with code 255 for connection/auth errors)
+        if result.returncode == 255:
+            # Try to extract primary username from connection info
+            primary_user = connection_info.get("user_id", "the-primary-user")
+            current_user = user_info.get("user_id", "your-github-username")
+
+            rprint("\n[red]❌ Authentication failed. You don't have SSH access to this reservation.[/red]\n")
+            rprint(f"[cyan]Ask the primary user ([yellow]{primary_user}[/yellow]) to add you:[/cyan]")
+            rprint(f"[dim]   gpu-dev edit {reservation_id[:8]} --add-user {current_user}[/dim]\n")
+            rprint(f"[cyan]Then download your SSH config:[/cyan]")
+            rprint(f"[dim]   gpu-dev get-ssh-config {reservation_id[:8]}[/dim]\n")
 
     except KeyboardInterrupt:
         rprint("\n[yellow]Connection cancelled by user[/yellow]")
