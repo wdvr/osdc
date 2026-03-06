@@ -81,21 +81,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install libfabric (EFA transport layer)
 RUN cd /tmp && \
-    curl -L https://github.com/ofiwg/libfabric/releases/download/v1.22.0/libfabric-1.22.0.tar.gz -o libfabric.tar.gz && \
-    tar -xf libfabric.tar.gz && \
+    wget https://github.com/ofiwg/libfabric/archive/refs/tags/v1.22.0.tar.gz && \
+    tar -xf v1.22.0.tar.gz && \
     cd libfabric-1.22.0 && \
+    ./autogen.sh && \
     ./configure --prefix=/opt/amazon/efa \
                 --enable-efa=yes \
                 --enable-sockets=yes && \
     make -j$(nproc) && \
     make install && \
     cd / && \
-    rm -rf /tmp/libfabric*
+    rm -rf /tmp/libfabric* /tmp/v1.22.0.tar.gz
 
 # Install OpenMPI with libfabric support
 RUN cd /tmp && \
-    curl -L https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.6.tar.gz -o openmpi.tar.gz && \
-    tar -xf openmpi.tar.gz && \
+    wget https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.6.tar.gz && \
+    tar -xf openmpi-4.1.6.tar.gz && \
     cd openmpi-4.1.6 && \
     ./configure --prefix=/opt/amazon/openmpi \
                 --with-libfabric=/opt/amazon/efa \
