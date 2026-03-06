@@ -76,22 +76,6 @@ locals {
       use_self_managed_nodes = true
       instance_type          = "g4dn.12xlarge"
       supported_gpu_types = {
-        "h200" = {
-          instance_type       = "p5en.48xlarge" # H200 available in us-west-1
-          instance_types      = ["p5en.48xlarge"]
-          instance_count      = 2
-          gpus_per_instance   = 8
-          use_placement_group = false
-          architecture        = "x86_64"
-        }
-        "h100" = {
-          instance_type       = "p5.48xlarge"
-          instance_types      = null
-          instance_count      = 2
-          gpus_per_instance   = 8
-          use_placement_group = true
-          architecture        = "x86_64"
-        }
         "cpu-arm" = {
           instance_type       = "c7g.4xlarge"
           instance_types      = null
@@ -265,10 +249,7 @@ locals {
   # Workspace-specific GPU type to subnet mappings
   gpu_subnet_assignments = {
     default = {
-      # Test environment - H200 and H100 in us-west-1c (secondary subnet)
-      # T4 nodes in multiple AZs for testing AZ mismatch fix
-      h200         = "secondary"
-      h100         = "secondary"
+      # Test environment - T4 nodes in multiple AZs for testing
       t4           = "primary"    # T4 in us-west-1a (primary AZ)
       "t4-az2"     = "secondary"  # T4 in us-west-1b (secondary AZ)
       "cpu-arm"    = "primary"
