@@ -3699,8 +3699,65 @@ def create_pod(
                         run_as_user=0,
                         run_as_group=0
                     ),
+                ),
+            ] + ([
+                # Disk warming init container - pre-warms EBS volume restored from snapshot
+                # Only runs for existing persistent disks (not new/empty disks)
+                client.V1Container(
+                    name="disk-warmer",
+                    image="alpine:latest",
+                    image_pull_policy="IfNotPresent",
+                    command=["/bin/sh"],
+                    args=[
+                        "-c",
+                        """
+                        echo "[DISK-WARM] Starting EBS volume pre-warming..."
+                        START_TIME=$(date +%s)
+
+                        # Stage 1: Warm filesystem metadata (fast, enables ls/find/git status)
+                        echo "[DISK-WARM] Stage 1: Warming filesystem metadata..."
+                        find /home/dev -type f -o -type d > /dev/null 2>&1
+                        STAGE1_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 1 complete in $((STAGE1_TIME - START_TIME))s"
+
+                        # Stage 2: Warm critical directories (git, build cache, source)
+                        echo "[DISK-WARM] Stage 2: Warming critical files..."
+                        for dir in /home/dev/.git /home/dev/.cache /home/dev/pytorch/.git /home/dev/fbsource/.git; do
+                            if [ -d "$dir" ]; then
+                                echo "[DISK-WARM]   Warming $dir..."
+                                find "$dir" -type f -exec cat {} > /dev/null 2>&1 \\;
+                            fi
+                        done
+                        STAGE2_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 2 complete in $((STAGE2_TIME - STAGE1_TIME))s"
+
+                        # Stage 3: Warm remaining files in background-friendly way
+                        echo "[DISK-WARM] Stage 3: Warming remaining files..."
+                        find /home/dev -type f -not -path '/home/dev/.git/*' \\
+                            -not -path '/home/dev/.cache/*' \\
+                            -not -path '/home/dev/pytorch/.git/*' \\
+                            -exec cat {} > /dev/null 2>&1 \\;
+                        END_TIME=$(date +%s)
+                        echo "[DISK-WARM] Stage 3 complete in $((END_TIME - STAGE2_TIME))s"
+
+                        TOTAL_FILES=$(find /home/dev -type f 2>/dev/null | wc -l)
+                        echo "[DISK-WARM] Complete: warmed $TOTAL_FILES files in $((END_TIME - START_TIME))s"
+                        """,
+                    ],
+                    volume_mounts=[
+                        client.V1VolumeMount(
+                            name="dev-home", mount_path="/home/dev"),
+                    ],
+                    security_context=client.V1SecurityContext(
+                        run_as_user=0,
+                        run_as_group=0
+                    ),
+                    resources=client.V1ResourceRequirements(
+                        requests={"cpu": "500m", "memory": "256Mi"},
+                        limits={"cpu": "2000m", "memory": "1Gi"}
+                    ),
                 )
-            ],
+            ] if (use_persistent_disk and not is_new_disk) else []),
             containers=[
                 client.V1Container(
                     name="gpu-dev",
@@ -4193,6 +4250,90 @@ EOFREADME
                             echo "[STARTUP] Hiding lost+found directory (normal for ext4 filesystem)"
                             chattr +h /home/dev/lost+found 2>/dev/null || chmod 700 /home/dev/lost+found
                         fi
+
+                        # Install git cache wrapper — transparently accelerates pytorch clones
+                        echo "[STARTUP] Installing git cache wrapper..."
+
+                        cat > /usr/local/bin/git-clone-cached << 'GITCACHESCRIPT'
+#!/bin/bash
+# Clones pytorch/pytorch + submodules from in-cluster cache, then sets origin to GitHub.
+CACHE="git://git-cache.gpu-controlplane.svc.cluster.local"
+GITHUB="https://github.com/pytorch/pytorch.git"
+GIT="/usr/bin/git"
+DEST="${{1:-pytorch}}"
+
+if [ -d "$DEST" ]; then
+    echo "Error: $DEST already exists"
+    exit 1
+fi
+
+# Step 1: Clone main repo from cache (no submodules yet)
+echo "[git-cache] Cloning pytorch from in-cluster cache..."
+if ! "$GIT" clone "$CACHE/pytorch.git" "$DEST" 2>/dev/null; then
+    echo "[git-cache] Cache miss — cloning from GitHub with submodules..."
+    "$GIT" clone "$GITHUB" "$DEST" --recurse-submodules
+    exit $?
+fi
+
+cd "$DEST"
+
+# Step 2: Set origin to GitHub
+"$GIT" remote set-url origin "$GITHUB"
+
+# Step 3: Clone submodules from cache using temporary insteadOf rules
+# Maps github URLs to cache names: https://github.com/org/repo -> git://cache/org_repo
+echo "[git-cache] Cloning submodules from cache..."
+"$GIT" config --file .gitmodules --get-regexp 'url' | awk '{{print $2}}' | while read url; do
+    name=$(echo "$url" | sed 's|https://github.com/||;s|/|_|g;s|\.git$||').git
+    "$GIT" config --global url."$CACHE/$name".insteadOf "$url"
+done
+
+# Init submodules — uses cache via insteadOf
+"$GIT" submodule update --init --recursive 2>/dev/null
+
+# Step 4: Remove temporary insteadOf rules
+"$GIT" config --file .gitmodules --get-regexp 'url' | awk '{{print $2}}' | while read url; do
+    "$GIT" config --global --unset-all url."$CACHE/$(echo "$url" | sed 's|https://github.com/||;s|/|_|g;s|\.git$||').git".insteadOf 2>/dev/null
+done
+
+# Step 5: Fetch latest from GitHub
+echo "[git-cache] Syncing latest from GitHub..."
+"$GIT" fetch origin
+"$GIT" checkout "$("$GIT" symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||')" 2>/dev/null
+
+echo "[git-cache] Done — origin is GitHub, all git ops go there directly."
+GITCACHESCRIPT
+                        chmod +x /usr/local/bin/git-clone-cached
+
+                        cat > /usr/local/bin/git << 'GITWRAPPER'
+#!/bin/bash
+# Transparent cache wrapper — intercepts pytorch clone, passes everything else through
+GIT="/usr/bin/git"
+
+if [ "$1" = "clone" ]; then
+    for arg in "$@"; do
+        case "$arg" in
+            *github.com*pytorch/pytorch*)
+                DEST=""
+                FOUND_URL=false
+                for a in "$@"; do
+                    case "$a" in
+                        clone) ;;
+                        -*) ;;
+                        *github.com*pytorch/pytorch*) FOUND_URL=true ;;
+                        *) if $FOUND_URL; then DEST="$a"; fi ;;
+                    esac
+                done
+                exec /usr/local/bin/git-clone-cached ${{DEST:+"$DEST"}}
+                ;;
+        esac
+    done
+fi
+
+exec "$GIT" "$@"
+GITWRAPPER
+                        chmod +x /usr/local/bin/git
+                        echo "[STARTUP] ✓ git cache wrapper installed (git clone pytorch auto-uses cache)"
 
                         echo "[STARTUP] Configuring SSH..."
                         mkdir -p /run/sshd
