@@ -3401,7 +3401,7 @@ def create_kubernetes_resources(
 
         # Remove reservation_id to avoid blocking
         record_trace_event(trace_data, "pod_ready_wait_start")
-        wait_for_pod_ready(k8s_client, pod_name)
+        wait_for_pod_ready(k8s_client, pod_name, custom_image=bool(dockerimage))
         record_trace_event(trace_data, "pod_ready_wait_end")
         update_reservation_status(
             reservation_id, "preparing", f"Pod is ready, setting up services"
@@ -5031,14 +5031,97 @@ def create_jupyter_service(k8s_client, pod_name: str, jupyter_port: int):
         raise
 
 
-def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 600):
-    """Wait for pod to be ready - simplified since background monitoring handles status updates"""
+def wait_for_image_pull(k8s_client, pod_name: str, timeout_seconds: int = 1800):
+    """Wait for all container images to be pulled before starting readiness countdown.
+    Watches pod container statuses to detect when image pull completes.
+    Returns early if pod is already running or ready."""
+    v1 = client.CoreV1Api(k8s_client)
+    start_time = time.time()
+    logger.info(f"Waiting for image pull to complete for pod {pod_name} (timeout: {timeout_seconds}s)")
+    image_pulled = False
+
+    while time.time() - start_time < timeout_seconds:
+        try:
+            pod = v1.read_namespaced_pod(name=pod_name, namespace="gpu-dev")
+
+            # If pod is already running or ready, image pull is done
+            if pod.status.phase in ("Running", "Succeeded"):
+                elapsed = int(time.time() - start_time)
+                logger.info(f"Pod {pod_name} is {pod.status.phase}, image pull done ({elapsed}s)")
+                return
+
+            if pod.status.phase == "Failed":
+                raise RuntimeError(f"Pod {pod_name} failed during image pull phase")
+
+            # Check init container statuses — all must be past Waiting/pulling
+            init_pulling = False
+            if pod.status.init_container_statuses:
+                for cs in pod.status.init_container_statuses:
+                    if cs.state.waiting and cs.state.waiting.reason in ("ContainerCreating", "PodInitializing", "ErrImagePull", "ImagePullBackOff"):
+                        if cs.state.waiting.reason in ("ErrImagePull", "ImagePullBackOff"):
+                            raise RuntimeError(
+                                f"Pod {pod_name} image pull failed for init container {cs.name}: {cs.state.waiting.reason} - {cs.state.waiting.message}"
+                            )
+                        init_pulling = True
+
+            # Check main container statuses
+            main_pulling = False
+            if pod.status.container_statuses:
+                for cs in pod.status.container_statuses:
+                    if cs.state.waiting and cs.state.waiting.reason in ("ContainerCreating", "PodInitializing", "ErrImagePull", "ImagePullBackOff"):
+                        if cs.state.waiting.reason in ("ErrImagePull", "ImagePullBackOff"):
+                            raise RuntimeError(
+                                f"Pod {pod_name} image pull failed for container {cs.name}: {cs.state.waiting.reason} - {cs.state.waiting.message}"
+                            )
+                        main_pulling = True
+                    elif cs.state.running or cs.state.terminated:
+                        # Container has started or finished, image is pulled
+                        if not image_pulled:
+                            elapsed = int(time.time() - start_time)
+                            logger.info(f"Image pulled for container {cs.name} ({elapsed}s)")
+                            image_pulled = True
+
+            # If we have container statuses and nothing is pulling, we're done
+            if pod.status.container_statuses and not init_pulling and not main_pulling:
+                elapsed = int(time.time() - start_time)
+                logger.info(f"All images pulled for pod {pod_name} ({elapsed}s)")
+                return
+
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(f"Error checking image pull status: {str(e)}")
+
+        time.sleep(5)
+
+    elapsed = int(time.time() - start_time)
+    raise TimeoutError(
+        f"Image pull for pod {pod_name} did not complete within {timeout_seconds} seconds"
+    )
+
+
+def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 600, custom_image: bool = False):
+    """Wait for pod to be ready. Separates image pull wait from startup wait.
+    For custom images, allows extra time for image pull (up to 1800s) before
+    starting the readiness countdown (600s for default, 900s for custom images)."""
     try:
+        image_pull_timeout = 1800 if custom_image else 600
+        ready_timeout = 900 if custom_image else timeout_seconds
+
+        # Phase 1: Wait for image pull to complete (separate timeout)
+        logger.info(
+            f"Phase 1: Waiting for image pull (timeout: {image_pull_timeout}s, custom_image: {custom_image})"
+        )
+        wait_for_image_pull(k8s_client, pod_name, timeout_seconds=image_pull_timeout)
+
+        # Phase 2: Wait for pod readiness (startup script, SSH setup, etc.)
         v1 = client.CoreV1Api(k8s_client)
         start_time = time.time()
-        logger.info(f"Waiting for pod {pod_name} to be ready")
+        logger.info(
+            f"Phase 2: Image pulled, waiting for pod {pod_name} to become ready (timeout: {ready_timeout}s)"
+        )
 
-        while time.time() - start_time < timeout_seconds:
+        while time.time() - start_time < ready_timeout:
             try:
                 pod = v1.read_namespaced_pod(
                     name=pod_name, namespace="gpu-dev")
@@ -5047,20 +5130,23 @@ def wait_for_pod_ready(k8s_client, pod_name: str, timeout_seconds: int = 600):
                 if pod.status.conditions:
                     for condition in pod.status.conditions:
                         if condition.type == "Ready" and condition.status == "True":
-                            logger.info(f"Pod {pod_name} is ready")
+                            elapsed = int(time.time() - start_time)
+                            logger.info(f"Pod {pod_name} is ready ({elapsed}s after image pull)")
                             return
 
                 # Check for failed state
                 if pod.status.phase == "Failed":
                     raise RuntimeError(f"Pod {pod_name} failed")
 
+            except RuntimeError:
+                raise
             except Exception as e:
                 logger.warning(f"Error checking pod status: {str(e)}")
 
             time.sleep(2)
 
         raise TimeoutError(
-            f"Pod {pod_name} did not become ready within {timeout_seconds} seconds"
+            f"Pod {pod_name} did not become ready within {ready_timeout} seconds after image pull completed"
         )
 
     except Exception as e:
