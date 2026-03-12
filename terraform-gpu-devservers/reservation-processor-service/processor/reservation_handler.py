@@ -94,7 +94,8 @@ IMAGE_PULL_POLICY = os.environ.get("IMAGE_PULL_POLICY", "Always")
 # 3. Ensure both configs stay in sync
 #
 # See migrations/populate_gpu_types.py for the database schema
-GPU_CONFIG = {
+# GPU_CONFIG: read from Helm-injected GPU_CONFIG_JSON env var, fall back to hardcoded defaults
+_GPU_CONFIG_FALLBACK = {
     "t4": {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
     "l4": {"instance_type": "g6.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
     "a10g": {"instance_type": "g5.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192},
@@ -107,6 +108,26 @@ GPU_CONFIG = {
     "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
     "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
 }
+
+_raw_gpu_config = os.environ.get("GPU_CONFIG_JSON", "")
+if _raw_gpu_config:
+    try:
+        GPU_CONFIG = {
+            t["name"]: {
+                "instance_type": t["instanceType"],
+                "max_gpus": t["maxGpus"],
+                "cpus": t["cpus"],
+                "memory_gb": t["memoryGb"],
+            }
+            for t in json.loads(_raw_gpu_config)
+        }
+        logger.info(f"Loaded GPU_CONFIG from env ({len(GPU_CONFIG)} types)")
+    except Exception as e:
+        logger.warning(f"Failed to parse GPU_CONFIG_JSON: {e}, using fallback")
+        GPU_CONFIG = _GPU_CONFIG_FALLBACK
+else:
+    GPU_CONFIG = _GPU_CONFIG_FALLBACK
+
 GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192}
 
 
@@ -2367,7 +2388,7 @@ def create_reservation(request: dict[str, Any]) -> str:
             "duration_hours": duration_float_value,
             "pod_name": f"gpu-dev-{reservation_id[:8]}",
             "namespace": "gpu-dev",
-            # ssh_command will be set when NodePort service is created with real external access
+            # ssh_command will be set when pod is ready
         }
 
         # Add optional fields
@@ -2418,20 +2439,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         )
         logger.info(f"Pod name: {pod_name}")
 
-        # Update status: Fetching SSH keys (with pod-specific status for multinode)
-        if is_multinode:
-            update_multinode_pod_status(
-                reservation_id, "fetching SSH keys", node_index, total_nodes)
-        update_reservation_status(
-            reservation_id,
-            "preparing",
-            detailed_status=f"Fetching SSH keys for GitHub user {request.get('github_user', user_id)}"
-        )
-
-        # Get user's GitHub public key
-        github_user = request.get(
-            "github_user", user_id
-        )
+        # Get user's GitHub public key (optional - local key push handles auth)
+        github_user = request.get("github_user")
 
         # Extract Docker options if provided
         dockerfile_base64_data = request.get("dockerfile")  # CLI/MCP sends base64 data in 'dockerfile' field
@@ -2565,11 +2574,13 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         elif dockerimage:
             logger.info(f"Custom Docker image specified: {dockerimage}")
 
-        github_public_key = get_github_public_key(github_user, validate=True)
-        if not github_public_key:
-            raise ValueError(
-                f"Could not fetch GitHub public key for GitHub user '{github_user}'"
-            )
+        github_public_key = ""
+        if github_user:
+            fetched = get_github_public_key(github_user, validate=True)
+            if fetched:
+                github_public_key = fetched
+            else:
+                logger.warning(f"Could not fetch GitHub keys for '{github_user}' - pod will use local key push")
 
         # Check if user should get persistent disk
         # Check if user explicitly requested no persistent disk (e.g., confirmed continuing without disk when another reservation has it)
@@ -2739,6 +2750,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 target_az=target_az,
                 preserve_entrypoint=preserve_entrypoint,
                 node_labels=node_labels,
+                docker_enabled=docker_enabled,
             )
         except TimeoutError as e:
             # Pod creation timed out waiting for pod to be ready
@@ -2794,14 +2806,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 logger.info(
                     f"Created domain name {domain_name} for reservation {reservation_id}")
 
-        # Generate SSH command (use ProxyCommand with domain if available, otherwise fallback to direct IP+port)
-        if domain_name:
-            from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
-            full_domain = f"{domain_name}.{DNS_DOMAIN}"
-            ssh_command = f"ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null dev@{full_domain}"
-        else:
-            # Fallback to direct IP+port when DNS is not configured
-            ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
+        # Connection via CLI (K8s exec/port-forward, no NodePort needed)
+        ssh_command = f"gpu-dev connect {pod_name}"
 
         # Generate Jupyter URL (we'll get the token after pod is ready)
         if domain_name and domain_ssh_command:
@@ -2922,14 +2928,9 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                                         expires_timestamp,
                                     )
 
-                                    # Update URLs - Jupyter uses HTTPS via ALB, SSH uses ProxyCommand
+                                    # Update Jupyter URL - uses HTTPS via ALB
                                     from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
                                     full_domain = f"{domain_name}.{DNS_DOMAIN}"
-
-                                    # SSH with ProxyCommand for HTTP CONNECT tunneling
-                                    ssh_command = f"ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null dev@{full_domain}"
-
-                                    # Jupyter with HTTPS
                                     jupyter_url_base = f"https://{full_domain}"
 
                                     alb_config = {
@@ -2944,7 +2945,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                                 f"Could not get instance ID for pod {pod_name}, skipping ALB setup")
                 except Exception as alb_error:
                     logger.error(f"Failed to setup ALB/NLB: {alb_error}")
-                    # Continue with NodePort fallback
+                    # Continue without ALB
 
             # Update reservation with connection details and mark as active
             update_reservation_connection_info(
@@ -2966,16 +2967,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
                 preserve_entrypoint=preserve_entrypoint,
             )
 
-            # Trigger availability table update after successful reservation
-            try:
-                trigger_availability_update()
-                logger.info(
-                    "Triggered availability table update after successful reservation"
-                )
-            except Exception as update_error:
-                logger.warning(
-                    f"Failed to trigger availability update: {update_error}")
-                # Don't fail the reservation for this
+            # Availability updater runs as a K8s CronJob — no need to trigger Lambda
+            logger.info("Availability update will be handled by CronJob")
 
         else:
             logger.warning(
@@ -3002,7 +2995,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None
         # GPU allocation handled automatically by K8s scheduler
 
         logger.info(
-            f"Successfully created pod {pod_name} with SSH access on port {node_port}"
+            f"Successfully created pod {pod_name} (connect via: gpu-dev connect {pod_name})"
         )
 
     except Exception as e:
@@ -3192,6 +3185,7 @@ def create_kubernetes_resources(
     target_az: str = None,
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
+    docker_enabled: bool = False,
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
@@ -3224,7 +3218,7 @@ def create_kubernetes_resources(
             except client.exceptions.ApiException as service_error:
                 if service_error.status == 404:
                     logger.info(
-                        f"Service {pod_name}-ssh does not exist, will create it"
+                        f"Service {pod_name}-ssh does not exist (not needed - using K8s exec)"
                     )
                 else:
                     raise
@@ -3244,28 +3238,18 @@ def create_kubernetes_resources(
             if jupyter_error.status != 404:
                 raise
 
+        # No SSH NodePort service - connections use K8s exec/port-forward via CLI
+        node_port = 0
+
         # Handle Jupyter port logic
         if jupyter_enabled:
-            if pod_exists and existing_service_port and existing_jupyter_port:
-                # All resources exist, use existing ports
-                node_port = existing_service_port
-                jupyter_port = existing_jupyter_port
+            jupyter_port = existing_jupyter_port or find_available_node_port(k8s_client)
+
+            if pod_exists and existing_jupyter_port:
                 logger.info(
-                    f"Using existing resources: pod {pod_name}, SSH port {node_port}, Jupyter port {jupyter_port}"
+                    f"Using existing resources: pod {pod_name}, Jupyter port {jupyter_port}"
                 )
             else:
-                # Find available node ports (30000-32767 range)
-                node_port = existing_service_port or find_available_node_port(
-                    k8s_client
-                )
-                jupyter_port = existing_jupyter_port or find_available_node_port(
-                    k8s_client
-                )
-
-                # Ensure SSH and Jupyter use different ports
-                while jupyter_port == node_port:
-                    jupyter_port = find_available_node_port(k8s_client)
-
                 # Create pod if it doesn't exist
                 if not pod_exists:
                     update_reservation_status(
@@ -3310,20 +3294,12 @@ def create_kubernetes_resources(
                         logger.info(
                             f"Background monitoring already exists for reservation {reservation_id}, skipping duplicate")
 
-                # Create SSH service if it doesn't exist
-                if not existing_service_port:
-                    create_service(k8s_client, pod_name, node_port)
-                    logger.info(
-                        f"Created new service {pod_name}-ssh on port {node_port}"
-                    )
-
                 # Create headless service for multi-node communication
                 try:
                     create_headless_service(k8s_client, pod_name)
                 except Exception as headless_error:
                     logger.warning(
                         f"Failed to create headless service: {headless_error}")
-                    # Don't fail the whole pod creation if headless service fails
 
                 # Create Jupyter service if it doesn't exist
                 if not existing_jupyter_port:
@@ -3332,67 +3308,49 @@ def create_kubernetes_resources(
                         f"Created new service {pod_name}-jupyter on port {jupyter_port}"
                     )
         else:
-            # Jupyter disabled - only SSH service needed
-            jupyter_port = 0  # No Jupyter port
+            jupyter_port = 0
 
-            if pod_exists and existing_service_port:
-                node_port = existing_service_port
-                logger.info(
-                    f"Using existing resources: pod {pod_name}, SSH port {node_port}"
+            if not pod_exists:
+                update_reservation_status(
+                    reservation_id,
+                    "preparing",
+                    f"Creating Kubernetes pod {pod_name}",
+                )
+                create_pod(
+                    k8s_client,
+                    pod_name,
+                    gpu_count,
+                    gpu_type,
+                    github_public_key,
+                    jupyter_enabled=False,
+                    persistent_volume_id=persistent_volume_id,
+                    user_id=user_id,
+                    is_new_disk=is_new_disk,
+                    recreate_env=recreate_env,
+                    efs_filesystem_id=efs_filesystem_id,
+                    is_multinode=is_multinode,
+                    dockerfile_base64_data=dockerfile_base64_data,
+                    dockerimage=dockerimage,
+                    target_az=target_az,
+                    preserve_entrypoint=preserve_entrypoint,
+                    node_labels=node_labels,
+                    docker_enabled=docker_enabled,
+                )
+                logger.info(f"Created new pod {pod_name} without Jupyter")
+                update_reservation_status(
+                    reservation_id,
+                    "preparing",
+                    f"Pod created, waiting for container to download and start",
                 )
             else:
-                node_port = existing_service_port or find_available_node_port(
-                    k8s_client
-                )
+                logger.info(f"Using existing pod {pod_name}")
 
-                # Create pod if it doesn't exist
-                if not pod_exists:
-                    update_reservation_status(
-                        reservation_id,
-                        "preparing",
-                        f"Creating Kubernetes pod {pod_name}",
-                    )
-                    create_pod(
-                        k8s_client,
-                        pod_name,
-                        gpu_count,
-                        gpu_type,
-                        github_public_key,
-                        jupyter_enabled=False,
-                        persistent_volume_id=persistent_volume_id,
-                        user_id=user_id,
-                        is_new_disk=is_new_disk,
-                        recreate_env=recreate_env,
-                        efs_filesystem_id=efs_filesystem_id,
-                        is_multinode=is_multinode,
-                        dockerfile_base64_data=dockerfile_base64_data,
-                        dockerimage=dockerimage,
-                        target_az=target_az,
-                        preserve_entrypoint=preserve_entrypoint,
-                        node_labels=node_labels,
-                        docker_enabled=docker_enabled,
-                    )
-                    logger.info(f"Created new pod {pod_name} without Jupyter")
-                    update_reservation_status(
-                        reservation_id,
-                        "preparing",
-                        f"Pod created, waiting for container to download and start",
-                    )
-
-                # Create SSH service if it doesn't exist
-                if not existing_service_port:
-                    create_service(k8s_client, pod_name, node_port)
-                    logger.info(
-                        f"Created new service {pod_name}-ssh on port {node_port}"
-                    )
-
-                # Create headless service for multi-node communication
-                try:
-                    create_headless_service(k8s_client, pod_name)
-                except Exception as headless_error:
-                    logger.warning(
-                        f"Failed to create headless service: {headless_error}")
-                    # Don't fail the whole pod creation if headless service fails
+            # Create headless service for multi-node communication
+            try:
+                create_headless_service(k8s_client, pod_name)
+            except Exception as headless_error:
+                logger.warning(
+                    f"Failed to create headless service: {headless_error}")
 
         # Check if background monitoring has detected a terminal state (e.g., no nodes available)
         # This prevents race condition where monitoring sets "failed" but we override it with "preparing"
@@ -3681,19 +3639,24 @@ def create_pod(
         ebs_volume_spec = None
         use_persistent_disk = persistent_volume_id is not None
 
+        ebs_volume_spec = None
+        pvc_claim_name = None
         if use_persistent_disk:
             logger.info(
                 f"Setting up persistent disk {persistent_volume_id} for pod {pod_name}")
 
-            # Get node instance ID where pod will be scheduled
-            # For now, we'll handle this in the container startup script
-            # The EBS volume will be attached when pod is scheduled
-            ebs_volume_spec = client.V1AWSElasticBlockStoreVolumeSource(
-                volume_id=persistent_volume_id,
-                fs_type="ext4"
-            )
-            logger.info(
-                f"Will use EBS volume {persistent_volume_id} for /home/dev")
+            if is_aws():
+                ebs_volume_spec = client.V1AWSElasticBlockStoreVolumeSource(
+                    volume_id=persistent_volume_id,
+                    fs_type="ext4"
+                )
+                logger.info(
+                    f"Will use EBS volume {persistent_volume_id} for /home/dev")
+            else:
+                # Non-AWS: persistent_volume_id is a PVC name
+                pvc_claim_name = persistent_volume_id
+                logger.info(
+                    f"Will use PVC {pvc_claim_name} for /home/dev")
         else:
             logger.info(f"Using EmptyDir for /home/dev (no persistent disk)")
 
@@ -3743,9 +3706,13 @@ def create_pod(
                             chown 1081:1081 /home/dev
                         fi
 
-                        # Set up SSH keys (always refresh)
+                        # Set up SSH directory and keys
                         mkdir -p /home/dev/.ssh
-                        echo '{github_public_key}' > /home/dev/.ssh/authorized_keys
+                        if [ -n '{github_public_key}' ]; then
+                            echo '{github_public_key}' > /home/dev/.ssh/authorized_keys
+                        else
+                            touch /home/dev/.ssh/authorized_keys
+                        fi
                         chmod 700 /home/dev/.ssh
                         chmod 600 /home/dev/.ssh/authorized_keys
 
@@ -4726,8 +4693,11 @@ EOF
                 # Dynamic volume based on persistent disk availability
                 client.V1Volume(
                     name="dev-home",
-                    aws_elastic_block_store=ebs_volume_spec if use_persistent_disk else None,
-                    empty_dir=client.V1EmptyDirVolumeSource() if not use_persistent_disk else None
+                    aws_elastic_block_store=ebs_volume_spec,
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                        claim_name=pvc_claim_name
+                    ) if pvc_claim_name else None,
+                    empty_dir=client.V1EmptyDirVolumeSource() if not use_persistent_disk else None,
                 ),
                 client.V1Volume(
                     name="shared-workspace",
@@ -5216,6 +5186,33 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
         reservation_id: Optional reservation ID for status updates
     """
     try:
+        # Non-AWS: use K8s PVC instead of EBS volumes
+        if not is_aws():
+            from shared.k8s_storage import create_persistent_disk, get_persistent_disk
+            from shared.k8s_client import setup_kubernetes_client
+            from kubernetes import client as k8s_client
+
+            actual_disk_name = disk_name or "home"
+            logger.info(f"Creating K8s PVC disk for user {user_id}, disk_name={actual_disk_name}")
+
+            api_client = setup_kubernetes_client()
+            core_v1 = k8s_client.CoreV1Api(api_client)
+            namespace = os.environ.get("KUBE_NAMESPACE", "gpu-dev")
+            storage_class = os.environ.get("STORAGE_CLASS", "")
+
+            existing = get_persistent_disk(core_v1, namespace, user_id, actual_disk_name)
+            if existing:
+                logger.info(f"Found existing PVC {existing}")
+                return existing, False, ""
+
+            pvc_name = create_persistent_disk(
+                core_v1, namespace, user_id, actual_disk_name,
+                size_gb=100, storage_class=storage_class
+            )
+            if pvc_name:
+                return pvc_name, True, ""
+            return "", True, "Failed to create PVC"
+
         from shared.snapshot_utils import get_latest_snapshot
 
         logger.info(f"Creating disk for user {user_id} in AZ {availability_zone}" + (f", disk_name={disk_name}" if disk_name else ""))
@@ -6602,11 +6599,11 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                             logger.warning(
                                 f"Pod {pod_name} running but connection info not set yet - keeping as preparing")
                     else:
-                        # For regular containers, need SSH connection info
-                        if res.get("node_port") and res.get("ssh_command"):
+                        # For regular containers, need ssh_command set
+                        if res.get("ssh_command"):
                             high_level_status = "active"
                             logger.info(
-                                f"Transitioning {reservation_id} to active - SSH confirmed ready and connection info set")
+                                f"Transitioning {reservation_id} to active - connection info set")
                         else:
                             # Check if we've been waiting too long (main thread may have timed out)
                             created_at = res.get("created_at")
@@ -6635,80 +6632,50 @@ def update_pod_status_and_events(k8s_client, pod_name: str, reservation_id: str)
                                 logger.info(
                                     f"RECOVERY: Generating connection info for {reservation_id} from monitoring thread")
                                 try:
-                                    # Get pod details to generate connection info
                                     from shared.k8s_client import get_k8s_client
                                     k8s = get_k8s_client()
-                                    v1 = client.CoreV1Api(k8s)
-                                    
-                                    # Get pod to find node and ports
-                                    pod = v1.read_namespaced_pod(name=pod_name, namespace="gpu-dev")
-                                    
-                                    # Get SSH service to find node_port
-                                    ssh_service_name = f"{pod_name}-ssh"
-                                    service = v1.read_namespaced_service(name=ssh_service_name, namespace="gpu-dev")
-                                    node_port = None
+
+                                    node_public_ip = get_pod_node_public_ip(pod_name)
+                                    node_private_ip = get_pod_node_private_ip(pod_name)
+                                    ssh_command = f"gpu-dev connect {pod_name}"
+
+                                    # Check for Jupyter port
                                     jupyter_port = None
-                                    for port in service.spec.ports:
-                                        if port.name == "ssh":
-                                            node_port = port.node_port
-                                        elif port.name == "jupyter":
-                                            jupyter_port = port.node_port
-                                    
-                                    if node_port:
-                                        # Get node IPs
-                                        node_public_ip = get_pod_node_public_ip(pod_name)
-                                        node_private_ip = get_pod_node_private_ip(pod_name)
-                                        
-                                        # Check for domain name and DNS
-                                        domain_name = res.get("domain_name")
-                                        
-                                        # Generate SSH command
-                                        if domain_name:
-                                            from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
-                                            full_domain = f"{domain_name}.{DNS_DOMAIN}"
-                                            ssh_command = f"ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null dev@{full_domain}"
-                                        else:
-                                            ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
-                                        
-                                        # Generate Jupyter URL if enabled
-                                        jupyter_enabled = res.get("jupyter_enabled", False)
-                                        jupyter_url_base = None
-                                        if jupyter_enabled and jupyter_port:
-                                            if domain_name:
-                                                from shared.dns_utils import DOMAIN_NAME as DNS_DOMAIN
-                                                full_domain = f"{domain_name}.{DNS_DOMAIN}"
-                                                jupyter_url_base = f"http://{full_domain}:{jupyter_port}"
-                                            else:
-                                                jupyter_url_base = f"http://{node_public_ip}:{jupyter_port}"
-                                        
-                                        # Update connection info
-                                        logger.info(f"RECOVERY: Setting connection info for {reservation_id}")
-                                        update_reservation_connection_info(
-                                            reservation_id=reservation_id,
-                                            ssh_command=ssh_command,
-                                            pod_name=pod_name,
-                                            node_port=node_port,
-                                            node_ip=node_public_ip,
-                                            node_private_ip=node_private_ip,
-                                            jupyter_port=jupyter_port,
-                                            jupyter_url_base=jupyter_url_base,
-                                            jupyter_enabled=jupyter_enabled,
-                                            k8s_client=k8s,
-                                            persistent_volume_id=res.get("persistent_volume_id"),
-                                            ebs_availability_zone=res.get("ebs_availability_zone"),
-                                            domain_name=domain_name,
-                                            alb_config=None,  # ALB setup would have already failed
-                                            preserve_entrypoint=False,
-                                        )
-                                        
-                                        high_level_status = "active"
-                                        display_message = "✅ Connection established (recovered)"
-                                        logger.info(
-                                            f"RECOVERY: Successfully activated {reservation_id} from monitoring thread")
-                                    else:
-                                        logger.error(f"RECOVERY: Could not find node_port for {pod_name}")
-                                        high_level_status = "preparing"
-                                        display_message = "✅ SSH ready, waiting for connection setup"
+                                    jupyter_enabled = res.get("jupyter_enabled", False)
+                                    jupyter_url_base = None
+                                    if jupyter_enabled:
+                                        try:
+                                            v1 = client.CoreV1Api(k8s)
+                                            jupyter_service = v1.read_namespaced_service(
+                                                name=f"{pod_name}-jupyter", namespace="gpu-dev")
+                                            jupyter_port = jupyter_service.spec.ports[0].node_port
+                                            jupyter_url_base = f"http://{node_public_ip}:{jupyter_port}"
+                                        except client.exceptions.ApiException:
+                                            pass
+
+                                    logger.info(f"RECOVERY: Setting connection info for {reservation_id}")
+                                    update_reservation_connection_info(
+                                        reservation_id=reservation_id,
+                                        ssh_command=ssh_command,
+                                        pod_name=pod_name,
+                                        node_port=0,
+                                        node_ip=node_public_ip,
+                                        node_private_ip=node_private_ip,
+                                        jupyter_port=jupyter_port or 0,
+                                        jupyter_url_base=jupyter_url_base,
+                                        jupyter_enabled=jupyter_enabled,
+                                        k8s_client=k8s,
+                                        persistent_volume_id=res.get("persistent_volume_id"),
+                                        ebs_availability_zone=res.get("ebs_availability_zone"),
+                                        domain_name=res.get("domain_name"),
+                                        alb_config=None,
+                                        preserve_entrypoint=False,
+                                    )
+
+                                    high_level_status = "active"
+                                    display_message = "✅ Connection established (recovered)"
+                                    logger.info(
+                                        f"RECOVERY: Successfully activated {reservation_id} from monitoring thread")
                                 except Exception as recovery_error:
                                     logger.error(f"RECOVERY: Failed to generate connection info: {recovery_error}")
                                     high_level_status = "preparing"

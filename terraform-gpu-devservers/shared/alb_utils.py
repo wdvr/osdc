@@ -8,9 +8,6 @@ import os
 import time
 from typing import Optional, Dict, Any
 
-import boto3
-from botocore.exceptions import ClientError
-
 from .db_pool import get_db_cursor, get_db_transaction
 
 logger = logging.getLogger(__name__)
@@ -24,8 +21,16 @@ ALB_TARGET_GROUPS_TABLE = os.environ.get("ALB_TARGET_GROUPS_TABLE", "")
 ALB_VPC_ID = os.environ.get("ALB_VPC_ID", "")
 DOMAIN_NAME = os.environ.get("DOMAIN_NAME", "")
 
-# AWS clients
-elbv2_client = boto3.client("elbv2")
+# Lazy-initialized AWS client (only created when actually needed)
+_elbv2_client = None
+
+
+def _get_elbv2_client():
+    global _elbv2_client
+    if _elbv2_client is None:
+        import boto3
+        _elbv2_client = boto3.client("elbv2")
+    return _elbv2_client
 
 
 def is_alb_enabled() -> bool:
@@ -52,6 +57,8 @@ def create_jupyter_target_group(
         logger.info("ALB not configured, skipping target group creation")
         return None
 
+    from botocore.exceptions import ClientError
+
     try:
         # Create target group name (max 32 chars)
         # Use first 8 chars of reservation ID
@@ -59,7 +66,7 @@ def create_jupyter_target_group(
 
         logger.info(f"Creating Jupyter target group {tg_name} for reservation {reservation_id}")
 
-        response = elbv2_client.create_target_group(
+        response = _get_elbv2_client().create_target_group(
             Name=tg_name,
             Protocol="HTTP",
             Port=jupyter_port,
@@ -85,7 +92,7 @@ def create_jupyter_target_group(
         logger.info(f"Created target group {target_group_arn}")
 
         # Register instance with target group
-        elbv2_client.register_targets(
+        _get_elbv2_client().register_targets(
             TargetGroupArn=target_group_arn,
             Targets=[{"Id": instance_id, "Port": jupyter_port}],
         )
@@ -100,7 +107,7 @@ def create_jupyter_target_group(
             logger.warning(f"Target group {tg_name} already exists")
             # Try to describe and return existing
             try:
-                response = elbv2_client.describe_target_groups(Names=[tg_name])
+                response = _get_elbv2_client().describe_target_groups(Names=[tg_name])
                 return response["TargetGroups"][0]["TargetGroupArn"]
             except Exception as describe_error:
                 logger.error(f"Failed to describe existing target group: {describe_error}")
@@ -135,6 +142,8 @@ def create_alb_listener_rule(
         logger.info("ALB not configured, skipping listener rule creation")
         return None
 
+    from botocore.exceptions import ClientError
+
     try:
         full_domain = f"{subdomain}.{DOMAIN_NAME}"
 
@@ -144,7 +153,7 @@ def create_alb_listener_rule(
 
         logger.info(f"Creating ALB rule for {full_domain} with priority {priority}")
 
-        response = elbv2_client.create_rule(
+        response = _get_elbv2_client().create_rule(
             ListenerArn=JUPYTER_ALB_LISTENER_ARN,
             Conditions=[
                 {
@@ -275,7 +284,7 @@ def delete_alb_mapping(reservation_id: str) -> bool:
         # Delete ALB listener rule
         if mapping.get("jupyter_rule_arn"):
             try:
-                elbv2_client.delete_rule(RuleArn=mapping["jupyter_rule_arn"])
+                _get_elbv2_client().delete_rule(RuleArn=mapping["jupyter_rule_arn"])
                 logger.info(f"Deleted Jupyter ALB rule {mapping['jupyter_rule_arn']}")
             except Exception as e:
                 logger.error(f"Failed to delete Jupyter ALB rule: {e}")
@@ -286,7 +295,7 @@ def delete_alb_mapping(reservation_id: str) -> bool:
         # Delete Jupyter target group
         if mapping.get("jupyter_target_group_arn"):
             try:
-                elbv2_client.delete_target_group(
+                _get_elbv2_client().delete_target_group(
                     TargetGroupArn=mapping["jupyter_target_group_arn"]
                 )
                 logger.info(f"Deleted Jupyter target group {mapping['jupyter_target_group_arn']}")

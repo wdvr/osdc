@@ -2923,6 +2923,14 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         # Connect via Python kubernetes client (no kubectl/aws cli needed)
         rprint(f"[dim]Connecting to pod {pod_name}...[/dim]\n")
         api_client = get_k8s_api_client(config)
+
+        # Push local SSH keys to pod (for SSH/SCP/VS Code Remote access)
+        from .kubeconfig import push_ssh_keys_to_pod
+        try:
+            push_ssh_keys_to_pod(api_client, pod_name)
+        except Exception as e:
+            rprint(f"[dim]Note: Could not push SSH keys ({e})[/dim]")
+
         # Use zsh if available (default on our dev pods), fallback to bash
         shell = "/bin/zsh" if config.user_config.get("environment") == "local" else "/bin/bash"
         kube_exec_interactive(api_client, pod_name, shell=shell)

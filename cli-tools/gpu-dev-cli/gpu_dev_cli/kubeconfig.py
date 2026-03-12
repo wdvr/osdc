@@ -5,6 +5,7 @@ EKS authentication is handled entirely via boto3 STS presigned URLs.
 """
 
 import base64
+import glob
 import json
 import os
 import select
@@ -19,10 +20,15 @@ from typing import Optional, Tuple
 
 import yaml
 
-import boto3
 import urllib3
-from botocore.signers import RequestSigner
 from kubernetes import client as k8s_client
+
+try:
+    import boto3
+    from botocore.signers import RequestSigner
+    _HAS_BOTO = True
+except ImportError:
+    _HAS_BOTO = False
 from kubernetes.stream import portforward, stream
 
 # Suppress InsecureRequestWarning when using custom CA
@@ -32,11 +38,13 @@ NAMESPACE = "gpu-dev"
 KUBECONFIG_DIR = Path.home() / ".gpu-dev"
 
 
-def get_eks_token(cluster_name: str, region: str, session: Optional[boto3.Session] = None) -> str:
+def get_eks_token(cluster_name: str, region: str, session=None) -> str:
     """Generate an EKS bearer token using boto3 STS presigned URL.
 
     This is equivalent to `aws eks get-token` but without needing the AWS CLI.
     """
+    if not _HAS_BOTO:
+        raise RuntimeError("boto3 is required for EKS authentication (pip install boto3)")
     if session is None:
         session = boto3.Session()
 
@@ -60,11 +68,13 @@ def get_eks_token(cluster_name: str, region: str, session: Optional[boto3.Sessio
     return "k8s-aws-v1." + base64.urlsafe_b64encode(signed_url.encode()).rstrip(b"=").decode()
 
 
-def get_eks_cluster_info(cluster_name: str, region: str, session: Optional[boto3.Session] = None) -> dict:
+def get_eks_cluster_info(cluster_name: str, region: str, session=None) -> dict:
     """Fetch EKS cluster endpoint and CA data via boto3.
 
     Falls back to reading from ~/.kube/config if eks:DescribeCluster is denied.
     """
+    if not _HAS_BOTO:
+        raise RuntimeError("boto3 is required for EKS cluster info (pip install boto3)")
     if session is None:
         session = boto3.Session()
 
@@ -322,6 +332,51 @@ def get_connect_command(pod_name: str) -> str:
 def get_kubectl_exec_command(pod_name: str) -> str:
     """Return the display string for kubectl exec (for users who prefer it)."""
     return f"kubectl exec -it {pod_name} -n {NAMESPACE} -- /bin/bash -l"
+
+
+def push_ssh_keys_to_pod(api_client: k8s_client.ApiClient, pod_name: str, namespace: str = NAMESPACE):
+    """Push user's local SSH public keys to pod's authorized_keys.
+
+    Reads all ~/.ssh/*.pub files, execs into the pod to append them,
+    and deduplicates with sort -u. Idempotent: re-pushing is harmless.
+    Skips silently if no local keys are found.
+    """
+    ssh_dir = Path.home() / ".ssh"
+    pub_files = sorted(glob.glob(str(ssh_dir / "id_*.pub")) + glob.glob(str(ssh_dir / "*.pub")))
+    # Deduplicate file paths (id_*.pub and *.pub may overlap)
+    pub_files = list(dict.fromkeys(pub_files))
+
+    keys = []
+    for pub_file in pub_files:
+        try:
+            content = Path(pub_file).read_text().strip()
+            if content:
+                keys.append(content)
+        except OSError:
+            continue
+
+    if not keys:
+        return
+
+    keys_data = "\n".join(keys)
+
+    v1 = k8s_client.CoreV1Api(api_client)
+    resp = stream(
+        v1.connect_get_namespaced_pod_exec,
+        pod_name,
+        namespace,
+        command=[
+            "sh", "-c",
+            "cat >> /home/dev/.ssh/authorized_keys && sort -u -o /home/dev/.ssh/authorized_keys /home/dev/.ssh/authorized_keys"
+        ],
+        stderr=True,
+        stdin=True,
+        stdout=True,
+        tty=False,
+        _preload_content=False,
+    )
+    resp.write_stdin(keys_data + "\n")
+    resp.close()
 
 
 def _get_terminal_size() -> Tuple[int, int]:

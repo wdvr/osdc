@@ -41,10 +41,7 @@ from shared.dns_utils import (
     delete_domain_mapping,
     get_dns_enabled
 )
-from shared.alb_utils import (
-    delete_alb_mapping,
-    is_alb_enabled
-)
+from shared import delete_alb_mapping, is_alb_enabled
 
 # Setup logging
 logging.basicConfig(

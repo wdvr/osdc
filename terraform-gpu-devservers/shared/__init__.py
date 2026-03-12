@@ -18,14 +18,24 @@ from .db_pool import (
 from .k8s_client import get_bearer_token, setup_kubernetes_client
 from .k8s_resource_tracker import K8sGPUTracker
 
-# ALB/NLB utilities
-from .alb_utils import (
-    is_alb_enabled,
-    create_jupyter_target_group,
-    create_alb_listener_rule,
-    store_alb_mapping,
-    delete_alb_mapping
-)
+# ALB/NLB utilities (only available when CLOUD_PROVIDER=aws)
+import os as _os
+_CLOUD_PROVIDER = _os.environ.get("CLOUD_PROVIDER", "aws")
+
+if _CLOUD_PROVIDER == "aws":
+    from .alb_utils import (
+        is_alb_enabled,
+        create_jupyter_target_group,
+        create_alb_listener_rule,
+        store_alb_mapping,
+        delete_alb_mapping
+    )
+else:
+    def is_alb_enabled(): return False
+    def create_jupyter_target_group(*a, **kw): return None
+    def create_alb_listener_rule(*a, **kw): return None
+    def store_alb_mapping(*a, **kw): return False
+    def delete_alb_mapping(*a, **kw): return True
 
 # DNS utilities
 from .dns_utils import (

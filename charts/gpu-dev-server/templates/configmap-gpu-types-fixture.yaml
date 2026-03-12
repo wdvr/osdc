@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-types-fixture
+  namespace: {{ include "gpu-dev-server.controlplaneNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+data:
+  001_initial_gpu_types.sql: |
+    -- Auto-generated from Helm values.gpuTypes
+    INSERT INTO gpu_types (
+        gpu_type, instance_type, max_gpus, cpus, memory_gb,
+        total_cluster_gpus, max_per_node, is_active, description
+    ) VALUES
+    {{- range $i, $gpu := .Values.gpuTypes }}
+    {{- if $i }},{{ end }}
+        ({{ $gpu.name | squote }}, {{ $gpu.instanceType | squote }}, {{ $gpu.maxGpus }}, {{ $gpu.cpus }}, {{ $gpu.memoryGb }},
+         0, {{ $gpu.maxGpus }}, {{ $gpu.isActive }}, {{ $gpu.description | squote }})
+    {{- end }}
+    ON CONFLICT (gpu_type) DO UPDATE SET
+        instance_type = EXCLUDED.instance_type,
+        max_gpus = EXCLUDED.max_gpus,
+        cpus = EXCLUDED.cpus,
+        memory_gb = EXCLUDED.memory_gb,
+        total_cluster_gpus = EXCLUDED.total_cluster_gpus,
+        max_per_node = EXCLUDED.max_per_node,
+        is_active = EXCLUDED.is_active,
+        description = EXCLUDED.description,
+        updated_at = NOW();

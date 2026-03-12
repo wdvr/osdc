@@ -19,6 +19,13 @@ storage:
   registry:
     size: "50Gi"
 
+# Shared storage (ReadWriteMany) for all dev pods
+sharedStorage:
+  enabled: false
+  storageClass: ""  # Must support ReadWriteMany (EFS, NFS, etc.)
+  size: "100Gi"
+  mountPath: "/shared"
+
 # PostgreSQL configuration
 postgres:
   enabled: true
@@ -92,6 +99,13 @@ registry:
       operator: "Equal"
       value: "cpu-only"
       effect: "NoSchedule"
+
+# Authentication configuration
+auth:
+  method: "aws"  # "aws", "oidc", or "local"
+  oidc:
+    issuerUrl: ""
+    audience: ""
 
 # API Service configuration
 apiService:
@@ -246,6 +260,79 @@ databaseMigration:
   image:
     repository: "ghcr.io/pgmq/pg18-pgmq"
     tag: "v1.8.1"
+
+# GPU type definitions — single source of truth for resource allocation
+gpuTypes:
+  - name: "t4"
+    instanceType: "g4dn.12xlarge"
+    maxGpus: 4
+    cpus: 48
+    memoryGb: 192
+    description: "NVIDIA T4 - Entry-level GPU for inference and light training"
+    isActive: true
+  - name: "t4-small"
+    instanceType: "g4dn.2xlarge"
+    maxGpus: 1
+    cpus: 8
+    memoryGb: 32
+    description: "NVIDIA T4 - Small instance for testing"
+    isActive: true
+  - name: "l4"
+    instanceType: "g6.12xlarge"
+    maxGpus: 4
+    cpus: 48
+    memoryGb: 192
+    description: "NVIDIA L4 - Efficient GPU for inference and training"
+    isActive: true
+  - name: "a10g"
+    instanceType: "g5.12xlarge"
+    maxGpus: 4
+    cpus: 48
+    memoryGb: 192
+    description: "NVIDIA A10G - Mid-range GPU for training and inference"
+    isActive: true
+  - name: "a100"
+    instanceType: "p4d.24xlarge"
+    maxGpus: 8
+    cpus: 96
+    memoryGb: 1152
+    description: "NVIDIA A100 - High-performance GPU for large-scale training"
+    isActive: true
+  - name: "h100"
+    instanceType: "p5.48xlarge"
+    maxGpus: 8
+    cpus: 192
+    memoryGb: 2048
+    description: "NVIDIA H100 - Top-tier GPU for AI training and HPC"
+    isActive: true
+  - name: "h200"
+    instanceType: "p5e.48xlarge"
+    maxGpus: 8
+    cpus: 192
+    memoryGb: 2048
+    description: "NVIDIA H200 - Latest generation with increased memory"
+    isActive: true
+  - name: "b200"
+    instanceType: "p6-b200.48xlarge"
+    maxGpus: 8
+    cpus: 192
+    memoryGb: 2048
+    description: "NVIDIA B200 - Next-generation Blackwell architecture"
+    isActive: true
+  - name: "cpu-x86"
+    instanceType: "c7i.8xlarge"
+    maxGpus: 0
+    cpus: 32
+    memoryGb: 64
+    description: "CPU-only instance (x86, Intel)"
+    isActive: true
+  - name: "cpu-arm"
+    instanceType: "c7g.8xlarge"
+    maxGpus: 0
+    cpus: 32
+    memoryGb: 64
+    description: "CPU-only instance (ARM, Graviton)"
+    isActive: true
 
 # Cloud provider configuration (set in values-aws.yaml or values-gcp.yaml)
 cloudProvider:

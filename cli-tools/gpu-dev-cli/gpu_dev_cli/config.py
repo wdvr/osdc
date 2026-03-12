@@ -2,8 +2,13 @@
 
 import os
 import json
-import boto3
 from pathlib import Path
+
+try:
+    import boto3
+    _HAS_BOTO = True
+except ImportError:
+    _HAS_BOTO = False
 from typing import Dict, Any, Optional
 
 
@@ -72,14 +77,13 @@ class Config:
 
     def _create_aws_session(self):
         """Create AWS session with profile support"""
+        if not _HAS_BOTO:
+            return None
         try:
-            # Try to use 'gpu-dev' profile if it exists
             session = boto3.Session(profile_name="gpu-dev")
-            # Test if profile works by checking credentials
             session.get_credentials()
             return session
         except Exception:
-            # Fall back to default credentials (environment, default profile, IAM role, etc.)
             return boto3.Session()
 
     @property

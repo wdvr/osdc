@@ -9,8 +9,6 @@ import os
 import re
 import time
 
-import boto3
-from botocore.signers import RequestSigner
 from kubernetes import client
 
 logger = logging.getLogger(__name__)
@@ -32,6 +30,9 @@ def get_bearer_token() -> str:
     Create a k8s-aws-v1 bearer token by presigning STS:GetCallerIdentity.
     IMPORTANT: base64url-encode the FULL presigned URL, then strip padding.
     """
+    import boto3
+    from botocore.signers import RequestSigner
+
     logger.info("Starting bearer token generation")
     STS_TOKEN_EXPIRES_IN = 60
     session = boto3.session.Session(region_name=REGION)
@@ -89,6 +90,8 @@ def setup_kubernetes_client() -> client.ApiClient:
             return api_client
         
         # Lambda/external environment - use custom EKS token generation
+        import boto3
+
         logger.info(f"Creating EKS client for region {REGION}")
         eks = boto3.client("eks", region_name=REGION)
 

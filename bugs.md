@@ -8,12 +8,12 @@ This document contains a comprehensive bug analysis of the GPU Dev Server codeba
 
 ## Summary
 
-| Severity | Count |
-|----------|-------|
-| Critical | 2 |
-| High     | 6 |
-| Medium   | 10 |
-| Low      | 5 |
+| Severity | Count | Notes |
+|----------|-------|-------|
+| Critical | 2 + 2 (k3d) | 2 original + 2 k3d (both fixed) |
+| High     | 6 + 1 (k3d) | +BUG-026: empty github_user |
+| Medium   | 10 + 2 (k3d) | +BUG-027, BUG-028 |
+| Low      | 5 + 4 (k3d) | +BUG-029 to BUG-032 |
 
 ---
 
@@ -728,6 +728,115 @@ Remove unused imports.
 6. **Implement Circuit Breaker Pattern**: For external service calls (AWS APIs, K8s API), implement circuit breakers to prevent cascade failures.
 
 7. **Add Metrics and Alerting**: Implement metrics for connection pool usage, queue depth, and error rates to detect issues before they become critical.
+
+---
+
+## K3d / Cloud-Agnostic Migration Bugs (2026-03-12)
+
+These bugs were found during k3d E2E testing of the Helm-based local dev environment after the cloud-agnostic migration.
+
+### BUG-024: `docker_enabled` NameError in `create_kubernetes_resources()` [FIXED]
+**Severity:** Critical (blocking)
+**File:** `terraform-gpu-devservers/reservation-processor-service/processor/reservation_handler.py`
+**Lines:** 3193-3211, 3310, 3389
+
+**Problem:**
+`create_kubernetes_resources()` function was missing `docker_enabled` parameter but used it when calling `create_pod()` at lines 3310 and 3389. The call site at line 2745 also didn't pass it. Result: `NameError: name 'docker_enabled' is not defined`.
+
+**Fix:** Added `docker_enabled: bool = False` to function signature and `docker_enabled=docker_enabled` to call site.
+**Status:** Fixed.
+
+---
+
+### BUG-025: E2E Test Script Uses Wrong API Schema [FIXED]
+**Severity:** Critical
+**File:** `test/k3d-e2e.sh`
+
+**Problems:**
+- Used `gpu_type` and `gpu_count` as top-level fields — API expects `instance_type` + `GPU_TYPE`/`GPU_COUNT` in `env_vars`
+- Used `duration_hours: 0.5` — API requires integer >= 1
+- Used `no_persistent_disk: true` — not in API model
+- Used `/v1/reservations/{id}` endpoints — correct is `/v1/jobs/{id}`
+- Missing `GITHUB_USER` in env_vars — causes SSH key fetch failure
+- Missing proxy bypass for corporate networks
+
+**Status:** Fixed.
+
+---
+
+### BUG-026: Empty `github_user` Crashes Reservation Processing
+**Severity:** High
+**File:** `reservation_handler.py:2589-2593`
+**Error:** `Could not fetch GitHub public key for GitHub user ''`
+
+**Problem:**
+When no `GITHUB_USER` is passed in `env_vars`, the processor tries to fetch `https://github.com/.keys` which 404s. In local dev mode, SSH key injection should be optional.
+
+**Suggested Fix:** If `github_user` is empty and `CLOUD_PROVIDER != aws`, skip SSH key setup or inject a placeholder key.
+
+---
+
+### BUG-027: `gpu_type` Shows "Unknown" in Job Status Response
+**Severity:** Medium
+**File:** API service + reservation_handler.py
+
+**Problem:**
+API response returns `"gpu_type": "Unknown"` for active reservations. The reservation DB record's `gpu_type` field is not populated correctly during processing.
+
+**Expected:** Should show the actual GPU type (e.g., `"cpu-arm"`).
+
+---
+
+### BUG-028: `ssh_command` Not Useful in Non-AWS Mode
+**Severity:** Medium
+**File:** `reservation_handler.py`
+
+**Problem:**
+Job status shows `"ssh_command": "ssh gpu-dev-XXXX"` which is not a valid command. In local/k3d mode, should show `kubectl exec -it -n gpu-dev gpu-dev-XXXX -- /bin/bash -l`.
+
+**Cause:** The non-AWS SSH command path may not be triggering correctly.
+
+---
+
+### BUG-029: `jupyter_url` Shows Port 0 When Jupyter Disabled
+**Severity:** Low
+**File:** reservation_handler.py → API response
+
+**Problem:**
+`"jupyter_url": "http://172.20.0.3:0"` when `jupyter_enabled: false`. Port 0 is meaningless. Should be `null`.
+
+---
+
+### BUG-030: Completed Worker Pods Accumulate
+**Severity:** Low
+**File:** `reservation-processor-service/processor/job_manager.py` (Job spec)
+
+**Problem:**
+`reservation-worker-N` pods remain in `Completed` status indefinitely. No TTL or cleanup mechanism.
+
+**Suggested Fix:** Add `ttlSecondsAfterFinished: 300` to worker Job spec for auto-cleanup.
+
+---
+
+### BUG-031: Persistent Disk AZ Lookup Fails on Non-AWS Clusters
+**Severity:** Low (warning only — fallback works)
+**File:** `reservation_handler.py`
+
+**Problem:**
+k3d nodes have no `topology.kubernetes.io/zone` label, so persistent disk setup fails with "Could not determine target AZ". Falls back to emptyDir (correct behavior), but logs at ERROR level.
+
+**Suggested Fix:** For `CLOUD_PROVIDER != aws`, skip AZ lookup entirely and default to non-persistent storage.
+
+---
+
+### BUG-032: Proxy Bypass Required for k3d on Corporate Networks
+**Severity:** Low (environment-specific)
+**Error:** `http: server gave HTTP response to HTTPS client`
+
+**Problem:**
+Corporate proxies (e.g., x2pagentd) intercept HTTPS to `0.0.0.0`, breaking kubectl/curl to k3d API server.
+
+**Workaround:** Set `NO_PROXY=0.0.0.0,localhost,127.0.0.1` before running k3d commands.
 
 ---
 

@@ -20,11 +20,16 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import aioboto3
 import asyncpg
-from botocore.config import Config
-from botocore.exceptions import ClientError
 from fastapi import FastAPI, HTTPException, Query, Security, status
+
+try:
+    import aioboto3
+    from botocore.config import Config as BotoConfig
+    from botocore.exceptions import ClientError
+    _HAS_BOTO = True
+except ImportError:
+    _HAS_BOTO = False
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -93,36 +98,22 @@ def ensure_utc(dt: datetime | None) -> datetime | None:
 
 # boto3 retry configuration using 'standard' retry mode (recommended)
 # See: https://boto3.amazonaws.com/v1/documentation/api/latest/guide/retries.html
-
-# For STS operations (authentication) - lower retries to fail fast
-AWS_STS_CONFIG = Config(
-    retries={
-        'mode': 'standard',
-        'max_attempts': 3  # Total of 3 attempts (1 initial + 2 retries)
-    },
-    connect_timeout=5,
-    read_timeout=10
-)
-
-# For S3 operations (reading disk contents) - more aggressive retries
-AWS_S3_CONFIG = Config(
-    retries={
-        'mode': 'standard',
-        'max_attempts': 5  # Total of 5 attempts (1 initial + 4 retries)
-    },
-    connect_timeout=10,
-    read_timeout=30
-)
-
-# For EC2 operations (snapshot tagging) - standard retries
-AWS_EC2_CONFIG = Config(
-    retries={
-        'mode': 'standard',
-        'max_attempts': 4  # Total of 4 attempts (1 initial + 3 retries)
-    },
-    connect_timeout=10,
-    read_timeout=30
-)
+# Optional: only needed for CLOUD_PROVIDER=aws
+if _HAS_BOTO:
+    AWS_STS_CONFIG = BotoConfig(
+        retries={'mode': 'standard', 'max_attempts': 3},
+        connect_timeout=5, read_timeout=10
+    )
+    AWS_S3_CONFIG = BotoConfig(
+        retries={'mode': 'standard', 'max_attempts': 5},
+        connect_timeout=10, read_timeout=30
+    )
+    AWS_EC2_CONFIG = BotoConfig(
+        retries={'mode': 'standard', 'max_attempts': 4},
+        connect_timeout=10, read_timeout=30
+    )
+else:
+    AWS_STS_CONFIG = AWS_S3_CONFIG = AWS_EC2_CONFIG = None
 
 
 # ============================================================================
@@ -430,7 +421,7 @@ class JobDetail(BaseModel):
                 "pod_name": "gpu-dev-abc123",
                 "node_ip": "10.0.1.42",
                 "node_port": 30123,
-                "ssh_command": "ssh gpu-dev-abc123",
+                "ssh_command": "gpu-dev connect gpu-dev-abc123",
                 "jupyter_enabled": True,
                 "jupyter_url": "https://...",
                 "jupyter_token": "token123",
@@ -591,6 +582,21 @@ class AWSLoginResponse(BaseModel):
     ttl_hours: int = Field(..., description="Time to live in hours")
 
 
+class OIDCLoginRequest(BaseModel):
+    """Request for OIDC-based authentication"""
+    id_token: str = Field(..., description="OIDC ID token (JWT)")
+
+
+class OIDCLoginResponse(BaseModel):
+    """Response from OIDC login"""
+    api_key: str = Field(..., description="API key for future requests")
+    key_prefix: str
+    user_id: int
+    username: str
+    expires_at: datetime = Field(..., description="When the API key expires")
+    ttl_hours: int = Field(..., description="Time to live in hours")
+
+
 class HealthResponse(BaseModel):
     """Health check response"""
     status: str
@@ -682,6 +688,12 @@ async def verify_aws_credentials(
         'arn': 'arn:aws:sts::123456789:assumed-role/...'
     }
     """
+    if not _HAS_BOTO:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="AWS authentication not available (boto3 not installed)"
+        )
+
     try:
         # Create async STS client with provided credentials and retry configuration
         session = aioboto3.Session()
@@ -1029,7 +1041,7 @@ async def get_job_status(
             # Build SSH command if pod is active
             ssh_command = None
             if row["pod_name"] and row["status"] == "active":
-                ssh_command = f"ssh {row['pod_name']}"
+                ssh_command = f"gpu-dev connect {row['pod_name']}"
             
             return JobDetail(
                 job_id=row["reservation_id"],
@@ -1136,7 +1148,7 @@ async def list_jobs(
                 # Build SSH command if pod is active
                 ssh_command = None
                 if row["pod_name"] and row["status"] == "active":
-                    ssh_command = f"ssh {row['pod_name']}"
+                    ssh_command = f"gpu-dev connect {row['pod_name']}"
                 
                 jobs.append(JobDetail(
                     job_id=row["reservation_id"],
@@ -1857,6 +1869,117 @@ async def aws_login(request: AWSLoginRequest) -> AWSLoginResponse:
         )
 
 
+# OIDC configuration from environment
+OIDC_ISSUER_URL = os.getenv("OIDC_ISSUER_URL", "")
+OIDC_AUDIENCE = os.getenv("OIDC_AUDIENCE", "")
+AUTH_METHOD = os.getenv("AUTH_METHOD", "aws")
+
+
+@app.post("/v1/auth/oidc-login", response_model=OIDCLoginResponse)
+async def oidc_login(request: OIDCLoginRequest) -> OIDCLoginResponse:
+    """
+    Authenticate using an OIDC ID token and receive an API key.
+
+    Validates the JWT against the OIDC provider's JWKS endpoint,
+    extracts the user identity, and issues a time-limited API key.
+    """
+    if AUTH_METHOD not in ("oidc", "local"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="OIDC authentication is not enabled"
+        )
+
+    if LOCAL_DEV_USER:
+        username = LOCAL_DEV_USER
+    else:
+        if not OIDC_ISSUER_URL:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="OIDC issuer URL not configured"
+            )
+
+        try:
+            import jwt
+            from jwt import PyJWKClient
+        except ImportError:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="OIDC support requires PyJWT[crypto] (pip install PyJWT cryptography)"
+            )
+
+        try:
+            jwks_url = f"{OIDC_ISSUER_URL.rstrip('/')}/.well-known/jwks.json"
+            jwks_client = PyJWKClient(jwks_url)
+            signing_key = jwks_client.get_signing_key_from_jwt(request.id_token)
+
+            decode_options = {"verify_aud": bool(OIDC_AUDIENCE)}
+            payload = jwt.decode(
+                request.id_token,
+                signing_key.key,
+                algorithms=["RS256", "ES256"],
+                issuer=OIDC_ISSUER_URL,
+                audience=OIDC_AUDIENCE or None,
+                options=decode_options,
+            )
+
+            username = (
+                payload.get("preferred_username")
+                or payload.get("email", "").split("@")[0]
+                or payload.get("sub")
+            )
+            if not username:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot determine username from OIDC token"
+                )
+
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="OIDC token has expired"
+            )
+        except jwt.InvalidTokenError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid OIDC token: {e}"
+            )
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await conn.fetchval("""
+                    INSERT INTO api_users (username, is_active)
+                    VALUES ($1, true)
+                    ON CONFLICT (username)
+                    DO UPDATE SET is_active = true
+                    RETURNING user_id
+                """, username)
+
+                api_key, key_prefix, expires_at = (
+                    await create_api_key_for_user(
+                        conn, user_id, username, "OIDC login"
+                    )
+                )
+
+        return OIDCLoginResponse(
+            api_key=api_key,
+            key_prefix=key_prefix,
+            user_id=user_id,
+            username=username,
+            expires_at=expires_at,
+            ttl_hours=API_KEY_TTL_HOURS,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create API key via OIDC: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create API key"
+        )
+
+
 @app.post("/v1/disks", response_model=DiskOperationResponse)
 async def create_disk(
     request: DiskCreateRequest,
@@ -2197,7 +2320,13 @@ async def get_disk_content(
                 )
             
             bucket_name, s3_key = path_parts
-            
+
+            if not _HAS_BOTO:
+                raise HTTPException(
+                    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                    detail="S3 disk content not available (boto3 not installed)"
+                )
+
             # Fetch contents from S3 using aioboto3 with retry configuration
             session = aioboto3.Session()
             async with session.client('s3', region_name=AWS_REGION, config=AWS_S3_CONFIG) as s3:
@@ -2311,6 +2440,14 @@ async def rename_disk(
             """, new_name, username, disk_name)
             
             # Update EBS snapshot tags using aioboto3 with retry configuration
+            if not _HAS_BOTO:
+                return {
+                    "message": f"Disk renamed from '{disk_name}' to '{new_name}' (snapshot tag update skipped - non-AWS)",
+                    "old_name": disk_name,
+                    "new_name": new_name,
+                    "snapshots_updated": 0
+                }
+
             session = aioboto3.Session()
             async with session.client('ec2', region_name=AWS_REGION, config=AWS_EC2_CONFIG) as ec2:
                 # Find all snapshots for this disk

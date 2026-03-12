@@ -34,6 +34,14 @@ def main():
     try:
         config = Config()
         api_client = get_k8s_api_client(config)
+
+        # Push local SSH keys to pod (so SSH auth works)
+        from .kubeconfig import push_ssh_keys_to_pod
+        try:
+            push_ssh_keys_to_pod(api_client, pod_name)
+        except Exception:
+            pass  # Non-fatal: keys may already be pushed
+
         kube_port_forward_stdio(api_client, pod_name, port=22)
     except KeyboardInterrupt:
         pass

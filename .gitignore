@@ -71,3 +71,7 @@ lambda/*/package/
 
 # Admin output files
 admin/output/
+
+# Internal/private deployment docs
+docs/INTERNAL_AUTH.md
+values-internal.yaml

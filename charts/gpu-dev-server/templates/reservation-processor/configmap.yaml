@@ -31,6 +31,7 @@ data:
   GCP_ZONE: {{ .Values.cloudProvider.gcp.zone | quote }}
   GCP_PROJECT_ID: {{ .Values.cloudProvider.gcp.projectId | quote }}
   {{- end }}
+  GPU_CONFIG_JSON: {{ .Values.gpuTypes | toJson | quote }}
   MAX_RESERVATION_HOURS: {{ .Values.reservationProcessor.config.maxReservationHours | quote }}
   DEFAULT_TIMEOUT_HOURS: {{ .Values.reservationProcessor.config.defaultTimeoutHours | quote }}
   GPU_DEV_CONTAINER_IMAGE: {{ .Values.reservationProcessor.config.gpuDevContainerImage | quote }}

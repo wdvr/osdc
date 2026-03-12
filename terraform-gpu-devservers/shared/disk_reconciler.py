@@ -19,8 +19,6 @@ import random
 import time
 from datetime import UTC, datetime, timedelta
 
-from botocore.exceptions import ClientError
-
 from .db_pool import get_db_cursor, get_db_transaction
 from .disk_db import create_disk, update_disk
 
@@ -650,9 +648,11 @@ def resolve_volume_conflict_with_quarantine(
         - current_volume: The volume dict that should be kept active (or None if failed)
         - quarantined_volume_ids: List of volume IDs that were quarantined
     """
+    from botocore.exceptions import ClientError
+
     if not conflicting_volumes:
         return None, []
-    
+
     logger.info(
         f"Resolving conflict for disk '{disk_name}' (user {user_id}): "
         f"{len(conflicting_volumes)} volumes found"
@@ -877,6 +877,8 @@ def get_all_gpudev_volumes(
         - ([], None): No volumes exist (legitimate empty state)
         - ([], "error"): AWS fetch failed (don't reconcile)
     """
+    from botocore.exceptions import ClientError
+
     volumes = []
 
     for attempt in range(max_retries):
@@ -1310,6 +1312,8 @@ def get_snapshot_info(
         - is_backing_up: Whether a snapshot is in progress
         - last_snapshot_at: Timestamp of most recent completed snapshot
     """
+    from botocore.exceptions import ClientError
+
     info = {
         "count": 0,
         "is_backing_up": False,
@@ -1453,6 +1457,8 @@ def cleanup_old_quarantined_volumes(
     Returns:
         Dictionary with cleanup statistics
     """
+    from botocore.exceptions import ClientError
+
     stats = {
         "quarantined_found": 0,
         "deleted": 0,

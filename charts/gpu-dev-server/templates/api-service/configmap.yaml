@@ -18,4 +18,11 @@ data:
   {{- if .Values.apiService.config.localDevUser }}
   LOCAL_DEV_USER: {{ .Values.apiService.config.localDevUser | quote }}
   {{- end }}
+  AUTH_METHOD: {{ default "aws" .Values.auth.method | quote }}
+  {{- if .Values.auth.oidc.issuerUrl }}
+  OIDC_ISSUER_URL: {{ .Values.auth.oidc.issuerUrl | quote }}
+  {{- end }}
+  {{- if .Values.auth.oidc.audience }}
+  OIDC_AUDIENCE: {{ .Values.auth.oidc.audience | quote }}
+  {{- end }}
 {{- end }}
