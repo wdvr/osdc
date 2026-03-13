@@ -8,25 +8,35 @@ from rich.spinner import Spinner
 
 
 def authenticate_user(config: Config) -> Dict[str, Any]:
-    """Authenticate using AWS credentials"""
+    """Authenticate user — AWS or local/API-only mode"""
+    import os
+
+    # Non-AWS mode: use local username in k8s-direct mode or when GPU_DEV_API_URL is set
+    if os.getenv("GPU_DEV_MODE", "").lower() == "k8s-direct" or os.getenv("GPU_DEV_API_URL") or not config._aws_available:
+        user_name = os.getenv("GPU_DEV_USER", os.getenv("USER", "dev"))
+        github_user = config.get_github_username() or user_name
+
+        return {
+            "user_id": user_name,
+            "github_user": github_user,
+            "arn": f"local/{user_name}",
+        }
+
+    # AWS mode
     try:
-        # Test AWS access by getting caller identity
         identity = config.get_user_identity()
-
-        # Extract user info from AWS ARN
         arn = identity["arn"]
-        user_name = arn.split("/")[-1]  # Extract username from ARN
+        user_name = arn.split("/")[-1]
 
-        # Get GitHub username from config
         github_user = config.get_github_username()
         if not github_user:
             raise RuntimeError(
-                f"GitHub username not configured. Please run: gpu-dev config set github_user <your-github-username>"
+                "GitHub username not configured. Please run: gpu-dev config set github_user <your-github-username>"
             )
 
         return {
-            "user_id": user_name,  # AWS username for reservation ownership
-            "github_user": github_user,  # GitHub username for SSH keys
+            "user_id": user_name,
+            "github_user": github_user,
             "arn": arn,
         }
 

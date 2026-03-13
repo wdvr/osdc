@@ -73,7 +73,12 @@ class Config:
         self._sts_client = None
         self._dynamodb = None
 
-        if not os.getenv("GPU_DEV_API_URL") and self.user_config.get("environment") != "local":
+        skip_aws = (
+            os.getenv("GPU_DEV_API_URL")
+            or os.getenv("GPU_DEV_MODE", "").lower() == "k8s-direct"
+            or self.user_config.get("environment") == "local"
+        )
+        if not skip_aws:
             self.session = self._create_aws_session()
             self._aws_available = True
 
