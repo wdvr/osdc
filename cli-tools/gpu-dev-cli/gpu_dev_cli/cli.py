@@ -3929,6 +3929,41 @@ def set(key: str, value: str) -> None:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
+@config.command(name="set-cluster")
+@click.argument("key")
+@click.argument("value")
+def set_cluster(key: str, value: str) -> None:
+    """Set a cluster-level config value (stored in K8s ConfigMap).
+
+    These settings are shared across all users on the cluster.
+    Requires k8s-direct mode.
+
+    \b
+    Examples:
+        gpu-dev config set-cluster registryRepo 588845226011.dkr.ecr.us-east-2.amazonaws.com/msl_infra/buildkit-cache
+
+    Valid keys:
+        registryRepo: ECR repo URL for built dev images
+    """
+    try:
+        config = load_config()
+        if config.mode != "k8s-direct":
+            rprint("[red]set-cluster is only available in k8s-direct mode[/red]")
+            return
+
+        valid_keys = ["registryRepo"]
+        if key not in valid_keys:
+            rprint(f"[red]Unknown cluster config key '{key}'. Valid: {', '.join(valid_keys)}[/red]")
+            return
+
+        mgr = K8sDirectManager(config)
+        mgr.set_cluster_config(key, value)
+        rprint(f"[green]Set cluster config {key} = {value}[/green]")
+
+    except Exception as e:
+        rprint(f"[red]Error: {str(e)}[/red]")
+
+
 @config.command()
 @click.argument("env_name", type=click.Choice(["test", "prod", "local"]))
 def environment(env_name: str) -> None:

@@ -1390,12 +1390,31 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
     # ------------------------------------------------------------------
 
     def get_cluster_config(self, key: str) -> Optional[str]:
-        """Read a value from the gpu-dev-config ConfigMap (set by helm install)."""
+        """Read a value from the gpu-dev-config ConfigMap."""
         try:
             cm = self.v1.read_namespaced_config_map("gpu-dev-config", self.namespace)
             return (cm.data or {}).get(key) or None
         except k8s_client.exceptions.ApiException:
             return None
+
+    def set_cluster_config(self, key: str, value: str) -> None:
+        """Set a value in the gpu-dev-config ConfigMap. Creates it if needed."""
+        cm_name = "gpu-dev-config"
+        try:
+            cm = self.v1.read_namespaced_config_map(cm_name, self.namespace)
+            if cm.data is None:
+                cm.data = {}
+            cm.data[key] = value
+            self.v1.replace_namespaced_config_map(cm_name, self.namespace, cm)
+        except k8s_client.exceptions.ApiException as e:
+            if e.status == 404:
+                cm = k8s_client.V1ConfigMap(
+                    metadata=k8s_client.V1ObjectMeta(name=cm_name, namespace=self.namespace),
+                    data={key: value},
+                )
+                self.v1.create_namespaced_config_map(self.namespace, cm)
+            else:
+                _raise_friendly(e, "set cluster config")
 
     def list_available_images(self) -> Dict[str, str]:
         """Read available images from the gpu-dev-images ConfigMap.
