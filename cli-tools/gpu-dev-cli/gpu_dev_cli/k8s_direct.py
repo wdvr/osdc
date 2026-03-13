@@ -102,6 +102,7 @@ NODE_GPU_LABEL_MAP: Dict[str, str] = {
 MANAGED_BY_LABEL = "gpu-dev/managed-by"
 MANAGED_BY_VALUE = "gpu-dev-cli"
 LABEL_USER = "gpu-dev/user"
+LABEL_USERNAME = "gpu-dev/username"
 LABEL_GPU_TYPE = "gpu-dev/gpu-type"
 LABEL_RESERVATION_ID = "gpu-dev/reservation-id"
 
@@ -237,6 +238,9 @@ class K8sDirectManager:
         hours: float,
         ssh_pubkey: str = "",
         image: Optional[str] = None,
+        username: Optional[str] = None,
+        uid: Optional[int] = None,
+        gid: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Create a dev Pod + NodePort Service directly.
 
@@ -265,10 +269,25 @@ class K8sDirectManager:
         pod_name = f"gpu-dev-{reservation_id}"
         svc_name = f"gpu-dev-svc-{reservation_id}"
 
+        # Resolve user identity defaults
+        if username is None:
+            username = _os.getenv("USER", "dev")
+        if uid is None:
+            try:
+                uid = _os.getuid()
+            except AttributeError:
+                uid = 1081  # fallback on non-POSIX
+        if gid is None:
+            try:
+                gid = _os.getgid()
+            except AttributeError:
+                gid = uid
+
         labels = {
             "app": "gpu-dev-pod",
             MANAGED_BY_LABEL: MANAGED_BY_VALUE,
             LABEL_USER: _sanitize_label_value(user_id),
+            LABEL_USERNAME: _sanitize_label_value(username),
             LABEL_GPU_TYPE: gpu_type,
             LABEL_RESERVATION_ID: reservation_id,
         }
@@ -294,6 +313,9 @@ class K8sDirectManager:
             gpu_count=gpu_count,
             hours=hours,
             cfg=cfg,
+            username=username,
+            uid=uid,
+            gid=gid,
         )
 
         # --- create pod ---
@@ -328,6 +350,7 @@ class K8sDirectManager:
             "hours": hours,
             "image": image,
             "user_id": user_id,
+            "username": username,
         }
 
     # ------------------------------------------------------------------
@@ -1006,7 +1029,13 @@ echo "[BUILDKIT] Done: {full_image}"
         return ""
 
     @staticmethod
-    def create_ssh_config(reservation_id: str, node_ip: str, ssh_port: str, pod_name: str) -> Optional[str]:
+    def create_ssh_config(
+        reservation_id: str,
+        node_ip: str,
+        ssh_port: str,
+        pod_name: str,
+        username: Optional[str] = None,
+    ) -> Optional[str]:
         """Create SSH config file in ~/.gpu-dev/ for direct SSH access.
 
         Creates a config so `ssh gpu-dev-<id>` works without remembering IP:port.
@@ -1015,6 +1044,9 @@ echo "[BUILDKIT] Done: {full_image}"
         Returns the config file path, or None on error.
         """
         from pathlib import Path
+
+        if username is None:
+            username = _os.getenv("USER", "dev")
 
         gpu_dev_dir = Path.home() / ".gpu-dev"
         gpu_dev_dir.mkdir(mode=0o700, exist_ok=True)
@@ -1028,7 +1060,7 @@ echo "[BUILDKIT] Done: {full_image}"
         config_content = f"""Host {pod_name}
     HostName {node_ip}
     Port {ssh_port}
-    User dev
+    User {username}
     ForwardAgent yes
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
@@ -1036,7 +1068,7 @@ echo "[BUILDKIT] Done: {full_image}"
 # Alias with ProxyCommand (for VS Code Remote or when direct SSH is blocked)
 Host {pod_name}-proxy
     HostName {pod_name}
-    User dev
+    User {username}
     ForwardAgent yes
     ProxyCommand gpu-dev-ssh-proxy %h %p
     StrictHostKeyChecking no
@@ -1082,8 +1114,13 @@ Host {pod_name}-proxy
         gpu_count: int,
         hours: float,
         cfg: Dict[str, Any],
+        username: str = "dev",
+        uid: int = 1081,
+        gid: int = 1081,
     ) -> k8s_client.V1Pod:
         """Build the dev Pod spec with init container for SSH setup."""
+
+        home_path = f"/home/{username}"
 
         # Resource requirements
         limits: Dict[str, str] = {
@@ -1098,6 +1135,14 @@ Host {pod_name}-proxy
             limits["nvidia.com/gpu"] = str(gpu_count)
             requests["nvidia.com/gpu"] = str(gpu_count)
 
+        # User identity env vars — used by both init and main containers
+        user_env_vars = [
+            k8s_client.V1EnvVar(name="DEV_USER", value=username),
+            k8s_client.V1EnvVar(name="DEV_UID", value=str(uid)),
+            k8s_client.V1EnvVar(name="DEV_GID", value=str(gid)),
+            k8s_client.V1EnvVar(name="DEV_SHELL", value="/bin/zsh"),
+        ]
+
         # Init container: set up SSH using env var (no shell injection)
         init_container = k8s_client.V1Container(
             name="ssh-setup",
@@ -1105,9 +1150,9 @@ Host {pod_name}-proxy
             command=["/bin/sh", "-c", self._init_script()],
             env=[
                 k8s_client.V1EnvVar(name="SSH_PUBKEY", value=ssh_pubkey),
-            ],
+            ] + user_env_vars,
             volume_mounts=[
-                k8s_client.V1VolumeMount(name="dev-home", mount_path="/home/dev"),
+                k8s_client.V1VolumeMount(name="dev-home", mount_path=home_path),
                 k8s_client.V1VolumeMount(name="ssh-config", mount_path="/etc/ssh-gpu-dev"),
             ],
         )
@@ -1117,6 +1162,7 @@ Host {pod_name}-proxy
             name="dev",
             image=image,
             command=["/bin/sh", "-c", self._main_script()],
+            env=user_env_vars,
             ports=[
                 k8s_client.V1ContainerPort(container_port=22, name="ssh"),
                 k8s_client.V1ContainerPort(container_port=8888, name="jupyter"),
@@ -1126,7 +1172,7 @@ Host {pod_name}-proxy
                 requests=requests,
             ),
             volume_mounts=[
-                k8s_client.V1VolumeMount(name="dev-home", mount_path="/home/dev"),
+                k8s_client.V1VolumeMount(name="dev-home", mount_path=home_path),
                 k8s_client.V1VolumeMount(name="workspace", mount_path="/workspace"),
                 k8s_client.V1VolumeMount(name="dshm", mount_path="/dev/shm"),
                 k8s_client.V1VolumeMount(name="ssh-config", mount_path="/etc/ssh-gpu-dev"),
@@ -1170,16 +1216,16 @@ Host {pod_name}-proxy
 set -e
 apk add --no-cache openssh >/dev/null 2>&1
 
-# Create dev user and SSH dir
-adduser -D -u 1081 -s /bin/sh dev 2>/dev/null || true
-mkdir -p /home/dev/.ssh
+# Create user with caller's UID (DEV_USER/DEV_UID from env)
+adduser -D -u "$DEV_UID" -s /bin/sh "$DEV_USER" 2>/dev/null || true
+mkdir -p /home/$DEV_USER/.ssh
 
 # Write pubkey from env var
-printf '%s\n' "$SSH_PUBKEY" > /home/dev/.ssh/authorized_keys
+printf '%s\n' "$SSH_PUBKEY" > /home/$DEV_USER/.ssh/authorized_keys
 
-chmod 700 /home/dev/.ssh
-chmod 600 /home/dev/.ssh/authorized_keys
-chown -R 1081:1081 /home/dev/.ssh
+chmod 700 /home/$DEV_USER/.ssh
+chmod 600 /home/$DEV_USER/.ssh/authorized_keys
+chown -R $DEV_UID:$DEV_UID /home/$DEV_USER/.ssh
 
 # Generate host keys into the shared volume
 mkdir -p /etc/ssh-gpu-dev
@@ -1214,11 +1260,19 @@ echo 'SSH setup complete'
         """
         return r"""#!/bin/sh
 
-# --- If sshd is already installed (custom image), fast path ---
-if which sshd >/dev/null 2>&1 && id dev >/dev/null 2>&1; then
+# --- Fast path: MSL runtime image with entrypoint-user.sh ---
+# The entrypoint creates the user from DEV_USER/DEV_UID/DEV_GID env vars,
+# gives sudo, then execs the given command. Zero setup time.
+if [ -x /usr/local/bin/entrypoint-user.sh ]; then
+  echo "MSL runtime image detected — fast startup via entrypoint-user.sh"
+  exec /usr/local/bin/entrypoint-user.sh /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
+fi
+
+# --- If sshd is already installed (custom OSDC image), fast path ---
+if which sshd >/dev/null 2>&1 && id "$DEV_USER" >/dev/null 2>&1; then
   echo "Custom image detected — fast startup"
-  passwd -u dev 2>/dev/null || usermod -p '*' dev 2>/dev/null || true
-  echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev 2>/dev/null || true
+  passwd -u "$DEV_USER" 2>/dev/null || usermod -p '*' "$DEV_USER" 2>/dev/null || true
+  echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev-user 2>/dev/null || true
   mkdir -p /run/sshd
   exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
 fi
@@ -1239,42 +1293,42 @@ elif which yum >/dev/null 2>&1; then
     2>&1 | tail -3
 fi
 
-# Create dev user with zsh + sudo
+# Create user with caller's identity
 SHELL_PATH=$(which zsh 2>/dev/null || echo /bin/bash)
-id dev >/dev/null 2>&1 || {
-  useradd -m -u 1081 -s "$SHELL_PATH" dev 2>/dev/null || \
-  adduser -D -u 1081 -s "$SHELL_PATH" dev 2>/dev/null || true
+id "$DEV_USER" >/dev/null 2>&1 || {
+  useradd -m -u "$DEV_UID" -s "$SHELL_PATH" "$DEV_USER" 2>/dev/null || \
+  adduser -D -u "$DEV_UID" -s "$SHELL_PATH" "$DEV_USER" 2>/dev/null || true
 }
-passwd -u dev 2>/dev/null || usermod -p '*' dev 2>/dev/null || true
-echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev 2>/dev/null || true
+passwd -u "$DEV_USER" 2>/dev/null || usermod -p '*' "$DEV_USER" 2>/dev/null || true
+echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev-user 2>/dev/null || true
 
-# Add dev to same groups as other users (for conda, cuda access)
+# Add user to same groups as other users (for conda, cuda access)
 for g in sudo root conda; do
-  groupadd -f "$g" 2>/dev/null; usermod -aG "$g" dev 2>/dev/null
+  groupadd -f "$g" 2>/dev/null; usermod -aG "$g" "$DEV_USER" 2>/dev/null
 done
 
-# Set up PATH for dev user — conda, cuda, pip bins
-cat > /etc/profile.d/gpu-dev.sh << 'PATHEOF'
-export PATH=/opt/conda/bin:/usr/local/cuda/bin:/home/dev/.local/bin:$PATH
-export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+# Set up PATH for user — conda, cuda, pip bins
+cat > /etc/profile.d/gpu-dev.sh << PATHEOF
+export PATH=/opt/conda/bin:/usr/local/cuda/bin:/home/$DEV_USER/.local/bin:\$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\${LD_LIBRARY_PATH:-}
 export CUDA_HOME=/usr/local/cuda
 PATHEOF
 chmod 644 /etc/profile.d/gpu-dev.sh
 
 # oh-my-zsh
-if which zsh >/dev/null 2>&1 && [ ! -d /home/dev/.oh-my-zsh ]; then
+if which zsh >/dev/null 2>&1 && [ ! -d /home/$DEV_USER/.oh-my-zsh ]; then
   echo "Installing oh-my-zsh..."
-  su - dev -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended' 2>/dev/null || true
-  su - dev -c '
+  su - "$DEV_USER" -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended' 2>/dev/null || true
+  su - "$DEV_USER" -c '
     git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions ~/.oh-my-zsh/custom/plugins/zsh-autosuggestions 2>/dev/null
     git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting ~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting 2>/dev/null
   ' 2>/dev/null || true
-  if [ -f /home/dev/.zshrc ]; then
-    sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' /home/dev/.zshrc 2>/dev/null
+  if [ -f /home/$DEV_USER/.zshrc ]; then
+    sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' /home/$DEV_USER/.zshrc 2>/dev/null
     # Source PATH setup in zshrc
-    echo 'source /etc/profile.d/gpu-dev.sh' >> /home/dev/.zshrc
+    echo 'source /etc/profile.d/gpu-dev.sh' >> /home/$DEV_USER/.zshrc
     # Fix: remove any recursive exit function that oh-my-zsh might create
-    sed -i '/^function exit/,/^}/d' /home/dev/.zshrc 2>/dev/null
+    sed -i '/^function exit/,/^}/d' /home/$DEV_USER/.zshrc 2>/dev/null
   fi
 fi
 
@@ -1509,15 +1563,19 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
         node_ip = annotations.get(ANN_NODE_IP, "")
         ssh_port = annotations.get(ANN_SSH_PORT, "")
 
+        # Get username from label, or fall back to DEV_USER env var on containers
+        username = labels.get(LABEL_USERNAME, "dev")
+
         ssh_command = ""
         if node_ip and ssh_port:
-            ssh_command = f"ssh -p {ssh_port} dev@{node_ip}"
+            ssh_command = f"ssh -p {ssh_port} {username}@{node_ip}"
 
         return {
             "reservation_id": reservation_id,
             "pod_name": pod.metadata.name,
             "status": cli_status,
             "user_id": labels.get(LABEL_USER, ""),
+            "username": username,
             "gpu_type": labels.get(LABEL_GPU_TYPE, ""),
             "gpu_count": self._get_gpu_count_from_pod(pod),
             "instance_type": labels.get(LABEL_GPU_TYPE, "k8s-direct"),

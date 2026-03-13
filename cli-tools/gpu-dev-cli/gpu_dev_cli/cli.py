@@ -316,7 +316,8 @@ def _show_single_reservation(connection_info: dict) -> None:
                 from .reservations import _make_vscode_link
                 ssh_command_display = f"[green]ssh {pod_name}[/green]"
                 vscode_url = _make_vscode_link(pod_name)
-                vscode_cmd_text = f"code --remote ssh-remote+{pod_name} /home/dev"
+                username = connection_info.get("username", "dev")
+                vscode_cmd_text = f"code --remote ssh-remote+{pod_name} /home/{username}"
                 vscode_command_display = f"[link={vscode_url}][green]{vscode_cmd_text}[/green][/link]"
                 vscode_info = f"[blue]VS Code Remote:[/blue] {vscode_command_display}\n"
             else:
@@ -755,6 +756,9 @@ def _reserve_k8s_direct(
                 hours=hours,
                 ssh_pubkey=ssh_pubkey,
                 image=image_override,
+                username=os.getenv("USER", "dev"),
+                uid=os.getuid(),
+                gid=os.getgid(),
             )
             reservation_id = result["reservation_id"]
 
@@ -769,9 +773,11 @@ def _reserve_k8s_direct(
             node_ip = conn_info.get("node_ip", "")
             ssh_port = conn_info.get("node_port", "")
             pod_name = conn_info.get("pod_name", "")
+            username = conn_info.get("username", os.getenv("USER", "dev"))
             if node_ip and ssh_port:
                 K8sDirectManager.create_ssh_config(
-                    reservation_id, node_ip, ssh_port, pod_name
+                    reservation_id, node_ip, ssh_port, pod_name,
+                    username=username,
                 )
 
             rprint(f"\n[green]🚀 Reservation is ready![/green]")
@@ -3380,12 +3386,13 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
                 rprint(f"[red]❌ Reservation {reservation_id[:8]} not found[/red]")
                 return
             pod_name = info["pod_name"]
+            username = info.get("username", "dev")
             if info.get("status") != "active":
                 rprint(f"[red]❌ Reservation is not active (status: {info.get('status')})[/red]")
                 return
             rprint(f"[dim]Connecting to pod {pod_name}...[/dim]\n")
             api_client = get_k8s_api_client(config)
-            kube_exec_interactive(api_client, pod_name, namespace=config.namespace, container="dev", shell="sudo -u dev -i")
+            kube_exec_interactive(api_client, pod_name, namespace=config.namespace, container="dev", shell=f"sudo -u {username} -i")
             return
 
         with Live(
