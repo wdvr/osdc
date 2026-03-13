@@ -660,25 +660,24 @@ def _reserve_k8s_direct(
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
 
-            # Image selection — show built images if available
-            built_images = _load_built_images()
-            if built_images:
+            # Image selection — discover from cluster BuildKit jobs
+            cluster_images = mgr.list_available_images()
+            default_img = K8S_GPU_CONFIG.get(gpu_type, {}).get("default_image", "")
+
+            if cluster_images:
                 import questionary
                 image_choices = []
-                for img_label, img_info in built_images.items():
-                    img_uri = img_info["image"]
-                    # Show short version: label + hash
-                    short = img_uri.split(":")[-1][:8] if ":" in img_uri else img_uri[-8:]
+                for img_label, img_uri in cluster_images.items():
+                    tag = img_uri.split(":")[-1] if ":" in img_uri else ""
                     image_choices.append(questionary.Choice(
-                        title=f"{img_label} ({short})",
+                        title=f"{img_label} ({tag})",
                         value=img_uri,
                     ))
-                # Add default option
-                default_img = K8S_GPU_CONFIG.get(gpu_type, {}).get("default_image", "")
+                # Add vanilla default
                 if default_img:
                     short_default = default_img.split("/")[-1] if "/" in default_img else default_img
                     image_choices.append(questionary.Choice(
-                        title=f"default ({short_default})",
+                        title=f"vanilla ({short_default})",
                         value=default_img,
                     ))
 
@@ -690,7 +689,6 @@ def _reserve_k8s_direct(
                     if selected_image is None:
                         rprint("[yellow]Reservation cancelled.[/yellow]")
                         return
-                    # Override the default image for this reservation
                     if selected_image != default_img:
                         cfg = {**cfg, "default_image": selected_image}
                 except Exception:
@@ -3664,8 +3662,8 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
             if result["success"]:
                 rprint(f"\n[green]✅ [{label}] Image built: {final_image}[/green]")
                 rprint(f"   [cyan]export GPU_DEV_IMAGE={final_image}[/cyan]")
-                # Save to ~/.gpu-dev/images.json for interactive image selection
-                _save_built_image(label, final_image)
+                # Save to cluster ConfigMap so all users see it
+                mgr.save_built_image(label, final_image)
             else:
                 rprint(f"\n[red]❌ [{label}] Build failed: {result['message']}[/red]")
                 if result.get("logs"):

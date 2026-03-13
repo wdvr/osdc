@@ -1335,6 +1335,40 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
     # helpers
     # ------------------------------------------------------------------
 
+    def list_available_images(self) -> Dict[str, str]:
+        """Read available images from the gpu-dev-images ConfigMap.
+
+        Returns dict of {label: image_uri}.
+        The ConfigMap is written by `gpu-dev build-image`.
+        """
+        try:
+            cm = self.v1.read_namespaced_config_map("gpu-dev-images", self.namespace)
+            return dict(cm.data) if cm.data else {}
+        except k8s_client.exceptions.ApiException:
+            return {}
+
+    def save_built_image(self, label: str, image_uri: str) -> None:
+        """Save a built image to the gpu-dev-images ConfigMap.
+
+        Creates the ConfigMap if it doesn't exist.
+        """
+        cm_name = "gpu-dev-images"
+        try:
+            cm = self.v1.read_namespaced_config_map(cm_name, self.namespace)
+            if cm.data is None:
+                cm.data = {}
+            cm.data[label] = image_uri
+            self.v1.replace_namespaced_config_map(cm_name, self.namespace, cm)
+        except k8s_client.exceptions.ApiException as e:
+            if e.status == 404:
+                cm = k8s_client.V1ConfigMap(
+                    metadata=k8s_client.V1ObjectMeta(name=cm_name, namespace=self.namespace),
+                    data={label: image_uri},
+                )
+                self.v1.create_namespaced_config_map(self.namespace, cm)
+            else:
+                pass  # Non-critical, don't fail the build
+
     def _find_registry_secret(self) -> Optional[str]:
         """Find a docker config secret for registry auth.
 
