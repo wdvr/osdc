@@ -614,6 +614,10 @@ def _reserve_k8s_direct(
                 ) as live:
                     avail = mgr.avail()
 
+                if not avail:
+                    rprint("[red]❌ Could not get cluster availability[/red]")
+                    return
+
                 # Convert to format expected by select_gpu_type_interactive
                 avail_display = {}
                 for gt, info in avail.items():
