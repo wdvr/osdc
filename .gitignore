@@ -71,3 +71,6 @@ lambda/*/package/
 
 # Admin output files
 admin/output/
+
+# Custom Dockerfiles (only vanilla Dockerfile is tracked; MSL/Meta variants are local-only)
+terraform-gpu-devservers/docker/Dockerfile.*

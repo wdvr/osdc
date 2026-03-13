@@ -3527,13 +3527,13 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
     and pushes the image to ECR. No local Docker/podman needed.
 
     Auto-discovers all Dockerfiles in the docker/ directory.
-    Dockerfile -> "default", Dockerfile.foo -> "foo".
+    Dockerfile.<name> -> preset "<name>".
 
     \b
     Examples:
         gpu-dev build-image                     # Build all Dockerfiles found
-        gpu-dev build-image -p default          # Build only Dockerfile
-        gpu-dev build-image -p foo              # Build only Dockerfile.foo
+        gpu-dev build-image -p msl_runtime      # Build only Dockerfile.msl_runtime
+        gpu-dev build-image -p pytorch          # Build only Dockerfile.pytorch
         gpu-dev build-image -f path/to/Dockerfile  # Specific file
     """
     import base64
