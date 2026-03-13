@@ -729,11 +729,20 @@ def _reserve_k8s_direct(
             rprint("[red]❌ Minimum reservation time is 5 minutes[/red]")
             return
 
-        # Get SSH public key
+        # Get SSH public key — generate one if missing
         ssh_pubkey = K8sDirectManager.get_ssh_pubkey()
         if not ssh_pubkey:
-            rprint("[yellow]⚠️  No SSH public key found (~/.ssh/id_*.pub)[/yellow]")
-            rprint("[yellow]   SSH access will not be available without a public key[/yellow]")
+            rprint("[dim]No SSH key found — generating one...[/dim]")
+            import subprocess
+            from pathlib import Path
+            key_path = Path.home() / ".ssh" / "id_ed25519"
+            key_path.parent.mkdir(mode=0o700, exist_ok=True)
+            subprocess.run(
+                ["ssh-keygen", "-t", "ed25519", "-f", str(key_path), "-N", "", "-q"],
+                check=True,
+            )
+            ssh_pubkey = K8sDirectManager.get_ssh_pubkey()
+            rprint(f"[green]✅ SSH key generated: {key_path}.pub[/green]")
 
         # Create the pod
         with Live(
