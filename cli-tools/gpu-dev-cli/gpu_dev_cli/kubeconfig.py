@@ -268,9 +268,16 @@ def kube_exec_interactive(api_client: k8s_client.ApiClient, pod_name: str, names
     Falls back to non-interactive mode when stdin is not a TTY (e.g., piped input).
     Returns the exit code from the remote process.
     """
-    if shell is None:
-        shell = "/bin/bash"
     is_tty = sys.stdin.isatty()
+
+    # Build command — shell can be a string or a full command string with args
+    if shell is None:
+        cmd = ["/bin/bash", "-l"]
+    elif " " in shell:
+        # Multi-word command like "sudo -u dev -i" — split into list
+        cmd = shell.split()
+    else:
+        cmd = [shell, "-l"]
 
     v1 = k8s_client.CoreV1Api(api_client)
 
@@ -290,7 +297,7 @@ def kube_exec_interactive(api_client: k8s_client.ApiClient, pod_name: str, names
         v1.connect_get_namespaced_pod_exec,
         pod_name,
         namespace,
-        command=[shell, "-l"],
+        command=cmd,
         **exec_kwargs,
     )
 
