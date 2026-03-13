@@ -1214,11 +1214,11 @@ echo 'SSH setup complete'
         """
         return r"""#!/bin/sh
 
-# --- If sshd is already installed (custom OSDC image), fast path ---
+# --- If sshd is already installed (custom image), fast path ---
 if which sshd >/dev/null 2>&1 && id dev >/dev/null 2>&1; then
   echo "Custom image detected — fast startup"
-  # Just unlock account and start sshd
   passwd -u dev 2>/dev/null || usermod -p '*' dev 2>/dev/null || true
+  echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev 2>/dev/null || true
   mkdir -p /run/sshd
   exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
 fi
@@ -1248,7 +1248,20 @@ id dev >/dev/null 2>&1 || {
 passwd -u dev 2>/dev/null || usermod -p '*' dev 2>/dev/null || true
 echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev 2>/dev/null || true
 
-# oh-my-zsh (skip if no internet or takes too long)
+# Add dev to same groups as other users (for conda, cuda access)
+for g in sudo root conda; do
+  groupadd -f "$g" 2>/dev/null; usermod -aG "$g" dev 2>/dev/null
+done
+
+# Set up PATH for dev user — conda, cuda, pip bins
+cat > /etc/profile.d/gpu-dev.sh << 'PATHEOF'
+export PATH=/opt/conda/bin:/usr/local/cuda/bin:/home/dev/.local/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+export CUDA_HOME=/usr/local/cuda
+PATHEOF
+chmod 644 /etc/profile.d/gpu-dev.sh
+
+# oh-my-zsh
 if which zsh >/dev/null 2>&1 && [ ! -d /home/dev/.oh-my-zsh ]; then
   echo "Installing oh-my-zsh..."
   su - dev -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended' 2>/dev/null || true
@@ -1256,7 +1269,13 @@ if which zsh >/dev/null 2>&1 && [ ! -d /home/dev/.oh-my-zsh ]; then
     git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions ~/.oh-my-zsh/custom/plugins/zsh-autosuggestions 2>/dev/null
     git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting ~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting 2>/dev/null
   ' 2>/dev/null || true
-  [ -f /home/dev/.zshrc ] && sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' /home/dev/.zshrc 2>/dev/null
+  if [ -f /home/dev/.zshrc ]; then
+    sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' /home/dev/.zshrc 2>/dev/null
+    # Source PATH setup in zshrc
+    echo 'source /etc/profile.d/gpu-dev.sh' >> /home/dev/.zshrc
+    # Fix: remove any recursive exit function that oh-my-zsh might create
+    sed -i '/^function exit/,/^}/d' /home/dev/.zshrc 2>/dev/null
+  fi
 fi
 
 # sshd user
