@@ -229,6 +229,7 @@ gpuDev:
     enabled: true
   k8sDirect:
     enabled: false  # Enable for k8s-direct CLI mode (Jobs-based, no API service)
+    registryRepo: ""  # ECR repo for built dev images (e.g. 308535385114.dkr.ecr.us-east-2.amazonaws.com/osdc-dev-images)
 
 # Image pre-puller DaemonSet (pulls GPU dev image on all GPU nodes)
 imagePrepuller:

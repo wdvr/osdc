@@ -3605,17 +3605,18 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
     try:
         config = load_config()
 
+        mgr = K8sDirectManager(config)
+
         if repo is None:
-            repo = os.getenv("GPU_DEV_REGISTRY_REPO")
+            # Try env var first, then cluster ConfigMap
+            repo = os.getenv("GPU_DEV_REGISTRY_REPO") or mgr.get_cluster_config("registryRepo")
             if not repo:
                 rprint("[red]❌ No registry repo configured[/red]")
-                rprint("[dim]Set GPU_DEV_REGISTRY_REPO environment variable:[/dim]")
-                rprint("[dim]  export GPU_DEV_REGISTRY_REPO=your-registry.com/repo[/dim]")
+                rprint("[dim]Set it in the cluster via helm values:[/dim]")
+                rprint("[dim]  helm upgrade gpu-dev charts/gpu-dev-server --set gpuDev.k8sDirect.registryRepo=YOUR_REPO[/dim]")
                 rprint("[dim]Or use --repo flag:[/dim]")
                 rprint("[dim]  gpu-dev build-image --repo your-registry.com/repo[/dim]")
                 return
-
-        mgr = K8sDirectManager(config)
 
         # Determine what to build
         if dockerfile:

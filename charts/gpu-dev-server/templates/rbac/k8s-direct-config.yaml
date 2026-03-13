@@ -1,0 +1,14 @@
+{{- if .Values.gpuDev.k8sDirect.enabled }}
+---
+# Cluster-level config for gpu-dev CLI (k8s-direct mode).
+# The CLI reads this ConfigMap to discover the registry repo, etc.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-dev-config
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+data:
+  registryRepo: {{ .Values.gpuDev.k8sDirect.registryRepo | quote }}
+{{- end }}
