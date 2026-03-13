@@ -1,0 +1,69 @@
+{{- if .Values.gpuDev.k8sDirect.enabled }}
+---
+# Role for k8s-direct CLI users — CRUD on pods and services in gpu-dev namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-dev-k8s-direct-role
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k8s-direct
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status"]
+    verbs: ["get", "list", "create", "delete", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/portforward"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-dev-k8s-direct-binding
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k8s-direct
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-dev-k8s-direct-role
+subjects:
+  - kind: Group
+    name: gpu-dev-users
+    apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRole for node read access (nodes are cluster-scoped).
+# Needed to discover node IPs for SSH connection info.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-dev-node-reader
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k8s-direct
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-dev-node-reader-binding
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k8s-direct
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gpu-dev-node-reader
+subjects:
+  - kind: Group
+    name: gpu-dev-users
+    apiGroup: rbac.authorization.k8s.io
+{{- end }}

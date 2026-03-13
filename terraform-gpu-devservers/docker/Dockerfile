@@ -1,6 +1,6 @@
 # Custom PyTorch GPU Development Server Image
-# Based on pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
-FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
+# Based on pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
+FROM pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
 
 # Set environment variables for non-interactive installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -41,26 +41,14 @@ RUN apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
 
-# Install CUDA 13.0 alongside existing CUDA 12.9
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common \
-    && wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb \
-    && dpkg -i cuda-keyring_1.0-1_all.deb \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        cuda-toolkit-13-0 \
-    && rm cuda-keyring_1.0-1_all.deb \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set CUDA paths for both versions - 12.8 as default for PyTorch compatibility
-ENV CUDA_12_PATH=/usr/local/cuda-12.8
-ENV CUDA_13_PATH=/usr/local/cuda-13.0
-ENV PATH=/usr/local/cuda-12.8/bin:/usr/local/cuda-13.0/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}
+# CUDA 13.0 is already included in the base image (pytorch:2.10.0-cuda13.0)
+# Just ensure the paths are set correctly
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
 # Install Python packages (Jupyter and common ML packages)
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --break-system-packages \
         jupyterlab \
         ipywidgets \
         matplotlib \

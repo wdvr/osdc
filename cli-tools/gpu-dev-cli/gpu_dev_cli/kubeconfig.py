@@ -127,9 +127,98 @@ def _write_ca_cert(ca_data: str) -> str:
     return str(ca_path)
 
 
+def _load_k8s_direct_client(kubeconfig_path: str) -> k8s_client.ApiClient:
+    """Load a K8s API client from a kubeconfig file.
+
+    Handles exec-based credential plugins that output YAML (e.g. Meta's
+    ``cloud k8s get-token``) by running the exec command manually and
+    injecting the bearer token into the client configuration.
+    """
+    import subprocess
+
+    with open(kubeconfig_path) as f:
+        kc = yaml.safe_load(f)
+
+    # Resolve current context
+    ctx_name = kc.get("current-context")
+    ctx = next((c["context"] for c in kc.get("contexts", []) if c["name"] == ctx_name), None)
+    if not ctx:
+        raise RuntimeError(f"Context '{ctx_name}' not found in {kubeconfig_path}")
+
+    cluster_name = ctx["cluster"]
+    user_name = ctx["user"]
+
+    # Get cluster info
+    cluster_entry = next((c["cluster"] for c in kc.get("clusters", []) if c["name"] == cluster_name), None)
+    if not cluster_entry:
+        raise RuntimeError(f"Cluster '{cluster_name}' not found in {kubeconfig_path}")
+
+    server = cluster_entry["server"]
+    ca_data = cluster_entry.get("certificate-authority-data")
+
+    # Get user info
+    user_entry = next((u["user"] for u in kc.get("users", []) if u["name"] == user_name), None)
+    if not user_entry:
+        raise RuntimeError(f"User '{user_name}' not found in {kubeconfig_path}")
+
+    # If exec-based auth, run the command and extract the token
+    token = None
+    if "exec" in user_entry:
+        exec_cfg = user_entry["exec"]
+        cmd = [exec_cfg["command"]] + (exec_cfg.get("args") or [])
+        env = None
+        if exec_cfg.get("env"):
+            import os as _os
+            env = dict(_os.environ)
+            for e in exec_cfg["env"]:
+                env[e["name"]] = e["value"]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"Exec credential command failed: {' '.join(cmd)}\n{result.stderr}"
+                )
+            # Parse output — may be YAML or JSON
+            output = result.stdout.strip()
+            try:
+                import json
+                cred = json.loads(output)
+            except (json.JSONDecodeError, ValueError):
+                cred = yaml.safe_load(output)
+
+            token = cred.get("status", {}).get("token")
+            if not token:
+                raise RuntimeError(f"No token in exec credential output from: {' '.join(cmd)}")
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"Exec credential command not found: {exec_cfg['command']}\n"
+                f"Make sure '{exec_cfg['command']}' is on your PATH"
+            )
+    elif "token" in user_entry:
+        token = user_entry["token"]
+
+    # Build configuration
+    configuration = k8s_client.Configuration()
+    configuration.host = server
+
+    if token:
+        configuration.api_key = {"authorization": f"Bearer {token}"}
+
+    if ca_data:
+        ca_path = _write_ca_cert(ca_data)
+        configuration.ssl_ca_cert = ca_path
+    else:
+        # No CA cert — disable verification (common for dev clusters)
+        configuration.verify_ssl = False
+
+    return k8s_client.ApiClient(configuration)
+
+
 def get_k8s_api_client(config) -> k8s_client.ApiClient:
     """Create a configured kubernetes ApiClient for the cluster.
 
+    For k8s-direct mode: loads from $KUBECONFIG with current-context.
     For local environment: uses standard kubeconfig (k3d context).
     For EKS environments: uses eks:DescribeCluster + boto3 STS token.
 
@@ -137,6 +226,10 @@ def get_k8s_api_client(config) -> k8s_client.ApiClient:
         config: gpu_dev_cli Config instance (has cluster_name, aws_region, session)
     """
     from kubernetes import config as k8s_config
+
+    # k8s-direct mode: load from KUBECONFIG with current-context
+    if config.mode == "k8s-direct":
+        return _load_k8s_direct_client(config.kubeconfig_path)
 
     env = config.user_config.get("environment", "prod")
     if env == "local":
@@ -155,7 +248,7 @@ def get_k8s_api_client(config) -> k8s_client.ApiClient:
     return k8s_client.ApiClient(configuration)
 
 
-def kube_exec_interactive(api_client: k8s_client.ApiClient, pod_name: str, namespace: str = NAMESPACE, shell: str = None) -> int:
+def kube_exec_interactive(api_client: k8s_client.ApiClient, pod_name: str, namespace: str = NAMESPACE, shell: str = None, container: str = None) -> int:
     """Interactive exec into a pod - equivalent to kubectl exec -it -- <shell> -l.
 
     Handles raw terminal mode, bidirectional I/O, and terminal resize.
@@ -170,16 +263,22 @@ def kube_exec_interactive(api_client: k8s_client.ApiClient, pod_name: str, names
 
     rows, cols = _get_terminal_size()
 
-    resp = stream(
-        v1.connect_get_namespaced_pod_exec,
-        pod_name,
-        namespace,
-        command=[shell, "-l"],
+    exec_kwargs = dict(
         stderr=True,
         stdin=True,
         stdout=True,
         tty=is_tty,
         _preload_content=False,
+    )
+    if container:
+        exec_kwargs["container"] = container
+
+    resp = stream(
+        v1.connect_get_namespaced_pod_exec,
+        pod_name,
+        namespace,
+        command=[shell, "-l"],
+        **exec_kwargs,
     )
 
     if not is_tty:

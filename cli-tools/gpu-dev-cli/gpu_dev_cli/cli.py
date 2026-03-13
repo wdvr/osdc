@@ -25,6 +25,7 @@ from .reservations import (
     is_ssh_include_enabled,
 )
 from .config import Config, load_config
+from .k8s_direct import K8sDirectManager, GPU_CONFIG as K8S_GPU_CONFIG
 from .kubeconfig import get_k8s_api_client, get_kubectl_exec_command, kube_exec_interactive
 from .interactive import (
     select_gpu_type_interactive,
@@ -41,6 +42,49 @@ from .interactive import (
 )
 
 console = Console()
+
+
+def _save_built_image(label: str, image_uri: str) -> None:
+    """Save a built image to ~/.gpu-dev/images.json for interactive selection."""
+    import json
+    from pathlib import Path
+
+    images_file = Path.home() / ".gpu-dev" / "images.json"
+    images_file.parent.mkdir(mode=0o700, exist_ok=True)
+
+    images = {}
+    if images_file.exists():
+        try:
+            images = json.loads(images_file.read_text())
+        except Exception:
+            pass
+
+    images[label] = {
+        "image": image_uri,
+        "built_at": __import__("datetime").datetime.now().isoformat(),
+    }
+    images_file.write_text(json.dumps(images, indent=2))
+
+
+def _load_built_images() -> dict:
+    """Load built images from ~/.gpu-dev/images.json."""
+    import json
+    from pathlib import Path
+
+    images_file = Path.home() / ".gpu-dev" / "images.json"
+    if images_file.exists():
+        try:
+            return json.loads(images_file.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _k8s_direct_unsupported(command_name: str) -> None:
+    """Print error for commands not supported in k8s-direct mode."""
+    rprint(f"[red]❌ '{command_name}' is not supported in k8s-direct mode[/red]")
+    rprint("[dim]k8s-direct mode only supports: reserve, list, show, cancel, connect, avail, status[/dim]")
+    rprint("[dim]Use API mode (set GPU_DEV_API_URL) for full functionality[/dim]")
 
 
 def _format_relative_time(timestamp_str: str, relative_to: str = "now") -> str:
@@ -407,11 +451,337 @@ def _show_single_reservation(connection_info: dict) -> None:
                 console.print(log_panel)
 
 
+def _list_k8s_direct(
+    config: Config,
+    user: Optional[str],
+    status: Optional[str],
+) -> None:
+    """Handle 'gpu-dev list' in k8s-direct mode."""
+    try:
+        user_info = authenticate_user(config)
+        mgr = K8sDirectManager(config)
+
+        # Determine user filter
+        if user == "all":
+            user_filter = None
+        elif user:
+            user_filter = user
+        else:
+            user_filter = user_info["user_id"]
+
+        # Determine status filter
+        if status and status.strip().lower() == "all":
+            statuses = None
+        elif status:
+            statuses = [s.strip() for s in status.split(",")]
+        else:
+            statuses = ["active", "preparing", "pending"]
+
+        reservations = mgr.list_reservations(
+            user_filter=user_filter,
+            statuses_to_include=statuses,
+        )
+
+        if not reservations:
+            rprint("[yellow]📋 No reservations found[/yellow]")
+            return
+
+        show_all_users = (user == "all")
+        table = Table(title="GPU Reservations (k8s-direct)")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Pod", style="yellow", no_wrap=True)
+        if show_all_users:
+            table.add_column("User", style="green", no_wrap=True)
+        table.add_column("GPUs", style="magenta", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Created", style="blue", no_wrap=True)
+        table.add_column("Expires", style="red", no_wrap=True)
+
+        for res in reservations:
+            res_id = res.get("reservation_id", "")[:8]
+            pod_name = res.get("pod_name", "-")
+            gpu_count = res.get("gpu_count", 0)
+            gpu_type = res.get("gpu_type", "")
+            res_status = res.get("status", "unknown")
+
+            if gpu_count == 0:
+                gpu_display = gpu_type or "cpu"
+            else:
+                gpu_display = f"{gpu_count}x {gpu_type}"
+
+            # Status coloring
+            if res_status == "active":
+                status_display = f"[green]{res_status}[/green]"
+            elif res_status in ("preparing", "pending"):
+                status_display = f"[yellow]{res_status}[/yellow]"
+            elif res_status == "failed":
+                status_display = f"[red]{res_status}[/red]"
+            else:
+                status_display = res_status
+
+            created = _format_relative_time(res.get("created_at", ""), "now")
+            expires = _format_relative_time(res.get("expires_at", ""), "expires")
+
+            row = [res_id, pod_name]
+            if show_all_users:
+                row.append(res.get("user_id", ""))
+            row += [gpu_display, status_display, created, expires]
+            table.add_row(*row)
+
+        console.print(table)
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+def _avail_k8s_direct(config: Config) -> None:
+    """Handle 'gpu-dev avail' in k8s-direct mode."""
+    try:
+        mgr = K8sDirectManager(config)
+        availability = mgr.avail()
+
+        table = Table(title="GPU Availability (k8s-direct)")
+        table.add_column("Type", style="cyan", no_wrap=True)
+        table.add_column("Total", style="green", no_wrap=True)
+        table.add_column("Available", style="green", no_wrap=True)
+        table.add_column("In Use", style="yellow", no_wrap=True)
+        table.add_column("Max/Node", style="dim", no_wrap=True)
+
+        for gpu_type, info in sorted(availability.items()):
+            avail_style = "green" if info["available"] > 0 else "red"
+            table.add_row(
+                gpu_type,
+                str(info["total"]),
+                f"[{avail_style}]{info['available']}[/{avail_style}]",
+                str(info["in_use"]),
+                str(info["max_per_node"]) if not info.get("is_cpu") else "N/A",
+            )
+
+        console.print(table)
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+def _status_k8s_direct(config: Config) -> None:
+    """Handle 'gpu-dev status' in k8s-direct mode."""
+    try:
+        mgr = K8sDirectManager(config)
+        cluster_status = mgr.status()
+
+        table = Table(title="GPU Cluster Status (k8s-direct)")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Total GPUs", str(cluster_status["total_gpus"]))
+        table.add_row("Available GPUs", str(cluster_status["available_gpus"]))
+        table.add_row("Reserved GPUs", str(cluster_status["reserved_gpus"]))
+        table.add_row("Active Reservations", str(cluster_status["active_reservations"]))
+        table.add_row("Pending", str(cluster_status["queue_length"]))
+
+        console.print(table)
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
+def _reserve_k8s_direct(
+    config: Config,
+    gpus: Optional[str],
+    gpu_type: Optional[str],
+    hours: Optional[float],
+    name: Optional[str],
+    interactive: Optional[bool],
+) -> None:
+    """Handle 'gpu-dev reserve' in k8s-direct mode."""
+    try:
+        user_info = authenticate_user(config)
+        mgr = K8sDirectManager(config)
+
+        # Determine if interactive
+        use_interactive = interactive
+        if use_interactive is None:
+            needs_input = gpu_type is None or hours is None
+            use_interactive = needs_input and check_interactive_support()
+
+        if use_interactive:
+            rprint("[cyan]🎯 Interactive reservation mode (k8s-direct)[/cyan]\n")
+
+            # GPU type selection — build availability from cluster
+            if gpu_type is None:
+                with Live(
+                    Spinner("dots", text="📡 Loading availability..."), console=console
+                ) as live:
+                    avail = mgr.avail()
+
+                # Convert to format expected by select_gpu_type_interactive
+                avail_display = {}
+                for gt, info in avail.items():
+                    avail_display[gt] = {
+                        "available": info["available"],
+                        "total": info["total"],
+                        "queue_length": 0,
+                        "estimated_wait_minutes": 0,
+                    }
+
+                gpu_type = select_gpu_type_interactive(avail_display)
+                if gpu_type is None:
+                    rprint("[yellow]Reservation cancelled.[/yellow]")
+                    return
+
+            gpu_type = gpu_type.lower()
+            if gpu_type not in K8S_GPU_CONFIG:
+                valid = ", ".join(sorted(K8S_GPU_CONFIG))
+                rprint(f"[red]❌ Invalid GPU type '{gpu_type}'. Valid types: {valid}[/red]")
+                return
+
+            cfg = K8S_GPU_CONFIG[gpu_type]
+
+            # GPU count selection
+            if gpus is None:
+                if cfg["max_gpus"] == 0:
+                    gpu_count = 0
+                else:
+                    gpu_count = select_gpu_count_interactive(gpu_type, cfg["max_gpus"])
+                    if gpu_count is None:
+                        rprint("[yellow]Reservation cancelled.[/yellow]")
+                        return
+            else:
+                gpu_count = int(gpus)
+
+            # Duration selection
+            if hours is None:
+                hours = select_duration_interactive()
+                if hours is None:
+                    rprint("[yellow]Reservation cancelled.[/yellow]")
+                    return
+
+            # Image selection — show built images if available
+            built_images = _load_built_images()
+            if built_images:
+                import questionary
+                image_choices = []
+                for img_label, img_info in built_images.items():
+                    img_uri = img_info["image"]
+                    # Show short version: label + hash
+                    short = img_uri.split(":")[-1][:8] if ":" in img_uri else img_uri[-8:]
+                    image_choices.append(questionary.Choice(
+                        title=f"{img_label} ({short})",
+                        value=img_uri,
+                    ))
+                # Add default option
+                default_img = K8S_GPU_CONFIG.get(gpu_type, {}).get("default_image", "")
+                if default_img:
+                    short_default = default_img.split("/")[-1] if "/" in default_img else default_img
+                    image_choices.append(questionary.Choice(
+                        title=f"default ({short_default})",
+                        value=default_img,
+                    ))
+
+                try:
+                    selected_image = questionary.select(
+                        "Select image:",
+                        choices=image_choices,
+                    ).ask()
+                    if selected_image is None:
+                        rprint("[yellow]Reservation cancelled.[/yellow]")
+                        return
+                    # Override the default image for this reservation
+                    if selected_image != default_img:
+                        cfg = {**cfg, "default_image": selected_image}
+                except Exception:
+                    pass  # Fall back to default image
+
+            # Name (optional)
+            if name is None:
+                name = ask_name_interactive()
+
+        else:
+            # Non-interactive defaults
+            if gpu_type is None:
+                gpu_type = "cpu-m"
+            gpu_type = gpu_type.lower()
+
+            if gpu_type not in K8S_GPU_CONFIG:
+                valid = ", ".join(sorted(K8S_GPU_CONFIG))
+                rprint(f"[red]❌ Invalid GPU type '{gpu_type}'. Valid types: {valid}[/red]")
+                return
+
+            cfg = K8S_GPU_CONFIG[gpu_type]
+
+            if gpus is None:
+                gpu_count = 0 if cfg["max_gpus"] == 0 else 1
+            else:
+                gpu_count = int(gpus)
+
+            if hours is None:
+                hours = 4.0
+
+        # Validate
+        if hours > 24:
+            rprint("[red]❌ Maximum reservation time is 24 hours[/red]")
+            return
+        if hours < 0.0833:
+            rprint("[red]❌ Minimum reservation time is 5 minutes[/red]")
+            return
+
+        # Get SSH public key
+        ssh_pubkey = K8sDirectManager.get_ssh_pubkey()
+        if not ssh_pubkey:
+            rprint("[yellow]⚠️  No SSH public key found (~/.ssh/id_*.pub)[/yellow]")
+            rprint("[yellow]   SSH access will not be available without a public key[/yellow]")
+
+        # Create the pod
+        with Live(
+            Spinner("dots", text="📡 Creating dev pod..."), console=console
+        ) as live:
+            # Use selected image if cfg was overridden
+            image_override = cfg.get("default_image") if isinstance(cfg, dict) else None
+            result = mgr.reserve(
+                user_id=user_info["user_id"],
+                gpu_type=gpu_type,
+                gpu_count=gpu_count,
+                hours=hours,
+                ssh_pubkey=ssh_pubkey,
+                image=image_override,
+            )
+            reservation_id = result["reservation_id"]
+
+        rprint(f"[green]✅ Pod created: {result['pod_name']}[/green]")
+        rprint(f"[dim]   GPU type: {gpu_type}, Count: {gpu_count}, Hours: {hours}[/dim]")
+        rprint("[cyan]⏳ Waiting for pod to become ready...[/cyan]")
+
+        conn_info = mgr.wait_for_ready(reservation_id, timeout_seconds=300, console=console)
+
+        if conn_info:
+            # Create SSH config for direct `ssh gpu-dev-xxx` access
+            node_ip = conn_info.get("node_ip", "")
+            ssh_port = conn_info.get("node_port", "")
+            pod_name = conn_info.get("pod_name", "")
+            if node_ip and ssh_port:
+                K8sDirectManager.create_ssh_config(
+                    reservation_id, node_ip, ssh_port, pod_name
+                )
+
+            rprint(f"\n[green]🚀 Reservation is ready![/green]")
+            _show_single_reservation(conn_info)
+        else:
+            rprint(f"\n[yellow]⏳ Pod not ready yet. Check status with:[/yellow]")
+            rprint(f"   [cyan]gpu-dev show {reservation_id[:8]}[/cyan]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
 def _validate_ssh_key_or_exit(config: Config, live: Live) -> bool:
     """
     Validate SSH key matches configured GitHub username.
     Returns True if valid, False if validation failed (and exits with error messages).
+    Skipped in local/non-AWS mode.
     """
+    if not config._aws_available:
+        return True  # Skip SSH validation in local/non-AWS mode
+
     validation_result = validate_ssh_key_matches_github_user(config, live)
     if not validation_result["valid"]:
         live.stop()
@@ -508,7 +878,11 @@ def setup() -> None:
     """
     try:
         config = load_config()
-        
+
+        if config.mode == "k8s-direct":
+            _k8s_direct_unsupported("setup")
+            return
+
         console.print("[cyan]🚀 GPU Dev CLI Setup Wizard[/cyan]\n")
         
         # Step 1: Configure API URL
@@ -597,6 +971,10 @@ def login() -> None:
         # Load config
         config = load_config()
 
+        if config.mode == "k8s-direct":
+            _k8s_direct_unsupported("login")
+            return
+
         # Initialize API client
         from .api_client import APIClient
 
@@ -642,9 +1020,12 @@ def login() -> None:
     "--gpu-type",
     "-t",
     type=click.Choice(
-        ["b200", "h200", "h100", "a100", "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86"], case_sensitive=False
+        ["b200", "h200", "h100", "a100", "a10g", "t4", "l4", "t4-small",
+         "cpu-arm", "cpu-x86", "cpu-small", "cpu-large",
+         "cpu-s", "cpu-m", "cpu-l", "cpu-xl", "cpu-xxl"],
+        case_sensitive=False
     ),
-    help="GPU type to reserve (b200/h200/h100/a100/a10g/t4/l4/t4-small/cpu-arm/cpu-x86)",
+    help="GPU type (GPU: b200/h200/h100/a100/a10g/t4/l4 | CPU: cpu-s/cpu-m/cpu-l/cpu-xl)",
 )
 @click.option(
     "--hours",
@@ -774,6 +1155,12 @@ def reserve(
     Authentication: Uses your AWS credentials and GitHub SSH keys
     """
     try:
+        # --- k8s-direct mode: simplified reserve path ---
+        config = load_config()
+        if config.mode == "k8s-direct":
+            _reserve_k8s_direct(config, gpus, gpu_type, hours, name, interactive)
+            return
+
         # Track if user explicitly requests no persistent disk
         explicit_no_disk = False
 
@@ -807,6 +1194,8 @@ def reserve(
             "b200": {"max_gpus": 8, "instance_type": "p6-b200.48xlarge"},
             "cpu-arm": {"max_gpus": 0, "instance_type": "c7g.4xlarge"},
             "cpu-x86": {"max_gpus": 0, "instance_type": "c7i.4xlarge"},
+            "cpu-small": {"max_gpus": 0, "instance_type": "T1_TRN"},
+            "cpu-large": {"max_gpus": 0, "instance_type": "T1_TRN"},
         }
 
         # Early validation of GPU type to extract max_gpus (needed for disk selection)
@@ -1507,6 +1896,12 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
     Available statuses: active, preparing, queued, pending, expired, cancelled, failed, all
     """
 
+    # --- k8s-direct mode ---
+    config = load_config()
+    if config.mode == "k8s-direct":
+        _list_k8s_direct(config, user, status)
+        return True
+
     def fetch_and_display_reservations(first_load: bool = False) -> bool:
         """Fetch and display reservations. Returns True on success, False on error."""
         try:
@@ -2164,6 +2559,70 @@ def cancel(
     Note: Cancelled reservations cannot be restored. Active pods will be terminated.
     """
     try:
+        # --- k8s-direct mode ---
+        config = load_config()
+        if config.mode == "k8s-direct":
+            user_info = authenticate_user(config)
+            mgr = K8sDirectManager(config)
+
+            # Handle --all: cancel all user's reservations
+            if all:
+                reservations = mgr.list_reservations(
+                    user_filter=user_info["user_id"],
+                    statuses_to_include=["active", "preparing", "pending"],
+                )
+                if not reservations:
+                    rprint("[yellow]📋 No cancellable reservations found[/yellow]")
+                    return
+                if not force:
+                    rprint(f"[yellow]⚠️  About to cancel {len(reservations)} reservation(s)[/yellow]")
+                    try:
+                        if not click.confirm("Proceed?", default=False):
+                            rprint("[yellow]Cancelled.[/yellow]")
+                            return
+                    except (KeyboardInterrupt, click.Abort):
+                        rprint("\n[yellow]Cancelled.[/yellow]")
+                        return
+                for res in reservations:
+                    rid = res["reservation_id"]
+                    mgr.cancel(rid, user_info["user_id"])
+                    K8sDirectManager.remove_ssh_config(rid)
+                    rprint(f"[green]✅ Cancelled {rid[:8]}[/green]")
+                return
+
+            if not reservation_id:
+                # Interactive selection
+                if check_interactive_support():
+                    reservations = mgr.list_reservations(
+                        user_filter=user_info["user_id"],
+                        statuses_to_include=["active", "preparing", "pending"],
+                    )
+                    if not reservations:
+                        rprint("[yellow]📋 No cancellable reservations found[/yellow]")
+                        return
+                    selected_id = select_reservation_interactive(reservations, "cancel")
+                    if selected_id is None or selected_id == "__QUIT__":
+                        rprint("[yellow]Cancellation cancelled.[/yellow]")
+                        return
+                    if selected_id == "__ALL__":
+                        for res in reservations:
+                            mgr.cancel(res["reservation_id"], user_info["user_id"])
+                            rprint(f"[green]✅ Cancelled {res['reservation_id'][:8]}[/green]")
+                        return
+                    reservation_id = selected_id
+                else:
+                    rprint("[red]❌ Reservation ID required[/red]")
+                    rprint("[dim]Usage: gpu-dev cancel <reservation_id>[/dim]")
+                    return
+
+            success = mgr.cancel(reservation_id, user_info["user_id"])
+            if success:
+                K8sDirectManager.remove_ssh_config(reservation_id)
+                rprint(f"[green]✅ Reservation {reservation_id[:8]} cancelled[/green]")
+            else:
+                rprint(f"[yellow]⚠️  No resources found for {reservation_id[:8]}[/yellow]")
+            return
+
         # Validate conflicting options
         if all and reservation_id:
             rprint("[red]❌ Cannot specify both --all and a reservation ID[/red]")
@@ -2493,6 +2952,31 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
     Note: Use 'gpu-dev list' to see recent failed/cancelled reservations.
     """
     try:
+        # --- k8s-direct mode ---
+        config = load_config()
+        if config.mode == "k8s-direct":
+            user_info = authenticate_user(config)
+            mgr = K8sDirectManager(config)
+            if reservation_id:
+                info = mgr.show(reservation_id)
+                if info:
+                    _show_single_reservation(info)
+                else:
+                    rprint(f"[red]❌ Reservation {reservation_id[:8]} not found[/red]")
+            else:
+                reservations = mgr.list_reservations(
+                    user_filter=user_info["user_id"],
+                    statuses_to_include=["active", "preparing", "pending"],
+                )
+                if not reservations:
+                    rprint("[yellow]📋 No active reservations found[/yellow]")
+                else:
+                    for i, res in enumerate(reservations):
+                        if i > 0:
+                            rprint("")
+                        _show_single_reservation(res)
+            return
+
         with Live(
             Spinner("dots", text="📡 Fetching reservation details..."), console=console
         ) as live:
@@ -2587,6 +3071,8 @@ def _show_availability() -> None:
                 "t4": "Turing (sm75)",
                 "cpu-x86": "CPU (x86_64)",
                 "cpu-arm": "CPU (arm64)",
+                "cpu-small": "CPU Small (8 vCPU)",
+                "cpu-large": "CPU Large (32 vCPU)",
             }
 
             # Sort order: newest GPU architectures first, then CPUs at the bottom
@@ -2724,6 +3210,8 @@ def _show_availability_watch(interval: int) -> None:
                             "t4": "Turing (sm75)",
                             "cpu-x86": "CPU (x86_64)",
                             "cpu-arm": "CPU (arm64)",
+                            "cpu-small": "CPU Small (8 vCPU)",
+                            "cpu-large": "CPU Large (32 vCPU)",
                         }
 
                         # Sort order: newest GPU architectures first, then CPUs at the bottom
@@ -2852,6 +3340,43 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
     For VS Code Remote or manual SSH, use 'gpu-dev show' to see SSH commands.
     """
     try:
+        # --- k8s-direct mode ---
+        config = load_config()
+        if config.mode == "k8s-direct":
+            user_info = authenticate_user(config)
+            mgr = K8sDirectManager(config)
+
+            # If no reservation ID, find active pod
+            if reservation_id is None:
+                reservations = mgr.list_reservations(
+                    user_filter=user_info["user_id"],
+                    statuses_to_include=["active"],
+                )
+                if not reservations:
+                    rprint("[yellow]📋 No active reservations found[/yellow]")
+                    return
+                if len(reservations) == 1:
+                    reservation_id = reservations[0]["reservation_id"]
+                else:
+                    rprint("[cyan]Multiple active reservations:[/cyan]")
+                    for res in reservations:
+                        rprint(f"  {res['reservation_id'][:8]}  {res['pod_name']}  {res['gpu_type']}")
+                    rprint("\n[dim]Specify reservation ID: gpu-dev connect <id>[/dim]")
+                    return
+
+            info = mgr.show(reservation_id)
+            if not info:
+                rprint(f"[red]❌ Reservation {reservation_id[:8]} not found[/red]")
+                return
+            pod_name = info["pod_name"]
+            if info.get("status") != "active":
+                rprint(f"[red]❌ Reservation is not active (status: {info.get('status')})[/red]")
+                return
+            rprint(f"[dim]Connecting to pod {pod_name}...[/dim]\n")
+            api_client = get_k8s_api_client(config)
+            kube_exec_interactive(api_client, pod_name, namespace=config.namespace, container="dev", shell="su - dev")
+            return
+
         with Live(
             Spinner("dots", text="📡 Fetching reservation details..."), console=console
         ) as live:
@@ -2948,6 +3473,196 @@ def help(ctx: click.Context) -> None:
     click.echo(ctx.parent.get_help())
 
 
+@main.command(name="build-image")
+@click.option(
+    "--preset",
+    "-p",
+    type=str,
+    default=None,
+    help="Which Dockerfile to build: name maps to Dockerfile.<name>. 'all' builds everything. Default: all.",
+)
+@click.option(
+    "--dockerfile",
+    "-f",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to custom Dockerfile (overrides --preset)",
+)
+@click.option(
+    "--tag",
+    "-t",
+    type=str,
+    default="v1",
+    help="Image tag (default: v1)",
+)
+@click.option(
+    "--repo",
+    type=str,
+    default=None,
+    help="ECR repository URL (auto-detected from config)",
+)
+@click.pass_context
+def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[str], tag: str, repo: Optional[str]) -> None:
+    """Build the custom dev pod image using in-cluster BuildKit.
+
+    Runs a BuildKit Job inside the K8s cluster that builds the Dockerfile
+    and pushes the image to ECR. No local Docker/podman needed.
+
+    Auto-discovers all Dockerfiles in the docker/ directory.
+    Dockerfile -> "default", Dockerfile.foo -> "foo".
+
+    \b
+    Examples:
+        gpu-dev build-image                     # Build all Dockerfiles found
+        gpu-dev build-image -p default          # Build only Dockerfile
+        gpu-dev build-image -p foo              # Build only Dockerfile.foo
+        gpu-dev build-image -f path/to/Dockerfile  # Specific file
+    """
+    import base64
+    import hashlib
+    import tarfile
+    import tempfile
+
+    def _find_docker_dir() -> Optional[str]:
+        """Find the docker/ directory with Dockerfiles."""
+        import pathlib
+        for base in [
+            pathlib.Path.home() / "dev" / "osdc" / "terraform-gpu-devservers" / "docker",
+            pathlib.Path.cwd() / "terraform-gpu-devservers" / "docker",
+        ]:
+            if base.exists():
+                return str(base)
+        return None
+
+    def _discover_dockerfiles(docker_dir: str) -> dict:
+        """Discover all Dockerfiles in the docker dir.
+
+        Returns dict of {name: path} where name is derived from the extension:
+          Dockerfile        -> "default"
+          Dockerfile.pytorch -> "pytorch"
+          Dockerfile.bar     -> "bar"
+        """
+        import pathlib
+        result = {}
+        for p in sorted(pathlib.Path(docker_dir).glob("Dockerfile*")):
+            if p.name == "Dockerfile":
+                result["default"] = str(p)
+            elif p.name.startswith("Dockerfile."):
+                name = p.name.split(".", 1)[1]
+                result[name] = str(p)
+        return result
+
+    def _build_one(mgr, dockerfile_path: str, label: str, registry_repo: str) -> Optional[str]:
+        """Build one image. Returns final image URI or None on failure."""
+        dockerfile_dir = os.path.dirname(os.path.abspath(dockerfile_path))
+        rprint(f"\n[cyan]📦 [{label}] Building from: {dockerfile_path}[/cyan]")
+
+        rprint(f"[dim]   [{label}] Creating build context...[/dim]")
+        with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as tmp:
+            with tarfile.open(tmp.name, 'w:gz') as tar:
+                for root, dirs, files in os.walk(dockerfile_dir):
+                    for f in files:
+                        fpath = os.path.join(root, f)
+                        arcname = os.path.relpath(fpath, dockerfile_dir)
+                        tar.add(fpath, arcname=arcname)
+
+            compressed_size = os.path.getsize(tmp.name)
+            rprint(f"[dim]   [{label}] Build context: {compressed_size // 1024}KB compressed[/dim]")
+
+            with open(tmp.name, 'rb') as f:
+                build_context_b64 = base64.b64encode(f.read()).decode('utf-8')
+            os.unlink(tmp.name)
+
+        # Use the label as the image tag (derived from Dockerfile extension)
+        image_tag = label
+        rprint(f"[cyan]🏗️  [{label}] Target: {registry_repo}:{image_tag}[/cyan]")
+
+        job_name = mgr.build_image(
+            build_context_b64=build_context_b64,
+            registry_repo=registry_repo,
+            tag=image_tag,
+        )
+        return job_name, image_tag, build_context_b64
+
+    try:
+        config = load_config()
+
+        if repo is None:
+            repo = os.getenv("GPU_DEV_REGISTRY_REPO")
+            if not repo:
+                rprint("[red]❌ No registry repo configured[/red]")
+                rprint("[dim]Set GPU_DEV_REGISTRY_REPO environment variable:[/dim]")
+                rprint("[dim]  export GPU_DEV_REGISTRY_REPO=your-registry.com/repo[/dim]")
+                rprint("[dim]Or use --repo flag:[/dim]")
+                rprint("[dim]  gpu-dev build-image --repo your-registry.com/repo[/dim]")
+                return
+
+        mgr = K8sDirectManager(config)
+
+        # Determine what to build
+        if dockerfile:
+            # Explicit Dockerfile — single build
+            name = os.path.basename(dockerfile)
+            label = name.split(".", 1)[1] if "." in name else "custom"
+            presets_to_build = [(label, dockerfile)]
+        else:
+            docker_dir = _find_docker_dir()
+            if not docker_dir:
+                rprint("[red]❌ No docker/ directory found[/red]")
+                return
+
+            available = _discover_dockerfiles(docker_dir)
+            if not available:
+                rprint(f"[red]❌ No Dockerfiles found in {docker_dir}[/red]")
+                return
+
+            if not preset or preset.lower() == "all":
+                # Build everything found
+                presets_to_build = list(available.items())
+            else:
+                name = preset.lower()
+                if name not in available:
+                    rprint(f"[red]❌ No Dockerfile.{name} found in {docker_dir}[/red]")
+                    rprint(f"[dim]Available: {', '.join(available.keys())}[/dim]")
+                    return
+                presets_to_build = [(name, available[name])]
+
+        # Launch all builds (Jobs created in parallel)
+        builds = []
+        for label, path in presets_to_build:
+            job_name, image_tag, _ = _build_one(mgr, path, label, repo)
+            builds.append((label, job_name, image_tag))
+
+        # Wait for all builds
+        rprint(f"\n[cyan]⏳ Waiting for {len(builds)} build(s)...[/cyan]")
+        rprint("[dim]   First build may take 10-20 minutes (pulling base image)[/dim]")
+
+        for label, job_name, image_tag in builds:
+            def progress_cb(msg, lbl=label):
+                rprint(f"[dim]   [{lbl}] {msg}[/dim]")
+
+            result = mgr.wait_for_build(
+                job_name=job_name,
+                timeout_seconds=1800,
+                progress_callback=progress_cb,
+            )
+
+            final_image = f"{repo}:{image_tag}"
+            if result["success"]:
+                rprint(f"\n[green]✅ [{label}] Image built: {final_image}[/green]")
+                rprint(f"   [cyan]export GPU_DEV_IMAGE={final_image}[/cyan]")
+                # Save to ~/.gpu-dev/images.json for interactive image selection
+                _save_built_image(label, final_image)
+            else:
+                rprint(f"\n[red]❌ [{label}] Build failed: {result['message']}[/red]")
+                if result.get("logs"):
+                    for line in result["logs"].split("\n")[-15:]:
+                        rprint(f"[dim]   {line}[/dim]")
+
+    except Exception as e:
+        rprint(f"[red]❌ Error: {str(e)}[/red]")
+
+
 @main.command(name="avail")
 @click.option(
     "--watch",
@@ -2979,6 +3694,12 @@ def avail(ctx: click.Context, watch: bool, interval: int) -> None:
 
     This helps you choose the right GPU type and understand wait times before reserving.
     """
+    # --- k8s-direct mode ---
+    config = load_config()
+    if config.mode == "k8s-direct":
+        _avail_k8s_direct(config)
+        return
+
     if watch:
         _show_availability_watch(interval)
     else:
@@ -3007,6 +3728,12 @@ def status(ctx: click.Context) -> None:
     Note: Status is updated in real-time from the Kubernetes cluster.
     """
     try:
+        # --- k8s-direct mode ---
+        config = load_config()
+        if config.mode == "k8s-direct":
+            _status_k8s_direct(config)
+            return
+
         with Live(
             Spinner("dots", text="📡 Checking cluster status..."), console=console
         ) as live:
@@ -3287,6 +4014,11 @@ def edit(
         gpu-dev edit abc12345 --extend 8        # Extend by 8 hours
     """
     try:
+        config = load_config()
+        if config.mode == "k8s-direct":
+            _k8s_direct_unsupported("edit")
+            return
+
         # Determine if we should use interactive mode
         use_interactive = interactive
         if use_interactive is None:
@@ -3595,7 +4327,8 @@ def ssh_include(action: str):
 
 
 @main.group()
-def disk():
+@click.pass_context
+def disk(ctx):
     """Manage persistent disks for GPU reservations
 
     \b
@@ -3605,7 +4338,10 @@ def disk():
         gpu-dev disk list-content <name>       # Show contents of a disk
         gpu-dev disk unlock <name>             # Unlock a stale in-use lock
     """
-    pass
+    config = load_config()
+    if config.mode == "k8s-direct":
+        _k8s_direct_unsupported("disk")
+        ctx.exit(1)
 
 
 @disk.command("list")

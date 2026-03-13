@@ -2,15 +2,19 @@
 
 import os
 import json
-import boto3
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 
 class Config:
-    """Zero-config AWS-based configuration"""
+    """Zero-config configuration — AWS optional when GPU_DEV_API_URL is set
 
-    # Environment configurations (test vs prod)
+    Supports three modes:
+    - "api": Traditional API-based mode (requires API service + port-forward)
+    - "k8s-direct": Direct K8s mode (requires only KUBECONFIG, creates Jobs directly)
+    """
+
+    # Environment configurations
     ENVIRONMENTS = {
         "test": {
             "region": "us-west-1",
@@ -25,13 +29,13 @@ class Config:
             "api_url": None,  # Set after CloudFront deployment
         },
         "local": {
-            "region": "us-west-1",
+            "region": "local",
             "workspace": "local",
-            "description": "Local k3d development environment",
+            "description": "Local / kubectl-based environment",
             "api_url": "http://localhost:8000",
         },
     }
-    DEFAULT_ENVIRONMENT = "prod"
+    DEFAULT_ENVIRONMENT = "local"
 
     # Config file path (class-level for access without instantiation)
     CONFIG_FILE = Path.home() / ".config" / "gpu-dev" / "config.json"
@@ -63,27 +67,37 @@ class Config:
         self.availability_table = f"{self.prefix}-gpu-availability"
         self.cluster_name = f"{self.prefix}-cluster"
 
-        # Determine AWS session (with profile support)
-        self.session = self._create_aws_session()
-
-        # AWS clients
+        # Skip AWS setup when API URL is set (non-AWS mode: MKS, local, etc.)
+        self._aws_available = False
+        self.session = None
         self._sts_client = None
         self._dynamodb = None
+
+        if not os.getenv("GPU_DEV_API_URL") and self.user_config.get("environment") != "local":
+            self.session = self._create_aws_session()
+            self._aws_available = True
 
     def _create_aws_session(self):
         """Create AWS session with profile support"""
         try:
+            import boto3
             # Try to use 'gpu-dev' profile if it exists
             session = boto3.Session(profile_name="gpu-dev")
             # Test if profile works by checking credentials
             session.get_credentials()
             return session
         except Exception:
-            # Fall back to default credentials (environment, default profile, IAM role, etc.)
-            return boto3.Session()
+            try:
+                import boto3
+                # Fall back to default credentials
+                return boto3.Session()
+            except ImportError:
+                return None
 
     @property
     def sts_client(self):
+        if not self._aws_available or not self.session:
+            raise RuntimeError("AWS not available — set GPU_DEV_API_URL for non-AWS mode")
         if self._sts_client is None:
             self._sts_client = self.session.client("sts", region_name=self.aws_region)
         return self._sts_client
@@ -92,11 +106,13 @@ class Config:
     def dynamodb(self):
         """
         DynamoDB resource for legacy disk operations.
-        
+
         NOTE: This is only used by the persistent disk management system
         which still uses the legacy SQS/DynamoDB infrastructure.
         All job/reservation operations now use the API service.
         """
+        if not self._aws_available or not self.session:
+            raise RuntimeError("AWS not available — set GPU_DEV_API_URL for non-AWS mode")
         if self._dynamodb is None:
             self._dynamodb = self.session.resource(
                 "dynamodb", region_name=self.aws_region
@@ -242,6 +258,42 @@ class Config:
     def get(self, key: str) -> Optional[Any]:
         """Get a config value."""
         return self.user_config.get(key)
+
+    @property
+    def mode(self) -> str:
+        """Determine CLI operating mode.
+
+        Returns "k8s-direct" when:
+        - GPU_DEV_MODE=k8s-direct is explicitly set, OR
+        - KUBECONFIG is set and environment is "local" (no API URL configured)
+
+        Returns "api" otherwise (traditional API-based mode).
+        """
+        # Explicit mode override
+        explicit_mode = os.getenv("GPU_DEV_MODE", "").lower()
+        if explicit_mode == "k8s-direct":
+            return "k8s-direct"
+        if explicit_mode == "api":
+            return "api"
+
+        # Auto-detect: KUBECONFIG set + local env + no explicit API URL
+        if os.getenv("KUBECONFIG"):
+            env = self.user_config.get("environment", "local")
+            has_api_url = bool(os.getenv("GPU_DEV_API_URL") or self.user_config.get("api_url"))
+            if env == "local" and not has_api_url:
+                return "k8s-direct"
+
+        return "api"
+
+    @property
+    def kubeconfig_path(self) -> Optional[str]:
+        """Get kubeconfig path from $KUBECONFIG or default."""
+        return os.getenv("KUBECONFIG") or str(Path.home() / ".kube" / "config")
+
+    @property
+    def namespace(self) -> str:
+        """Get K8s namespace for gpu-dev resources."""
+        return os.getenv("GPU_DEV_NAMESPACE", "gpu-dev")
 
     def get_github_username(self) -> Optional[str]:
         """Get GitHub username from config."""

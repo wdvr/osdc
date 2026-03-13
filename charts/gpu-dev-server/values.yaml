@@ -13,6 +13,7 @@ namespaces:
 # Storage configuration - override per cloud provider
 storage:
   createClass: true  # Set to false when StorageClass is managed externally (e.g., by Terraform)
+  useEmptyDir: false  # Set to true when no StorageClass/provisioner is available (data is ephemeral!)
   class: "gp3"  # AWS default; set to "" for local (uses default)
   postgres:
     size: "100Gi"
@@ -226,6 +227,8 @@ buildkit:
 gpuDev:
   rbac:
     enabled: true
+  k8sDirect:
+    enabled: false  # Enable for k8s-direct CLI mode (Jobs-based, no API service)
 
 # Image pre-puller DaemonSet (pulls GPU dev image on all GPU nodes)
 imagePrepuller:
