@@ -141,15 +141,20 @@ def _load_k8s_direct_client(kubeconfig_path: str) -> k8s_client.ApiClient:
 
     # Resolve current context
     ctx_name = kc.get("current-context")
-    ctx = next((c["context"] for c in kc.get("contexts", []) if c["name"] == ctx_name), None)
+    contexts = kc.get("contexts") or []
+    ctx = next((c["context"] for c in contexts if c["name"] == ctx_name), None)
     if not ctx:
-        raise RuntimeError(f"Context '{ctx_name}' not found in {kubeconfig_path}")
+        raise RuntimeError(
+            f"Context '{ctx_name}' not found in {kubeconfig_path}\n"
+            f"Run: kubectl config get-contexts  (to see available contexts)"
+        )
 
     cluster_name = ctx["cluster"]
     user_name = ctx["user"]
 
     # Get cluster info
-    cluster_entry = next((c["cluster"] for c in kc.get("clusters", []) if c["name"] == cluster_name), None)
+    clusters = kc.get("clusters") or []
+    cluster_entry = next((c["cluster"] for c in clusters if c["name"] == cluster_name), None)
     if not cluster_entry:
         raise RuntimeError(f"Cluster '{cluster_name}' not found in {kubeconfig_path}")
 
@@ -157,7 +162,8 @@ def _load_k8s_direct_client(kubeconfig_path: str) -> k8s_client.ApiClient:
     ca_data = cluster_entry.get("certificate-authority-data")
 
     # Get user info
-    user_entry = next((u["user"] for u in kc.get("users", []) if u["name"] == user_name), None)
+    users = kc.get("users") or []
+    user_entry = next((u["user"] for u in users if u["name"] == user_name), None)
     if not user_entry:
         raise RuntimeError(f"User '{user_name}' not found in {kubeconfig_path}")
 
