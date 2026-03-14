@@ -772,7 +772,9 @@ class K8sDirectManager:
         import hashlib
 
         context_hash = hashlib.sha256(build_context_b64.encode()).hexdigest()[:12]
-        job_name = f"buildkit-{tag}-{context_hash}"
+        # K8s names must be lowercase RFC 1123: [a-z0-9.-]
+        safe_tag = tag.replace("_", "-").lower()
+        job_name = f"buildkit-{safe_tag}-{context_hash}"
         full_image = f"{registry_repo}:{tag}"
 
         batch_v1 = k8s_client.BatchV1Api(self.api_client)
