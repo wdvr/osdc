@@ -11,4 +11,5 @@ metadata:
     {{- include "gpu-dev-server.labels" . | nindent 4 }}
 data:
   registryRepo: {{ .Values.gpuDev.k8sDirect.registryRepo | quote }}
+  registrySecret: {{ .Values.gpuDev.k8sDirect.registrySecret | quote }}
 {{- end }}

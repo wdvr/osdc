@@ -3941,9 +3941,11 @@ def set_cluster(key: str, value: str) -> None:
     \b
     Examples:
         gpu-dev config set-cluster registryRepo your-registry.com/dev-images
+        gpu-dev config set-cluster registrySecret my-push-secret
 
     Valid keys:
-        registryRepo: ECR repo URL for built dev images
+        registryRepo:   Container registry repo URL for built dev images
+        registrySecret: K8s secret name with registry push credentials (auto-detected if not set)
     """
     try:
         config = load_config()
@@ -3951,7 +3953,7 @@ def set_cluster(key: str, value: str) -> None:
             rprint("[red]set-cluster is only available in k8s-direct mode[/red]")
             return
 
-        valid_keys = ["registryRepo"]
+        valid_keys = ["registryRepo", "registrySecret"]
         if key not in valid_keys:
             rprint(f"[red]Unknown cluster config key '{key}'. Valid: {', '.join(valid_keys)}[/red]")
             return

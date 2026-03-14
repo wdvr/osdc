@@ -1455,15 +1455,21 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
     def _find_registry_secret(self) -> Optional[str]:
         """Find a docker config secret for registry auth.
 
-        Checks for these secrets in order:
-        1. 'registry-push-secret' in gpu-dev namespace
-        2. 'ecr-buildkit-auth' in gpu-dev namespace
-        3. 'ecr-pull-secret' in gpu-dev namespace
-        4. 'ecr-pull-secret' in gpu-controlplane namespace (copies to gpu-dev)
+        If 'registrySecret' is set in the gpu-dev-config ConfigMap, uses that
+        secret name directly. Otherwise probes well-known secret names.
 
         Returns the secret name in gpu-dev namespace, or None.
         """
-        # Check gpu-dev namespace first
+        # Check cluster config for explicit secret name
+        configured = self.get_cluster_config("registrySecret")
+        if configured:
+            try:
+                self.v1.read_namespaced_secret(configured, self.namespace)
+                return configured
+            except k8s_client.exceptions.ApiException:
+                pass  # Fall through to auto-discovery
+
+        # Auto-discover: probe well-known secret names
         for name in ["registry-push-secret", "ecr-buildkit-auth", "ecr-pull-secret"]:
             try:
                 self.v1.read_namespaced_secret(name, self.namespace)

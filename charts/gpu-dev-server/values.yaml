@@ -230,6 +230,7 @@ gpuDev:
   k8sDirect:
     enabled: false  # Enable for k8s-direct CLI mode (Jobs-based, no API service)
     registryRepo: ""  # Container registry repo for built dev images (e.g. your-registry.com/dev-images)
+    registrySecret: ""  # K8s secret name with registry push credentials (auto-detected if empty)
 
 # Image pre-puller DaemonSet (pulls GPU dev image on all GPU nodes)
 imagePrepuller:
