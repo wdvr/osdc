@@ -1457,13 +1457,14 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
 
         Checks for these secrets in order:
         1. 'registry-push-secret' in gpu-dev namespace
-        2. 'ecr-pull-secret' in gpu-dev namespace
-        3. 'ecr-pull-secret' in gpu-controlplane namespace (copies to gpu-dev)
+        2. 'ecr-buildkit-auth' in gpu-dev namespace
+        3. 'ecr-pull-secret' in gpu-dev namespace
+        4. 'ecr-pull-secret' in gpu-controlplane namespace (copies to gpu-dev)
 
         Returns the secret name in gpu-dev namespace, or None.
         """
         # Check gpu-dev namespace first
-        for name in ["registry-push-secret", "ecr-pull-secret"]:
+        for name in ["registry-push-secret", "ecr-buildkit-auth", "ecr-pull-secret"]:
             try:
                 self.v1.read_namespaced_secret(name, self.namespace)
                 return name
