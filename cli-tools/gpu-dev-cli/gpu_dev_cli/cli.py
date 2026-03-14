@@ -816,11 +816,7 @@ def _reserve_k8s_direct(
                 )
 
             # Run post-ready hook (for env-specific setup like certs, mounts, etc.)
-            # Pre-read local files the hook might need (avoids BPF jailer issues
-            # where subprocesses can't access restricted paths)
-            import base64 as _b64
-            from pathlib import Path as _Path
-            hook_env = {
+            _run_hook("post-reserve", {
                 "GPU_DEV_POD_NAME": conn_info["pod_name"],
                 "GPU_DEV_NAMESPACE": config.namespace,
                 "GPU_DEV_RESERVATION_ID": reservation_id,
@@ -828,19 +824,7 @@ def _reserve_k8s_direct(
                 "GPU_DEV_SSH_PORT": ssh_port,
                 "GPU_DEV_USERNAME": username,
                 "GPU_DEV_KUBECONFIG": config.kubeconfig_path or "",
-            }
-            # Read any files from a "inject" dir and pass as base64 env vars
-            inject_dir = _Path.home() / ".gpu-dev" / "inject"
-            if inject_dir.exists():
-                for f in sorted(inject_dir.rglob("*")):
-                    if f.is_file():
-                        try:
-                            rel = str(f.relative_to(inject_dir))
-                            hook_env[f"GPU_DEV_INJECT_{rel.replace('/', '__').replace('.', '_')}"] = _b64.b64encode(f.read_bytes()).decode()
-                            hook_env[f"GPU_DEV_INJECT_PATH_{rel.replace('/', '__').replace('.', '_')}"] = f"/{rel}"
-                        except Exception:
-                            pass
-            _run_hook("post-reserve", hook_env)
+            })
 
             rprint(f"\n[green]🚀 Reservation is ready![/green]")
             _show_single_reservation(conn_info)
