@@ -747,6 +747,12 @@ def _reserve_k8s_direct(
 
             cfg = cluster_gpu_cfg[gpu_type]
 
+            # Use best available image (cluster images > default)
+            cluster_images = mgr.list_available_images()
+            if cluster_images:
+                # Prefer the first cluster image as default
+                cfg = {**cfg, "default_image": next(iter(cluster_images.values()))}
+
             if gpus is None:
                 gpu_count = 0 if cfg["max_gpus"] == 0 else 1
             else:
