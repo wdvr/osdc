@@ -1,0 +1,30 @@
+#!/bin/bash
+# Example post-reserve hook
+#
+# This script runs automatically after a pod becomes ready.
+# Place your version at: ~/.gpu-dev/hooks/post-reserve
+#
+# Use it to inject credentials, mount storage, or run any
+# environment-specific setup on the pod.
+#
+# Available environment variables:
+#   GPU_DEV_POD_NAME        - Pod name (e.g. gpu-dev-abc12345)
+#   GPU_DEV_NAMESPACE       - K8s namespace (e.g. gpu-dev)
+#   GPU_DEV_RESERVATION_ID  - Full reservation ID
+#   GPU_DEV_NODE_IP         - Node IP address
+#   GPU_DEV_SSH_PORT        - SSH NodePort
+#   GPU_DEV_USERNAME        - Username inside the pod
+#
+# Example: copy a local CA cert into the pod
+#
+#   inject_file() {
+#       local src="$1" dst="$2"
+#       [ -f "$src" ] || return 1
+#       kubectl exec -n "$GPU_DEV_NAMESPACE" "$GPU_DEV_POD_NAME" -c dev -- \
+#           sh -c "mkdir -p '$(dirname "$dst")' && cat > '$dst'" < "$src"
+#   }
+#
+#   inject_file /path/to/ca.pem /etc/ssl/custom/ca.pem
+#   echo "Injected CA cert"
+
+echo "Post-reserve hook running for pod $GPU_DEV_POD_NAME"

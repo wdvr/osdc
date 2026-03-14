@@ -80,6 +80,39 @@ def _load_built_images() -> dict:
     return {}
 
 
+def _run_hook(hook_name: str, env: dict) -> None:
+    """Run a user hook script if it exists.
+
+    Hooks live in ~/.gpu-dev/hooks/<name> and are executable scripts.
+    They receive pod info as environment variables.
+    This is the extension point for environment-specific setup
+    (e.g. injecting credentials, mounting storage, etc.)
+    """
+    import subprocess
+    from pathlib import Path
+
+    hook_path = Path.home() / ".gpu-dev" / "hooks" / hook_name
+    if not hook_path.exists() or not hook_path.stat().st_mode & 0o111:
+        return
+
+    try:
+        merged_env = {**os.environ, **env}
+        result = subprocess.run(
+            [str(hook_path)],
+            env=merged_env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.stdout.strip():
+            for line in result.stdout.strip().split("\n"):
+                rprint(f"[dim]   [hook] {line}[/dim]")
+        if result.returncode != 0 and result.stderr.strip():
+            rprint(f"[yellow]   [hook] {result.stderr.strip()}[/yellow]")
+    except Exception as e:
+        rprint(f"[yellow]   [hook] {hook_name}: {e}[/yellow]")
+
+
 def _k8s_direct_unsupported(command_name: str) -> None:
     """Print error for commands not supported in k8s-direct mode."""
     rprint(f"[red]❌ '{command_name}' is not supported in k8s-direct mode[/red]")
@@ -781,6 +814,16 @@ def _reserve_k8s_direct(
                     reservation_id, node_ip, ssh_port, pod_name,
                     username=username,
                 )
+
+            # Run post-ready hook (for env-specific setup like certs, mounts, etc.)
+            _run_hook("post-reserve", {
+                "GPU_DEV_POD_NAME": conn_info["pod_name"],
+                "GPU_DEV_NAMESPACE": config.namespace,
+                "GPU_DEV_RESERVATION_ID": reservation_id,
+                "GPU_DEV_NODE_IP": node_ip,
+                "GPU_DEV_SSH_PORT": ssh_port,
+                "GPU_DEV_USERNAME": username,
+            })
 
             rprint(f"\n[green]🚀 Reservation is ready![/green]")
             _show_single_reservation(conn_info)
