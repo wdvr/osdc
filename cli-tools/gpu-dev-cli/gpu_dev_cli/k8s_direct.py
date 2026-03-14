@@ -1344,13 +1344,30 @@ if which sshd >/dev/null 2>&1; then
   for g in sudo root conda; do
     groupadd -f "$g" 2>/dev/null; usermod -aG "$g" "$DEV_USER" 2>/dev/null
   done
-  # Ensure PATH includes conda, cuda, user bins
+
+  # Set up PATH for all login shells
   cat > /etc/profile.d/gpu-dev.sh << PATHEOF
 export PATH=/opt/conda/bin:/usr/local/cuda/bin:/home/$DEV_USER/.local/bin:\$PATH
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\${LD_LIBRARY_PATH:-}
 export CUDA_HOME=/usr/local/cuda
 PATHEOF
   chmod 644 /etc/profile.d/gpu-dev.sh
+
+  # Set up user home dir if empty (volume mount wipes it)
+  HOME_DIR="/home/$DEV_USER"
+  if [ ! -f "$HOME_DIR/.zshrc" ] && which zsh >/dev/null 2>&1; then
+    # Install oh-my-zsh
+    su - "$DEV_USER" -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended' 2>/dev/null || true
+    su - "$DEV_USER" -c '
+      git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions ~/.oh-my-zsh/custom/plugins/zsh-autosuggestions 2>/dev/null
+      git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting ~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting 2>/dev/null
+    ' 2>/dev/null || true
+    if [ -f "$HOME_DIR/.zshrc" ]; then
+      sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' "$HOME_DIR/.zshrc" 2>/dev/null
+      echo 'source /etc/profile.d/gpu-dev.sh' >> "$HOME_DIR/.zshrc"
+    fi
+  fi
+
   mkdir -p /run/sshd
   exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
 fi
