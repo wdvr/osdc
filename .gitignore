@@ -74,3 +74,4 @@ admin/output/
 
 # Custom Dockerfiles (only vanilla Dockerfile is tracked; custom variants are local-only)
 terraform-gpu-devservers/docker/Dockerfile.*
+TODO.md
