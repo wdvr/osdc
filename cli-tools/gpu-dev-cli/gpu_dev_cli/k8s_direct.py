@@ -1285,6 +1285,8 @@ mkdir -p /home/$DEV_USER/.ssh
 # Write pubkey from env var
 printf '%s\n' "$SSH_PUBKEY" > /home/$DEV_USER/.ssh/authorized_keys
 
+chown $DEV_UID:$DEV_UID /home/$DEV_USER
+chmod 755 /home/$DEV_USER
 chmod 700 /home/$DEV_USER/.ssh
 chmod 600 /home/$DEV_USER/.ssh/authorized_keys
 chown -R $DEV_UID:$DEV_UID /home/$DEV_USER/.ssh
@@ -1360,8 +1362,12 @@ export CUDA_HOME=/usr/local/cuda
 PATHEOF
   chmod 644 /etc/profile.d/gpu-dev.sh
 
-  # Set up user home dir if empty (volume mount wipes it)
+  # Fix home dir ownership (emptyDir mount is root-owned; sshd StrictModes rejects that)
   HOME_DIR="/home/$DEV_USER"
+  chown "$DEV_UID":"$DEV_UID" "$HOME_DIR"
+  chmod 755 "$HOME_DIR"
+
+  # Set up user home dir if empty (volume mount wipes it)
   if [ ! -f "$HOME_DIR/.zshrc" ] && which zsh >/dev/null 2>&1; then
     # Install oh-my-zsh
     su - "$DEV_USER" -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended' 2>/dev/null || true
@@ -1408,6 +1414,10 @@ echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev-user 2>/dev/null ||
 for g in sudo root conda; do
   groupadd -f "$g" 2>/dev/null; usermod -aG "$g" "$DEV_USER" 2>/dev/null
 done
+
+# Fix home dir ownership (emptyDir mount is root-owned; sshd StrictModes rejects that)
+chown "$DEV_UID":"$DEV_UID" "/home/$DEV_USER"
+chmod 755 "/home/$DEV_USER"
 
 # Set up PATH for user — conda, cuda, pip bins
 cat > /etc/profile.d/gpu-dev.sh << PATHEOF
