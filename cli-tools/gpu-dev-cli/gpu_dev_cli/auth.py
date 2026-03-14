@@ -8,11 +8,21 @@ from rich.spinner import Spinner
 
 
 def authenticate_user(config: Config) -> Dict[str, Any]:
-    """Authenticate user — AWS or local/API-only mode"""
+    """Authenticate user — k8s-direct (local identity) or AWS mode"""
     import os
 
-    # Non-AWS mode: use local username in k8s-direct mode or when GPU_DEV_API_URL is set
-    if os.getenv("GPU_DEV_MODE", "").lower() == "k8s-direct" or os.getenv("GPU_DEV_API_URL") or not config._aws_available:
+    # k8s-direct mode: use local unix username, no GitHub needed
+    if config.mode == "k8s-direct":
+        user_name = os.getenv("USER", "dev")
+
+        return {
+            "user_id": user_name,
+            "github_user": user_name,
+            "arn": f"local/{user_name}",
+        }
+
+    # Non-AWS API mode
+    if os.getenv("GPU_DEV_API_URL") or not config._aws_available:
         user_name = os.getenv("GPU_DEV_USER", os.getenv("USER", "dev"))
         github_user = config.get_github_username() or user_name
 

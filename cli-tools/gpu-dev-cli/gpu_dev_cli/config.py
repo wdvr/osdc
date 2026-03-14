@@ -268,11 +268,8 @@ class Config:
     def mode(self) -> str:
         """Determine CLI operating mode.
 
-        Returns "k8s-direct" when:
-        - GPU_DEV_MODE=k8s-direct is explicitly set, OR
-        - KUBECONFIG is set and environment is "local" (no API URL configured)
-
-        Returns "api" otherwise (traditional API-based mode).
+        Returns "k8s-direct" by default (direct K8s API, no API service needed).
+        Returns "api" only when explicitly configured (GPU_DEV_MODE=api or api_url set).
         """
         # Explicit mode override
         explicit_mode = os.getenv("GPU_DEV_MODE", "").lower()
@@ -281,14 +278,12 @@ class Config:
         if explicit_mode == "api":
             return "api"
 
-        # Auto-detect: KUBECONFIG set + local env + no explicit API URL
-        if os.getenv("KUBECONFIG"):
-            env = self.user_config.get("environment", "local")
-            has_api_url = bool(os.getenv("GPU_DEV_API_URL") or self.user_config.get("api_url"))
-            if env == "local" and not has_api_url:
-                return "k8s-direct"
+        # API mode only if explicitly configured with an API URL
+        has_api_url = bool(os.getenv("GPU_DEV_API_URL") or self.user_config.get("api_url"))
+        if has_api_url:
+            return "api"
 
-        return "api"
+        return "k8s-direct"
 
     @property
     def kubeconfig_path(self) -> Optional[str]:
