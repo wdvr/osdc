@@ -626,6 +626,7 @@ def _reserve_k8s_direct(
     hours: Optional[float],
     name: Optional[str],
     interactive: Optional[bool],
+    image: Optional[str] = None,
 ) -> None:
     """Handle 'gpu-dev reserve' in k8s-direct mode."""
     try:
@@ -747,10 +748,17 @@ def _reserve_k8s_direct(
 
             cfg = cluster_gpu_cfg[gpu_type]
 
-            # Use best available image (cluster images > default)
+            # Resolve image: --image flag > cluster images > default
             cluster_images = mgr.list_available_images()
-            if cluster_images:
-                # Prefer the first cluster image as default
+            if image:
+                # Explicit --image flag: resolve label to URI
+                if image in cluster_images:
+                    cfg = {**cfg, "default_image": cluster_images[image]}
+                else:
+                    # Treat as a raw image URI
+                    cfg = {**cfg, "default_image": image}
+            elif cluster_images:
+                # Auto-pick first cluster image
                 cfg = {**cfg, "default_image": next(iter(cluster_images.values()))}
 
             if gpus is None:
@@ -1151,6 +1159,11 @@ def login() -> None:
     help="Custom Docker image to use instead of default container image (e.g., pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel)",
 )
 @click.option(
+    "--image",
+    type=str,
+    help="Image label from cluster ConfigMap (e.g., osdc-pytorch). Use 'gpu-dev build-image' to see available images.",
+)
+@click.option(
     "--preserve-entrypoint",
     is_flag=True,
     help="Preserve the original container ENTRYPOINT/CMD instead of overriding with bash script",
@@ -1188,6 +1201,7 @@ def reserve(
     verbose: bool,
     dockerfile: Optional[str],
     dockerimage: Optional[str],
+    image: Optional[str],
     preserve_entrypoint: bool,
     docker: bool,
     disk: Optional[str],
@@ -1227,7 +1241,7 @@ def reserve(
         # --- k8s-direct mode: simplified reserve path ---
         config = load_config()
         if config.mode == "k8s-direct":
-            _reserve_k8s_direct(config, gpus, gpu_type, hours, name, interactive)
+            _reserve_k8s_direct(config, gpus, gpu_type, hours, name, interactive, image=image)
             return
 
         # Track if user explicitly requests no persistent disk
