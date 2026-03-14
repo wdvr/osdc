@@ -1378,6 +1378,29 @@ PATHEOF
     if [ -f "$HOME_DIR/.zshrc" ]; then
       sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' "$HOME_DIR/.zshrc" 2>/dev/null
       echo 'source /etc/profile.d/gpu-dev.sh' >> "$HOME_DIR/.zshrc"
+      # MOTD: show reservation info on login
+      cat >> "$HOME_DIR/.zshrc" << 'MOTDEOF'
+
+# gpu-dev MOTD
+if [ -z "$_GPU_DEV_MOTD_SHOWN" ]; then
+  export _GPU_DEV_MOTD_SHOWN=1
+  echo ""
+  echo "\033[1;36m  gpu-dev pod: $(hostname)\033[0m"
+  if [ -n "$DEV_USER" ]; then
+    echo "\033[0;32m  User: $DEV_USER\033[0m"
+  fi
+  # Show expiration from pod spec
+  DEADLINE=$(cat /proc/1/cmdline 2>/dev/null | tr '\0' '\n' | grep -o 'activeDeadline.*' | head -1)
+  if [ -f /tmp/gpu-dev-startup-status ]; then
+    STATUS=$(cat /tmp/gpu-dev-startup-status 2>/dev/null)
+    if [ "$STATUS" = "starting" ]; then
+      echo "\033[0;33m  ⏳ Background setup running (tail -f /tmp/gpu-dev-startup.log)\033[0m"
+    fi
+  fi
+  echo ""
+fi
+MOTDEOF
+
       # Show startup status in prompt (disappears when done)
       cat >> "$HOME_DIR/.zshrc" << 'PROMPTEOF'
 
