@@ -1335,6 +1335,16 @@ if which sshd >/dev/null 2>&1 && id "$DEV_USER" >/dev/null 2>&1; then
   echo "Custom image detected — fast startup"
   passwd -u "$DEV_USER" 2>/dev/null || usermod -p '*' "$DEV_USER" 2>/dev/null || true
   echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev-user 2>/dev/null || true
+  for g in sudo root conda; do
+    groupadd -f "$g" 2>/dev/null; usermod -aG "$g" "$DEV_USER" 2>/dev/null
+  done
+  # Ensure PATH includes conda, cuda, user bins
+  cat > /etc/profile.d/gpu-dev.sh << PATHEOF
+export PATH=/opt/conda/bin:/usr/local/cuda/bin:/home/$DEV_USER/.local/bin:\$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\${LD_LIBRARY_PATH:-}
+export CUDA_HOME=/usr/local/cuda
+PATHEOF
+  chmod 644 /etc/profile.d/gpu-dev.sh
   mkdir -p /run/sshd
   exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
 fi
