@@ -1338,7 +1338,8 @@ if which sshd >/dev/null 2>&1; then
     useradd -m -u "$DEV_UID" -s "$SHELL_PATH" "$DEV_USER" 2>/dev/null || \
     adduser -D -u "$DEV_UID" -s "$SHELL_PATH" "$DEV_USER" 2>/dev/null || true
   }
-  passwd -u "$DEV_USER" 2>/dev/null || usermod -p '*' "$DEV_USER" 2>/dev/null || true
+  passwd -u -f "$DEV_USER" 2>/dev/null || usermod -p '*' "$DEV_USER" 2>/dev/null || true
+  mkdir -p /etc/sudoers.d
   echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev-user 2>/dev/null || true
   for g in sudo root conda; do
     groupadd -f "$g" 2>/dev/null; usermod -aG "$g" "$DEV_USER" 2>/dev/null
