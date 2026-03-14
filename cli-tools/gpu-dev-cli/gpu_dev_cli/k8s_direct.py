@@ -1119,7 +1119,9 @@ echo "[BUILDKIT] Done: {full_image}"
     HostName {node_ip}
     Port {ssh_port}
     User {username}
-{identity_lines}    ForwardAgent yes
+{identity_lines}    IdentityAgent none
+    PreferredAuthentications publickey
+    ForwardAgent yes
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 
@@ -1127,7 +1129,9 @@ echo "[BUILDKIT] Done: {full_image}"
 Host {pod_name}-proxy
     HostName {pod_name}
     User {username}
-{identity_lines}    ForwardAgent yes
+{identity_lines}    IdentityAgent none
+    PreferredAuthentications publickey
+    ForwardAgent yes
     ProxyCommand gpu-dev-ssh-proxy %h %p
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null

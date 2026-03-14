@@ -1,6 +1,49 @@
-# TODO — Ideas from seemethere/devservers
+# TODO
 
-## Architecture Ideas
+## Blocking Issues
+
+### 1. SSH from devvm doesn't work
+- **Symptom**: `ssh gpu-dev-xxx` → "Too many authentication failures" or key rejected
+- **Root cause 1**: Meta's `/etc/ssh/ssh_config` injects 7 extra IdentityFile entries (including `/var/facebook/credentials/...`), overriding our `IdentitiesOnly yes`
+- **Fix committed**: Added `IdentityAgent none` + `PreferredAuthentications publickey` to SSH config generation — needs push + reinstall
+- **Root cause 2**: The pubkey might not be installed correctly on the pod. The init container creates the key at `/home/$DEV_USER/.ssh/authorized_keys` but the main container starts sshd as root with `AuthorizedKeysFile .ssh/authorized_keys` — this path is relative to the login user's home. Need to verify the volume mount at `/home/$DEV_USER` persists between init and main containers.
+- **Root cause 3**: NodePort may not be routable from devvm (Connection refused). `gpu-dev connect` (kubectl exec) works as fallback.
+
+### 2. MSL runtime image tag doesn't exist
+- **Symptom**: `Dockerfile.msl_runtime` does `FROM 588845.../msl_infra/buildkit-cache:runtime-amd64` but that tag doesn't exist. Build succeeds because BuildKit falls back to the base pytorch image somehow.
+- **Result**: `osdc-msl_runtime` image is just vanilla pytorch re-tagged — no conda, no entrypoint-user.sh, no Meta tools
+- **Fix**: Find the correct tag for the MSL runtime image. Check with MSL infra team, or run `pkg-builder` to see what tags are pushed. The tag might be `dev-amd64`, a git hash, or something else.
+- **Workaround**: Use `Dockerfile.msl_base_new` which extends `base-new-amd64` (this tag DOES exist) and adds openssh on top.
+
+### 3. Conda not available
+- **Depends on**: Fix #2 (correct MSL runtime image)
+- The MSL `base-new` and `runtime` images should have conda at `/opt/conda` or `/usr/bin/conda`
+- The vanilla pytorch image uses pip only
+- If we can't get the MSL runtime image, add conda installation to `Dockerfile.msl_base_new`
+
+## Next Priorities
+
+### 4. hostPath volumes for Meta certs
+- MKS nodes are Meta machines — `/var/facebook/rootcanal` and `/var/facebook/x509_identities` likely exist on them
+- Add optional hostPath volumes to pod spec for these paths
+- This would unblock: manifold access, buck remote execution, internal pip repos
+- **Risk**: Requires privileged pod access or relaxed PSP/PSA policies
+- **Check**: Exec into a pod and test if hostPath works: mount `/var/facebook` and verify contents
+
+### 5. fbsource / Eden access
+- Eden requires FUSE on the host + Eden daemon running — NOT available on K8s worker nodes
+- Options:
+  - **sshfs mount** back to devvm (requires SSH key + network access)
+  - **git clone** (slow, OSDC prod does this pattern with a git-cache service)
+  - **hostPath** if `/data/users/` exists on MKS nodes (unlikely — Eden is per-user)
+- Most practical: git clone for now, sshfs for interactive use
+
+### 6. Main script "fast path" skips user env setup
+- When the image has sshd + user already, the startup script skips PATH setup, oh-my-zsh plugins, conda init etc.
+- The user gets a bare shell with no conda/cuda in PATH
+- Fix: always run the PATH setup regardless of fast path
+
+## Ideas from seemethere/devservers
 
 ### CRDs instead of ConfigMaps (medium-term)
 `seemethere/devservers` uses proper K8s CRDs:
@@ -8,69 +51,16 @@
 - `DevServerUser` — user access management with SSH keys
 - `DevServer` — the actual dev server resource
 
-We currently use ConfigMaps for GPU types + CLI config. CRDs would give us:
-- kubectl integration (`kubectl get devservers`, `kubectl describe devserverflavor h100`)
-- Schema validation (OpenAPI v3)
-- Watch/reconcile via an operator (Kopf or similar)
-- Proper RBAC per-resource
-
 ### Kopf Operator
-They use [Kopf](https://kopf.readthedocs.io/) (Python K8s operator framework).
-We could replace our CLI-driven pod creation with an operator that:
-- Watches `DevServer` CRs
-- Creates pods + services
-- Handles lifecycle (expiry, shutdown)
-- Manages user SSH key rotation
-
-Currently our CLI does all this directly — works but doesn't scale to multi-user.
+Replace CLI-driven pod creation with a Kopf operator for lifecycle management.
 
 ### Docker-style Volume Mounts
-`devctl create --name mydev --flavor gpu-small -v mydev-home:/home/dev -v datasets:/data:ro`
-
-Familiar syntax for users. We could adopt this for persistent disk mounting.
-
-### Flavor YAML files
-Their flavors are clean:
-```yaml
-apiVersion: devserver.io/v1
-kind: DevServerFlavor
-metadata:
-  name: gpu-small
-spec:
-  resources:
-    requests:
-      cpu: "4"
-      memory: "16Gi"
-      nvidia.com/gpu: "1"
-    limits:
-      cpu: "8"
-      memory: "32Gi"
-      nvidia.com/gpu: "1"
-  nodeSelector:
-    kubernetes.io/arch: amd64
-  tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-```
-
-Key differences from our approach:
-- Separates requests vs limits (we combine them)
-- Supports nodeSelector and tolerations per flavor
-- Standard K8s resource spec format
+`devctl create --name mydev --flavor gpu-small -v mydev-home:/home/dev`
 
 ### What We Do Better
-- Image building in-cluster (BuildKit jobs)
+- Image building in-cluster (BuildKit)
 - Image picker from ConfigMap
 - SSH config auto-generation for VS Code Remote
 - Real user identity passthrough (DEV_USER/DEV_UID/DEV_GID)
-- entrypoint-user.sh fast path for pre-built images
 - Zero-config mode detection (k8s-direct default)
-- Cluster-level config via ConfigMap (no operator needed to get started)
-
-## Actionable Next Steps
-
-1. **Add nodeSelector/tolerations to GPU config** — our ConfigMap types don't support this yet
-2. **Consider CRD migration** — would unlock kubectl integration and operator-based lifecycle
-3. **Volume mount syntax** — `-v name:/path` is more intuitive than our current approach
-4. **User CRD** — manage SSH keys at cluster level instead of per-pod env vars
+- Cluster-level config via ConfigMap (no operator needed)
