@@ -3555,19 +3555,19 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
     def _discover_dockerfiles(docker_dir: str) -> dict:
         """Discover all Dockerfiles in the docker dir.
 
-        Returns dict of {name: path} where name is derived from the extension:
-          Dockerfile        -> "default"
-          Dockerfile.pytorch -> "pytorch"
-          Dockerfile.bar     -> "bar"
+        Returns dict of {name: path} where name is prefixed with 'osdc-':
+          Dockerfile          -> "osdc-default"
+          Dockerfile.pytorch  -> "osdc-pytorch"
+          Dockerfile.foo      -> "osdc-foo"
         """
         import pathlib
         result = {}
         for p in sorted(pathlib.Path(docker_dir).glob("Dockerfile*")):
             if p.name == "Dockerfile":
-                result["default"] = str(p)
+                result["osdc-default"] = str(p)
             elif p.name.startswith("Dockerfile."):
                 name = p.name.split(".", 1)[1]
-                result[name] = str(p)
+                result[f"osdc-{name}"] = str(p)
         return result
 
     def _build_one(mgr, dockerfile_path: str, label: str, registry_repo: str) -> Optional[str]:
@@ -3640,8 +3640,11 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
                 presets_to_build = [*available.items()]
             else:
                 name = preset.lower()
+                # Accept with or without osdc- prefix
+                if name not in available and f"osdc-{name}" in available:
+                    name = f"osdc-{name}"
                 if name not in available:
-                    rprint(f"[red]❌ No Dockerfile.{name} found in {docker_dir}[/red]")
+                    rprint(f"[red]❌ No Dockerfile for preset '{name}' found in {docker_dir}[/red]")
                     rprint(f"[dim]Available: {', '.join(available.keys())}[/dim]")
                     return
                 presets_to_build = [(name, available[name])]
