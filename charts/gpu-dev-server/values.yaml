@@ -231,6 +231,13 @@ gpuDev:
     enabled: false  # Enable for k8s-direct CLI mode (Jobs-based, no API service)
     registryRepo: ""  # Container registry repo for built dev images (e.g. your-registry.com/dev-images)
     registrySecret: ""  # K8s secret name with registry push credentials (auto-detected if empty)
+    # GPU/instance type overrides. Keys are type names, values are JSON config objects.
+    # Overrides are merged with built-in defaults (cpu-s, cpu-m, ..., h100, b200, etc.)
+    # Example:
+    #   gpuTypes:
+    #     cpu-s: '{"cpus": 16, "memory_gb": 32, "cpu_request": "4", "mem_request_gb": 8}'
+    #     my-custom: '{"max_gpus": 2, "cpus": 32, "memory_gb": 64, "cpu_request": "8", "mem_request_gb": 16}'
+    gpuTypes: {}
 
 # Image pre-puller DaemonSet (pulls GPU dev image on all GPU nodes)
 imagePrepuller:

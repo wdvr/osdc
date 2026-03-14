@@ -12,4 +12,21 @@ metadata:
 data:
   registryRepo: {{ .Values.gpuDev.k8sDirect.registryRepo | quote }}
   registrySecret: {{ .Values.gpuDev.k8sDirect.registrySecret | quote }}
+{{- if .Values.gpuDev.k8sDirect.gpuTypes }}
+---
+# GPU/instance type configuration overrides.
+# Each key is a type name, value is JSON with resource config.
+# Merged with built-in defaults at runtime.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-dev-gpu-config
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+data:
+  {{- range $name, $config := .Values.gpuDev.k8sDirect.gpuTypes }}
+  {{ $name }}: {{ $config | quote }}
+  {{- end }}
+{{- end }}
 {{- end }}

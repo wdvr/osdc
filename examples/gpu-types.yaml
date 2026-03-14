@@ -1,0 +1,40 @@
+# GPU / Instance Type Configuration
+#
+# Apply to your cluster to define available instance types:
+#   kubectl apply -f examples/gpu-types.yaml
+#
+# Or set via helm values:
+#   helm install gpu-dev charts/gpu-dev-server \
+#     --set-json 'gpuDev.k8sDirect.gpuTypes.cpu-s={"cpus":16,"memory_gb":32,"cpu_request":"4","mem_request_gb":8}'
+#
+# Each key is a type name shown in `gpu-dev avail` and `gpu-dev reserve --gpu-type`.
+# Values are JSON objects with resource configuration:
+#   max_gpus:       Max GPUs per pod (0 for CPU-only types)
+#   cpus:           CPU limit (cores)
+#   memory_gb:      Memory limit (GiB)
+#   cpu_request:    CPU request for scheduling (K8s cores string)
+#   mem_request_gb: Memory request for scheduling (GiB)
+#
+# Built-in defaults are merged at runtime — you only need to override
+# types that differ from the defaults, or add new custom types.
+#
+# Built-in defaults:
+#   cpu-s:   8 req /  32GB req, 32 limit /  40GB limit
+#   cpu-m:  16 req /  32GB req, 64 limit /  80GB limit
+#   cpu-l:  32 req /  64GB req, 128 limit / 160GB limit
+#   cpu-xl: 64 req / 128GB req, 252 limit / 314GB limit
+#   t4/a10g/l4:  8 req /  32GB req, max 4 GPUs
+#   a100:       16 req /  64GB req, max 8 GPUs
+#   h100/h200/b200: 32 req / 128GB req, max 8 GPUs
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-dev-gpu-config
+  namespace: gpu-dev
+data:
+  # Override built-in cpu-s to fit your cluster's node sizes
+  cpu-s: '{"cpus": 16, "memory_gb": 32, "cpu_request": "4", "mem_request_gb": 8}'
+
+  # Add a custom type for your specific hardware
+  # a100-80g: '{"max_gpus": 8, "cpus": 96, "memory_gb": 1152, "cpu_request": "16", "mem_request_gb": 64}'

@@ -635,12 +635,13 @@ def _reserve_k8s_direct(
                     return
 
             gpu_type = gpu_type.lower()
-            if gpu_type not in K8S_GPU_CONFIG:
-                valid = ", ".join(sorted(K8S_GPU_CONFIG))
+            cluster_gpu_cfg = mgr.gpu_config
+            if gpu_type not in cluster_gpu_cfg:
+                valid = ", ".join(sorted(cluster_gpu_cfg))
                 rprint(f"[red]❌ Invalid GPU type '{gpu_type}'. Valid types: {valid}[/red]")
                 return
 
-            cfg = K8S_GPU_CONFIG[gpu_type]
+            cfg = cluster_gpu_cfg[gpu_type]
 
             # GPU count selection
             if gpus is None:
@@ -663,7 +664,7 @@ def _reserve_k8s_direct(
 
             # Image selection — discover from cluster BuildKit jobs
             cluster_images = mgr.list_available_images()
-            default_img = K8S_GPU_CONFIG.get(gpu_type, {}).get("default_image", "")
+            default_img = cluster_gpu_cfg.get(gpu_type, {}).get("default_image", "")
 
             if cluster_images:
                 import questionary
@@ -705,12 +706,13 @@ def _reserve_k8s_direct(
                 gpu_type = "cpu-m"
             gpu_type = gpu_type.lower()
 
-            if gpu_type not in K8S_GPU_CONFIG:
-                valid = ", ".join(sorted(K8S_GPU_CONFIG))
+            cluster_gpu_cfg = mgr.gpu_config
+            if gpu_type not in cluster_gpu_cfg:
+                valid = ", ".join(sorted(cluster_gpu_cfg))
                 rprint(f"[red]❌ Invalid GPU type '{gpu_type}'. Valid types: {valid}[/red]")
                 return
 
-            cfg = K8S_GPU_CONFIG[gpu_type]
+            cfg = cluster_gpu_cfg[gpu_type]
 
             if gpus is None:
                 gpu_count = 0 if cfg["max_gpus"] == 0 else 1

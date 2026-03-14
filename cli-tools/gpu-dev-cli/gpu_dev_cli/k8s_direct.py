@@ -47,7 +47,7 @@ _HIGH_GPU = {
     "default_image": _DEFAULT_IMAGE,
 }
 
-GPU_CONFIG: Dict[str, Dict[str, Any]] = {
+DEFAULT_GPU_CONFIG: Dict[str, Dict[str, Any]] = {
     # CPU-only sizes (S/M/L/XL fractions of a worker node)
     "cpu-s": {
         "max_gpus": 0, "cpus": 32, "memory_gb": 40,
@@ -83,6 +83,10 @@ GPU_CONFIG: Dict[str, Dict[str, Any]] = {
     "h200": _HIGH_GPU,
     "b200": _HIGH_GPU,
 }
+
+# Backwards-compat alias — code that imports GPU_CONFIG gets the default.
+# K8sDirectManager.gpu_config property merges cluster overrides at runtime.
+GPU_CONFIG = DEFAULT_GPU_CONFIG
 
 # Explicit mapping from NVIDIA node labels to our GPU type names.
 # The key is the lowercase value from the "nvidia.com/gpu.product" node label.
@@ -225,6 +229,40 @@ class K8sDirectManager:
         self.namespace = config.namespace
         self.api_client = get_k8s_api_client(config)
         self.v1 = k8s_client.CoreV1Api(self.api_client)
+        self._gpu_config_cache: Optional[Dict[str, Dict[str, Any]]] = None
+
+    @property
+    def gpu_config(self) -> Dict[str, Dict[str, Any]]:
+        """GPU/instance type config — cluster ConfigMap overrides merged with defaults.
+
+        Reads 'gpu-dev-gpu-config' ConfigMap where each key is a type name
+        and each value is a JSON object with the config fields. Missing fields
+        are filled from DEFAULT_GPU_CONFIG if the type exists there.
+        """
+        if self._gpu_config_cache is not None:
+            return self._gpu_config_cache
+
+        merged = {k: dict(v) for k, v in DEFAULT_GPU_CONFIG.items()}
+
+        try:
+            cm = self.v1.read_namespaced_config_map("gpu-dev-gpu-config", self.namespace)
+            if cm.data:
+                for type_name, json_str in cm.data.items():
+                    try:
+                        override = json.loads(json_str)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if type_name in merged:
+                        merged[type_name].update(override)
+                    else:
+                        # Fill in required fields with sensible defaults
+                        override.setdefault("default_image", _DEFAULT_IMAGE)
+                        merged[type_name] = override
+        except k8s_client.exceptions.ApiException:
+            pass  # No ConfigMap — use defaults
+
+        self._gpu_config_cache = merged
+        return merged
 
     # ------------------------------------------------------------------
     # reserve
@@ -247,12 +285,13 @@ class K8sDirectManager:
         Returns dict with reservation_id and pod_name.
         """
         gpu_type = gpu_type.lower()
-        if gpu_type not in GPU_CONFIG:
+        gpu_cfg = self.gpu_config
+        if gpu_type not in gpu_cfg:
             raise ValueError(
                 f"Unknown gpu_type '{gpu_type}'. "
-                f"Valid: {', '.join(sorted(GPU_CONFIG))}"
+                f"Valid: {', '.join(sorted(gpu_cfg))}"
             )
-        cfg = GPU_CONFIG[gpu_type]
+        cfg = gpu_cfg[gpu_type]
 
         # Validate GPU count
         if cfg["max_gpus"] == 0 and gpu_count != 0:
@@ -669,7 +708,7 @@ class K8sDirectManager:
 
         # Build report
         availability: Dict[str, Dict[str, Any]] = {}
-        for gpu_type, cfg in GPU_CONFIG.items():
+        for gpu_type, cfg in self.gpu_config.items():
             if cfg["max_gpus"] == 0:
                 # CPU types: how many pods fit in remaining resources?
                 # Use requests (not limits) since K8s schedules on requests

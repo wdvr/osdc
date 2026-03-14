@@ -1,0 +1,111 @@
+# Cluster Setup for gpu-dev (k8s-direct mode)
+#
+# Apply these resources to set up a cluster for gpu-dev CLI usage.
+# This is the minimal setup — no API service, database, or operator needed.
+#
+# Usage:
+#   kubectl apply -f examples/cluster-setup.yaml
+#   kubectl apply -f examples/gpu-types.yaml          # optional: customize instance types
+#
+# Or use the helm chart:
+#   helm install gpu-dev charts/gpu-dev-server \
+#     --set gpuDev.k8sDirect.enabled=true \
+#     --set gpuDev.k8sDirect.registryRepo=your-registry.com/dev-images
+#
+# After setup, users only need:
+#   1. pip install gpu-dev
+#   2. A kubeconfig pointing at the cluster
+#   3. gpu-dev reserve --gpu-type cpu-s --hours 1
+
+---
+# Namespace for dev pods
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gpu-dev
+
+---
+# CLI config — tells gpu-dev where to push built images
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-dev-config
+  namespace: gpu-dev
+data:
+  # Container registry for built dev images (set to your registry)
+  registryRepo: ""
+  # K8s secret name with push credentials (auto-detected if empty)
+  registrySecret: ""
+
+---
+# Role: CRUD pods + services in gpu-dev namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-dev-k8s-direct-role
+  namespace: gpu-dev
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/exec, pods/portforward, pods/log, services, configmaps]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list, watch]
+
+---
+# Bind the role to a group (adjust group name for your auth system)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-dev-k8s-direct-binding
+  namespace: gpu-dev
+subjects:
+  - kind: Group
+    name: gpu-dev-users
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: gpu-dev-k8s-direct-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ClusterRole: read nodes (for IP discovery and availability)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-dev-node-reader
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+
+---
+# Bind node-reader to same group
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-dev-node-reader-binding
+subjects:
+  - kind: Group
+    name: gpu-dev-users
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: gpu-dev-node-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Registry push secret (create with your credentials)
+# Needed for `gpu-dev build-image` to push built images.
+#
+# kubectl create secret docker-registry registry-push-secret \
+#   -n gpu-dev \
+#   --docker-server=your-registry.com \
+#   --docker-username=USER \
+#   --docker-password=TOKEN
