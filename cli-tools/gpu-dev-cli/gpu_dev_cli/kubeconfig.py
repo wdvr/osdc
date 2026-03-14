@@ -206,7 +206,7 @@ def _load_k8s_direct_client(kubeconfig_path: str) -> k8s_client.ApiClient:
 
     # Build configuration
     # Clear proxy env vars — K8s API must be reached directly, not via HTTP proxy.
-    # Proxies like fwdproxy block connections to K8s API server IPs.
+    # Corporate proxies may block connections to K8s API server IPs.
     import os as _os
     for var in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"):
         _os.environ.pop(var, None)
