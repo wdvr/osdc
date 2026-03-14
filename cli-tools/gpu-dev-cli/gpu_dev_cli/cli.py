@@ -3394,7 +3394,7 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
                 return
             rprint(f"[dim]Connecting to pod {pod_name}...[/dim]\n")
             api_client = get_k8s_api_client(config)
-            kube_exec_interactive(api_client, pod_name, namespace=config.namespace, container="dev", shell=f"sudo -u {username} -i")
+            kube_exec_interactive(api_client, pod_name, namespace=config.namespace, container="dev", shell=f"su - {username}")
             return
 
         with Live(
