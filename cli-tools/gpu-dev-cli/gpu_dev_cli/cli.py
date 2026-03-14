@@ -3532,8 +3532,8 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
     \b
     Examples:
         gpu-dev build-image                     # Build all Dockerfiles found
-        gpu-dev build-image -p msl_runtime      # Build only Dockerfile.msl_runtime
         gpu-dev build-image -p pytorch          # Build only Dockerfile.pytorch
+        gpu-dev build-image -p custom           # Build only Dockerfile.custom
         gpu-dev build-image -f path/to/Dockerfile  # Specific file
     """
     import base64
@@ -3940,7 +3940,7 @@ def set_cluster(key: str, value: str) -> None:
 
     \b
     Examples:
-        gpu-dev config set-cluster registryRepo 588845226011.dkr.ecr.us-east-2.amazonaws.com/msl_infra/buildkit-cache
+        gpu-dev config set-cluster registryRepo your-registry.com/dev-images
 
     Valid keys:
         registryRepo: ECR repo URL for built dev images

@@ -1260,11 +1260,11 @@ echo 'SSH setup complete'
         """
         return r"""#!/bin/sh
 
-# --- Fast path: MSL runtime image with entrypoint-user.sh ---
+# --- Fast path: image with entrypoint-user.sh baked in ---
 # The entrypoint creates the user from DEV_USER/DEV_UID/DEV_GID env vars,
 # gives sudo, then execs the given command. Zero setup time.
 if [ -x /usr/local/bin/entrypoint-user.sh ]; then
-  echo "MSL runtime image detected — fast startup via entrypoint-user.sh"
+  echo "Runtime image detected — fast startup via entrypoint-user.sh"
   exec /usr/local/bin/entrypoint-user.sh /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
 fi
 

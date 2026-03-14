@@ -130,8 +130,8 @@ def _write_ca_cert(ca_data: str) -> str:
 def _load_k8s_direct_client(kubeconfig_path: str) -> k8s_client.ApiClient:
     """Load a K8s API client from a kubeconfig file.
 
-    Handles exec-based credential plugins that output YAML (e.g. Meta's
-    ``cloud k8s get-token``) by running the exec command manually and
+    Handles exec-based credential plugins that output YAML by
+    running the exec command manually and
     injecting the bearer token into the client configuration.
     """
     import subprocess
@@ -218,11 +218,12 @@ def _load_k8s_direct_client(kubeconfig_path: str) -> k8s_client.ApiClient:
     if token:
         configuration.api_key = {"authorization": f"Bearer {token}"}
 
-    if ca_data:
+    if cluster_entry.get("insecure-skip-tls-verify"):
+        configuration.verify_ssl = False
+    elif ca_data:
         ca_path = _write_ca_cert(ca_data)
         configuration.ssl_ca_cert = ca_path
     else:
-        # No CA cert — disable verification (common for dev clusters)
         configuration.verify_ssl = False
 
     return k8s_client.ApiClient(configuration)

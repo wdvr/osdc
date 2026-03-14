@@ -67,7 +67,7 @@ class Config:
         self.availability_table = f"{self.prefix}-gpu-availability"
         self.cluster_name = f"{self.prefix}-cluster"
 
-        # Skip AWS setup when API URL is set (non-AWS mode: MKS, local, etc.)
+        # Skip AWS setup when API URL is set (non-AWS mode: k8s-direct, local, etc.)
         self._aws_available = False
         self.session = None
         self._sts_client = None
