@@ -3575,6 +3575,7 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
     def _build_one(mgr, dockerfile_path: str, label: str, registry_repo: str) -> Optional[str]:
         """Build one image. Returns final image URI or None on failure."""
         dockerfile_dir = os.path.dirname(os.path.abspath(dockerfile_path))
+        dockerfile_basename = os.path.basename(dockerfile_path)
         rprint(f"\n[cyan]📦 [{label}] Building from: {dockerfile_path}[/cyan]")
 
         rprint(f"[dim]   [{label}] Creating build context...[/dim]")
@@ -3584,6 +3585,13 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
                     for f in files:
                         fpath = os.path.join(root, f)
                         arcname = os.path.relpath(fpath, dockerfile_dir)
+                        # Rename the target Dockerfile to "Dockerfile" in the context
+                        # so BuildKit uses the correct one (it defaults to "Dockerfile")
+                        if arcname == dockerfile_basename and arcname != "Dockerfile":
+                            arcname = "Dockerfile"
+                        elif arcname == "Dockerfile" and dockerfile_basename != "Dockerfile":
+                            # Skip the bare Dockerfile when building a variant
+                            continue
                         tar.add(fpath, arcname=arcname)
 
             compressed_size = os.path.getsize(tmp.name)
