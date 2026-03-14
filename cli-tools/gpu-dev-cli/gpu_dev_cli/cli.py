@@ -3636,8 +3636,8 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
                 return
 
             if not preset or preset.lower() == "all":
-                # Build everything found
-                presets_to_build = list(available.items())
+                # Build everything found (use builtins.list since 'list' is shadowed by click command)
+                presets_to_build = [*available.items()]
             else:
                 name = preset.lower()
                 if name not in available:
