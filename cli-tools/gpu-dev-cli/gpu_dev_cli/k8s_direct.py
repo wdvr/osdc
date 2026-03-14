@@ -1031,6 +1031,17 @@ echo "[BUILDKIT] Done: {full_image}"
         return ""
 
     @staticmethod
+    def get_ssh_private_key_path() -> Optional[str]:
+        """Return path to the private key matching get_ssh_pubkey()."""
+        from pathlib import Path
+
+        for key_name in ("id_ed25519", "id_rsa", "id_ecdsa"):
+            key_path = Path.home() / ".ssh" / key_name
+            if key_path.exists():
+                return str(key_path)
+        return None
+
+    @staticmethod
     def create_ssh_config(
         reservation_id: str,
         node_ip: str,
@@ -1057,13 +1068,19 @@ echo "[BUILDKIT] Done: {full_image}"
         filename = f"{short_id}-sshconfig"
         config_file = gpu_dev_dir / filename
 
+        # Find the private key to pin in the SSH config (avoids "too many auth failures")
+        identity_file = K8sDirectManager.get_ssh_private_key_path()
+        identity_lines = ""
+        if identity_file:
+            identity_lines = f"    IdentityFile {identity_file}\n    IdentitiesOnly yes\n"
+
         # Direct SSH via NodePort — works from any machine with network access
         # to the cluster nodes. Also add ProxyCommand alias for VS Code Remote.
         config_content = f"""Host {pod_name}
     HostName {node_ip}
     Port {ssh_port}
     User {username}
-    ForwardAgent yes
+{identity_lines}    ForwardAgent yes
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 
@@ -1071,7 +1088,7 @@ echo "[BUILDKIT] Done: {full_image}"
 Host {pod_name}-proxy
     HostName {pod_name}
     User {username}
-    ForwardAgent yes
+{identity_lines}    ForwardAgent yes
     ProxyCommand gpu-dev-ssh-proxy %h %p
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
