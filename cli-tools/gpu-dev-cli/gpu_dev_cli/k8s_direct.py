@@ -1345,6 +1345,12 @@ if which sshd >/dev/null 2>&1; then
     groupadd -f "$g" 2>/dev/null; usermod -aG "$g" "$DEV_USER" 2>/dev/null
   done
 
+  # Create convenience symlinks (fbpython, python)
+  if [ -x /usr/local/fbcode/platform010/bin/python3.12 ]; then
+    ln -sf /usr/local/fbcode/platform010/bin/python3.12 /usr/local/bin/fbpython 2>/dev/null
+    [ -x /usr/local/bin/python ] || ln -sf /usr/local/fbcode/platform010/bin/python3.12 /usr/local/bin/python 2>/dev/null
+  fi
+
   # Set up PATH for all login shells
   cat > /etc/profile.d/gpu-dev.sh << PATHEOF
 export PATH=/opt/conda/bin:/usr/local/cuda/bin:/home/$DEV_USER/.local/bin:\$PATH
