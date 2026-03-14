@@ -3601,9 +3601,9 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
                 build_context_b64 = base64.b64encode(f.read()).decode('utf-8')
             os.unlink(tmp.name)
 
-        # Tag with date-based version (e.g. osdc-pytorch-20260314)
+        # Tag with timestamp version (e.g. osdc-pytorch-20260314-1430)
         from datetime import datetime as _dt
-        date_tag = _dt.now().strftime("%Y%m%d")
+        date_tag = _dt.now().strftime("%Y%m%d-%H%M")
         image_tag = f"{label}-{date_tag}"
         rprint(f"[cyan]🏗️  [{label}] Target: {registry_repo}:{image_tag}[/cyan]")
 
