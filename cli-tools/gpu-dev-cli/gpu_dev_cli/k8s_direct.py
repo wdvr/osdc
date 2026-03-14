@@ -1378,8 +1378,51 @@ PATHEOF
     if [ -f "$HOME_DIR/.zshrc" ]; then
       sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' "$HOME_DIR/.zshrc" 2>/dev/null
       echo 'source /etc/profile.d/gpu-dev.sh' >> "$HOME_DIR/.zshrc"
+      # Show startup status in prompt (disappears when done)
+      cat >> "$HOME_DIR/.zshrc" << 'PROMPTEOF'
+
+# gpu-dev startup status
+_gpu_dev_startup_status() {
+  local status_file="/tmp/gpu-dev-startup-status"
+  if [ -f "$status_file" ]; then
+    local status=$(cat "$status_file" 2>/dev/null)
+    if [ "$status" = "starting" ]; then
+      echo "%F{yellow}[⏳ setup running]%f "
     fi
   fi
+}
+PROMPT='$(_gpu_dev_startup_status)'"$PROMPT"
+PROMPTEOF
+    fi
+  fi
+
+  # Run background startup script (repo clone, env setup, etc.)
+  # Creates /tmp/gpu-dev-startup.log for progress and
+  # /tmp/gpu-dev-startup-done when complete.
+  # User's .zshrc can check these to show status in the prompt.
+  cat > /tmp/gpu-dev-startup.sh << 'STARTUPEOF'
+#!/bin/sh
+LOG=/tmp/gpu-dev-startup.log
+echo "starting" > /tmp/gpu-dev-startup-status
+exec > "$LOG" 2>&1
+
+HOME_DIR="$1"
+DEV_USER="$2"
+
+# Create /data/users/$DEV_USER (some clone tools expect this path)
+mkdir -p "/data/users/$DEV_USER"
+
+# If a user startup script exists, run it
+if [ -x "$HOME_DIR/.gpu-dev-startup.sh" ]; then
+  echo "[startup] Running user startup script..."
+  su - "$DEV_USER" -c "$HOME_DIR/.gpu-dev-startup.sh" || true
+fi
+
+echo "done" > /tmp/gpu-dev-startup-status
+echo "[startup] Complete"
+STARTUPEOF
+  chmod +x /tmp/gpu-dev-startup.sh
+  /tmp/gpu-dev-startup.sh "$HOME_DIR" "$DEV_USER" &
 
   mkdir -p /run/sshd
   exec /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
