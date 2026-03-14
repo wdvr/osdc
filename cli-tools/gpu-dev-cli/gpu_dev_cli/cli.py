@@ -3601,8 +3601,10 @@ def build_image(ctx: click.Context, preset: Optional[str], dockerfile: Optional[
                 build_context_b64 = base64.b64encode(f.read()).decode('utf-8')
             os.unlink(tmp.name)
 
-        # Use the label as the image tag (derived from Dockerfile extension)
-        image_tag = label
+        # Tag with date-based version (e.g. osdc-msl_runtime-20260314)
+        from datetime import datetime as _dt
+        date_tag = _dt.now().strftime("%Y%m%d")
+        image_tag = f"{label}-{date_tag}"
         rprint(f"[cyan]🏗️  [{label}] Target: {registry_repo}:{image_tag}[/cyan]")
 
         job_name = mgr.build_image(
