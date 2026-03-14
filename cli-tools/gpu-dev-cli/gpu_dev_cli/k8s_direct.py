@@ -1330,9 +1330,14 @@ if [ -x /usr/local/bin/entrypoint-user.sh ]; then
   exec /usr/local/bin/entrypoint-user.sh /usr/sbin/sshd -D -e -f /etc/ssh-gpu-dev/sshd_config
 fi
 
-# --- If sshd is already installed (custom OSDC image), fast path ---
-if which sshd >/dev/null 2>&1 && id "$DEV_USER" >/dev/null 2>&1; then
-  echo "Custom image detected — fast startup"
+# --- If sshd is already installed (pre-built image), create user + start ---
+if which sshd >/dev/null 2>&1; then
+  echo "Pre-built image detected — creating user and starting sshd"
+  SHELL_PATH=$(which zsh 2>/dev/null || echo /bin/bash)
+  id "$DEV_USER" >/dev/null 2>&1 || {
+    useradd -m -u "$DEV_UID" -s "$SHELL_PATH" "$DEV_USER" 2>/dev/null || \
+    adduser -D -u "$DEV_UID" -s "$SHELL_PATH" "$DEV_USER" 2>/dev/null || true
+  }
   passwd -u "$DEV_USER" 2>/dev/null || usermod -p '*' "$DEV_USER" 2>/dev/null || true
   echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev-user 2>/dev/null || true
   for g in sudo root conda; do
