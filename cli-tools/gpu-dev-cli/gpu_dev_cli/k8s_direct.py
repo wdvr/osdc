@@ -1219,6 +1219,30 @@ Host {pod_name}-proxy
             ],
         )
 
+        # Check for optional persistent storage PVC
+        extra_volumes = []
+        extra_mounts = []
+
+        # Shared persistent data PVC (for cache tarballs, conda envs, datasets)
+        # NOTE: FUSE-backed storage does NOT support mmap resize, so source
+        # checkouts must stay on local EmptyDir. This volume is for
+        # backup/restore of caches and non-mmap data.
+        try:
+            self.v1.read_namespaced_persistent_volume_claim("gpu-dev-shared-data", self.namespace)
+            extra_volumes.append(k8s_client.V1Volume(
+                name="shared-data",
+                persistent_volume_claim=k8s_client.V1PersistentVolumeClaimVolumeSource(
+                    claim_name="gpu-dev-shared-data",
+                ),
+            ))
+            extra_mounts.append(k8s_client.V1VolumeMount(
+                name="shared-data", mount_path="/persistent",
+            ))
+        except k8s_client.exceptions.ApiException:
+            pass  # No shared data PVC — skip
+
+        home_vol = k8s_client.V1Volume(name="dev-home", empty_dir=k8s_client.V1EmptyDirVolumeSource())
+
         # Main container
         main_container = k8s_client.V1Container(
             name="dev",
@@ -1238,7 +1262,7 @@ Host {pod_name}-proxy
                 k8s_client.V1VolumeMount(name="workspace", mount_path="/workspace"),
                 k8s_client.V1VolumeMount(name="dshm", mount_path="/dev/shm"),
                 k8s_client.V1VolumeMount(name="ssh-config", mount_path="/etc/ssh-gpu-dev"),
-            ],
+            ] + extra_mounts,
         )
 
         return k8s_client.V1Pod(
@@ -1254,8 +1278,7 @@ Host {pod_name}-proxy
                 active_deadline_seconds=int(hours * 3600),
                 restart_policy="Never",
                 volumes=[
-                    k8s_client.V1Volume(name="dev-home",
-                                        empty_dir=k8s_client.V1EmptyDirVolumeSource()),
+                    home_vol,
                     k8s_client.V1Volume(name="workspace",
                                         empty_dir=k8s_client.V1EmptyDirVolumeSource()),
                     k8s_client.V1Volume(name="dshm",
@@ -1263,7 +1286,7 @@ Host {pod_name}-proxy
                                             medium="Memory")),
                     k8s_client.V1Volume(name="ssh-config",
                                         empty_dir=k8s_client.V1EmptyDirVolumeSource()),
-                ],
+                ] + extra_volumes,
             ),
         )
 
@@ -1353,6 +1376,16 @@ if which sshd >/dev/null 2>&1; then
   fi
   # Ensure 'python' exists (some tools expect it)
   which python >/dev/null 2>&1 || ln -sf "$(which python3)" /usr/local/bin/python 2>/dev/null
+
+  # Configure shared hgcache if the mount exists
+  if [ -d /var/cache/hgcache ]; then
+    chmod 777 /var/cache/hgcache
+    mkdir -p /etc/mercurial
+    echo -e "[remotefilelog]\ncachepath = /var/cache/hgcache" > /etc/mercurial/hgrc.d/gpu-dev-cache.rc 2>/dev/null || true
+  fi
+
+  # Create /data/users/$DEV_USER (some clone tools expect this path)
+  mkdir -p "/data/users/$DEV_USER"
 
   # Set up PATH for all login shells
   cat > /etc/profile.d/gpu-dev.sh << PATHEOF
