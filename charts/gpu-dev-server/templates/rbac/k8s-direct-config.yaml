@@ -28,5 +28,35 @@ data:
   {{- range $name, $config := .Values.gpuDev.k8sDirect.gpuTypes }}
   {{ $name }}: {{ $config | quote }}
   {{- end }}
+{{- if .Values.gpuDev.k8sDirect.persistentStorage.enabled }}
+---
+# Persistent storage for dev pods.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gpu-dev-user-storage
+provisioner: {{ .Values.gpuDev.k8sDirect.persistentStorage.storageClass.provisioner }}
+parameters:
+  {{- range $key, $val := .Values.gpuDev.k8sDirect.persistentStorage.storageClass.parameters }}
+  {{ $key }}: {{ $val | quote }}
+  {{- end }}
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.gpuDev.k8sDirect.persistentStorage.sharedDataPVC.name }}
+  namespace: {{ include "gpu-dev-server.workloadsNamespace" . }}
+  labels:
+    {{- include "gpu-dev-server.labels" . | nindent 4 }}
+spec:
+  storageClassName: gpu-dev-user-storage
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: {{ .Values.gpuDev.k8sDirect.persistentStorage.sharedDataPVC.storageRequest | quote }}
+{{- end }}
 {{- end }}
 {{- end }}

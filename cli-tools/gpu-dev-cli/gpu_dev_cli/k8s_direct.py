@@ -1370,10 +1370,6 @@ if which sshd >/dev/null 2>&1; then
     groupadd -f "$g" 2>/dev/null; usermod -aG "$g" "$DEV_USER" 2>/dev/null
   done
 
-  # Create fbpython symlink if platform010 exists (don't override system python)
-  if [ -x /usr/local/fbcode/platform010/bin/python3.12 ]; then
-    ln -sf /usr/local/fbcode/platform010/bin/python3.12 /usr/local/bin/fbpython 2>/dev/null
-  fi
   # Ensure 'python' exists (some tools expect it)
   which python >/dev/null 2>&1 || ln -sf "$(which python3)" /usr/local/bin/python 2>/dev/null
 

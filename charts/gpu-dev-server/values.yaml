@@ -238,6 +238,17 @@ gpuDev:
     #     cpu-s: '{"cpus": 16, "memory_gb": 32, "cpu_request": "4", "mem_request_gb": 8}'
     #     my-custom: '{"max_gpus": 2, "cpus": 32, "memory_gb": 64, "cpu_request": "8", "mem_request_gb": 16}'
     gpuTypes: {}
+    # Persistent storage for dev pods (optional).
+    # If enabled, creates a StorageClass + shared PVC for cache/data persistence.
+    # Requires a CSI driver that supports dynamic provisioning.
+    persistentStorage:
+      enabled: false
+      storageClass:
+        provisioner: ""  # CSI driver name (e.g. your-storage.csi.example.com)
+        parameters: {}   # Backend-specific params (e.g. MOUNT_URI, PROFILE, STORAGE_TYPE)
+      sharedDataPVC:
+        name: "gpu-dev-shared-data"
+        storageRequest: "1Gi"  # Symbolic — FUSE backends ignore this
 
 # Image pre-puller DaemonSet (pulls GPU dev image on all GPU nodes)
 imagePrepuller:
