@@ -2668,6 +2668,12 @@ def cancel(
                         return
                 for res in reservations:
                     rid = res["reservation_id"]
+                    _run_hook("pre-cancel", {
+                        "GPU_DEV_POD_NAME": res.get("pod_name", ""),
+                        "GPU_DEV_NAMESPACE": config.namespace,
+                        "GPU_DEV_RESERVATION_ID": rid,
+                        "GPU_DEV_USERNAME": os.getenv("USER", "dev"),
+                    })
                     mgr.cancel(rid, user_info["user_id"])
                     K8sDirectManager.remove_ssh_config(rid)
                     rprint(f"[green]✅ Cancelled {rid[:8]}[/green]")
@@ -2689,6 +2695,12 @@ def cancel(
                         return
                     if selected_id == "__ALL__":
                         for res in reservations:
+                            _run_hook("pre-cancel", {
+                                "GPU_DEV_POD_NAME": res.get("pod_name", ""),
+                                "GPU_DEV_NAMESPACE": config.namespace,
+                                "GPU_DEV_RESERVATION_ID": res["reservation_id"],
+                                "GPU_DEV_USERNAME": os.getenv("USER", "dev"),
+                            })
                             mgr.cancel(res["reservation_id"], user_info["user_id"])
                             rprint(f"[green]✅ Cancelled {res['reservation_id'][:8]}[/green]")
                         return
@@ -2697,6 +2709,16 @@ def cancel(
                     rprint("[red]❌ Reservation ID required[/red]")
                     rprint("[dim]Usage: gpu-dev cancel <reservation_id>[/dim]")
                     return
+
+            # Run pre-cancel hook (e.g. backup caches)
+            info = mgr.show(reservation_id)
+            if info:
+                _run_hook("pre-cancel", {
+                    "GPU_DEV_POD_NAME": info.get("pod_name", ""),
+                    "GPU_DEV_NAMESPACE": config.namespace,
+                    "GPU_DEV_RESERVATION_ID": info.get("reservation_id", reservation_id),
+                    "GPU_DEV_USERNAME": os.getenv("USER", "dev"),
+                })
 
             success = mgr.cancel(reservation_id, user_info["user_id"])
             if success:
