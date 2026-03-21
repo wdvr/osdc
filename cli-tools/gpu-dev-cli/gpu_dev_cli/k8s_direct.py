@@ -1219,14 +1219,14 @@ Host {pod_name}-proxy
             ],
         )
 
-        # Check for optional persistent storage PVC
+        # Check for persistent storage PVCs (FUSE-backed, for non-mmap data)
         extra_volumes = []
         extra_mounts = []
 
-        # Shared persistent data PVC (for cache tarballs, conda envs, datasets)
-        # NOTE: FUSE-backed storage does NOT support mmap resize, so source
-        # checkouts must stay on local EmptyDir. This volume is for
-        # backup/restore of caches and non-mmap data.
+        # Shared persistent data PVC (for tarballs, conda cache, datasets)
+        # NOTE: FUSE-backed storage does NOT support mmap resize, so hgcache and
+        # source checkouts must stay on local EmptyDir. This volume is
+        # for backup/restore of caches as tarballs.
         try:
             self.v1.read_namespaced_persistent_volume_claim("gpu-dev-shared-data", self.namespace)
             extra_volumes.append(k8s_client.V1Volume(
@@ -1370,6 +1370,9 @@ if which sshd >/dev/null 2>&1; then
     groupadd -f "$g" 2>/dev/null; usermod -aG "$g" "$DEV_USER" 2>/dev/null
   done
 
+  # Create vendor python symlinks if a custom toolchain exists
+  # (e.g., post-reserve hooks may install a custom Python and symlink it)
+  # This is a no-op for vanilla images; hooks handle vendor-specific setup.
   # Ensure 'python' exists (some tools expect it)
   which python >/dev/null 2>&1 || ln -sf "$(which python3)" /usr/local/bin/python 2>/dev/null
 
