@@ -97,6 +97,8 @@ def _map_gpu_to_instance_type(gpu_type: str, gpu_count: int) -> str:
         "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8},
         "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0},
         "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0},
+        "cpu-small": {"instance_type": "T1_TRN", "max_gpus": 0},
+        "cpu-large": {"instance_type": "T1_TRN", "max_gpus": 0},
     }
     
     gpu_type_lower = gpu_type.lower()

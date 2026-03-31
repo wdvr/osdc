@@ -155,7 +155,7 @@ class APIClient:
 
     def authenticate(self, force: bool = False) -> bool:
         """
-        Authenticate with API service using AWS credentials
+        Authenticate with API service using AWS credentials or local dev bypass
 
         Args:
             force: Force re-authentication even if we have a valid API key
@@ -170,7 +170,32 @@ class APIClient:
                 return True
 
         try:
-            # Get AWS credentials
+            # Non-AWS mode: use aws-login with dummy creds (server-side LOCAL_DEV_USER handles it)
+            if not self.config._aws_available:
+                url = f"{self.api_url}/v1/auth/aws-login"
+                dummy_creds = {
+                    "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                    "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                }
+                try:
+                    response = requests.post(url, json=dummy_creds, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        self.api_key = data["api_key"]
+                        self.api_key_expires_at = datetime.fromisoformat(
+                            data["expires_at"].replace("Z", "+00:00")
+                        )
+                        self._save_credentials(self.api_key, data["expires_at"])
+                        return True
+                    else:
+                        raise RuntimeError(f"Local dev auth failed: {response.text}")
+                except requests.ConnectionError:
+                    raise RuntimeError(
+                        "Cannot connect to API. Start port-forward first:\n"
+                        "  kubectl port-forward -n gpu-controlplane svc/api-service 8000:80"
+                    )
+
+            # AWS mode: get credentials and call aws-login
             aws_creds = self._get_aws_credentials()
 
             # Call API login endpoint

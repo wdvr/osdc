@@ -34,6 +34,7 @@ data:
   MAX_RESERVATION_HOURS: {{ .Values.reservationProcessor.config.maxReservationHours | quote }}
   DEFAULT_TIMEOUT_HOURS: {{ .Values.reservationProcessor.config.defaultTimeoutHours | quote }}
   GPU_DEV_CONTAINER_IMAGE: {{ .Values.reservationProcessor.config.gpuDevContainerImage | quote }}
+  WORKER_IMAGE: "{{ .Values.reservationProcessor.image.repository }}:{{ .Values.reservationProcessor.image.tag }}"
   IMAGE_PULL_POLICY: {{ .Values.reservationProcessor.config.imagePullPolicy | quote }}
   PROCESSOR_VERSION: {{ .Values.reservationProcessor.config.processorVersion | quote }}
   MIN_CLI_VERSION: {{ .Values.reservationProcessor.config.minCliVersion | quote }}

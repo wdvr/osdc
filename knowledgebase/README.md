@@ -29,6 +29,13 @@ Comprehensive documentation for the Open Developer Cloud (OSDC) codebase -- a GP
 | [authentication.md](authentication.md) | GitHub SSH keys, AWS IAM, SSO, authorization model |
 | [multi-node.md](multi-node.md) | NCCL, EFA, multi-GPU communication, multinode reservations |
 
+## Related Knowledgebases
+
+| Knowledgebase | Path | Description |
+|---------------|------|-------------|
+| [Docker Dev Workflow](../../docker-dev-workflow-knowledgebase/) | `~/dev/docker-dev-workflow-knowledgebase/` | Docker-based development workflow: dev containers, devgpu testing, MINT/MAST integration, proxy setup |
+| [UV-Docker Build System](../../uv-docker-knowledgebase/) | `~/dev/uv-docker-knowledgebase/` | pkg-builder, BuildKit, wheel pipeline, pyx registry, migration status, 13 tracked bugs |
+
 ## Quick Reference
 
 - **CLI install**: `pip install gpu-dev`

@@ -2,6 +2,7 @@
 Kubernetes Job manager for worker jobs.
 Handles creation, monitoring, and cleanup of reservation processing jobs.
 """
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -104,18 +105,21 @@ class JobManager:
                         service_account_name=self.service_account,
                         restart_policy="Never",  # Never restart - let PGMQ handle retries
                         
-                        # Node selection - prefer CPU nodes for orchestration
-                        node_selector={"NodeType": "cpu"},
-                        
-                        # Tolerate CPU-only nodes
+                        # Node selection - configurable via WORKER_NODE_SELECTOR env var
+                        # Default: {"NodeType": "cpu"} for AWS, empty for local/on-prem
+                        node_selector=json.loads(os.getenv("WORKER_NODE_SELECTOR", "{}")) or None,
+
+                        # Tolerations - configurable via env var
                         tolerations=[
                             client.V1Toleration(
-                                key="node-role",
+                                key=t.split("=")[0],
                                 operator="Equal",
-                                value="cpu-only",
-                                effect="NoSchedule"
+                                value=t.split("=")[1].split(":")[0],
+                                effect=t.split(":")[1]
                             )
-                        ],
+                            for t in os.getenv("WORKER_TOLERATIONS", "").split(",")
+                            if t and "=" in t and ":" in t
+                        ] or None,
                         
                         containers=[
                             client.V1Container(

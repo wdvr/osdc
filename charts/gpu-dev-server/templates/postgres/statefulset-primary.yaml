@@ -134,6 +134,11 @@ spec:
           configMap:
             name: postgres-init-script
             defaultMode: 0755
+        {{- if .Values.storage.useEmptyDir }}
+        - name: postgres-data
+          emptyDir: {}
+        {{- end }}
+  {{- if not .Values.storage.useEmptyDir }}
   volumeClaimTemplates:
     - metadata:
         name: postgres-data
@@ -145,4 +150,5 @@ spec:
         resources:
           requests:
             storage: {{ .Values.storage.postgres.size }}
+  {{- end }}
 {{- end }}

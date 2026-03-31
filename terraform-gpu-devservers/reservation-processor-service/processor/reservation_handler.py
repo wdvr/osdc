@@ -106,6 +106,8 @@ GPU_CONFIG = {
     "b200": {"instance_type": "p6-b200.48xlarge", "max_gpus": 8, "cpus": 192, "memory_gb": 2048},
     "cpu-arm": {"instance_type": "c7g.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
     "cpu-x86": {"instance_type": "c7i.8xlarge", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
+    "cpu-small": {"instance_type": "T1_TRN", "max_gpus": 0, "cpus": 8, "memory_gb": 16},
+    "cpu-large": {"instance_type": "T1_TRN", "max_gpus": 0, "cpus": 32, "memory_gb": 64},
 }
 GPU_CONFIG_DEFAULT = {"instance_type": "g4dn.12xlarge", "max_gpus": 4, "cpus": 48, "memory_gb": 192}
 
@@ -1847,7 +1849,14 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
     """Process individual reservation request"""
     # Import at function start to avoid Python scoping issues
     from kubernetes.client.rest import ApiException
-    
+
+    # Pre-initialize variables that might be referenced in except blocks
+    docker_enabled = False
+    dockerimage = None
+    dockerfile_base64_data = None
+    preserve_entrypoint = False
+    node_labels = None
+
     try:
         # Parse the reservation request
         reservation_request = json.loads(record["body"])
@@ -2124,10 +2133,9 @@ def validate_reservation_request(request: dict[str, Any]) -> tuple[bool, str]:
     gpu_type = request.get("gpu_type", "")
 
     # Validate GPU type
-    valid_gpu_types = ["t4", "l4", "a10g", "t4-small", "a100",
-                       "h100", "h200", "b200", "cpu-arm", "cpu-x86"]
+    valid_gpu_types = list(GPU_CONFIG.keys())
     if gpu_type not in valid_gpu_types:
-        error_msg = f"Invalid GPU type: {gpu_type}. Must be one of: {', '.join(valid_gpu_types)}"
+        error_msg = f"Unsupported GPU type: {gpu_type}. Supported types: {', '.join(valid_gpu_types)}"
         logger.error(error_msg)
         return False, error_msg
 
@@ -2400,6 +2408,13 @@ def create_reservation(request: dict[str, Any]) -> str:
 
 def allocate_gpu_resources(reservation_id: str, request: dict[str, Any]) -> None:
     """Allocate GPU resources via K8s pod creation"""
+    # Pre-initialize variables that may be referenced in except/finally blocks
+    docker_enabled = False
+    dockerimage = None
+    dockerfile_base64_data = None
+    preserve_entrypoint = False
+    node_labels = None
+
     try:
         gpu_count = request.get("gpu_count", 1)
         gpu_type = request.get("gpu_type", "a100")
@@ -3192,6 +3207,7 @@ def create_kubernetes_resources(
     target_az: str = None,
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
+    docker_enabled: bool = False,
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
