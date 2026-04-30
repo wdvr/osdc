@@ -152,7 +152,7 @@ locals {
           efa_network_cards   = 8 # p6-b200.48xlarge supports max 8 network cards
         }
         "h200" = {
-          instance_type       = "p5e.48xlarge" # Match capacity reservation type
+          instance_type       = "p5en.48xlarge" # Match capacity reservation type
           instance_types      = ["p5e.48xlarge", "p5en.48xlarge"]
           instance_count      = 4 # Fallback default (not used when capacity_reservations defined)
           gpus_per_instance   = 8
