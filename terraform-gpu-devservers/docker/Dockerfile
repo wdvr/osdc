@@ -132,21 +132,25 @@ RUN mkdir -p /run/sshd /var/run/sshd && \
 # Create SSH config
 COPY ssh_config /etc/ssh/sshd_config
 
-# Set up npm global directory for dev user (used for Codex CLI; Claude uses native installer below)
+# Install Claude Code SYSTEM-WIDE via the official native installer (as root).
+# Lives in /opt/claude with a /usr/local/bin/claude symlink, survives every reservation
+# regardless of persistent-disk state, and can't be shadowed by stale npm installs on
+# user disks. Image rebuilds are the only update path — controlled, reproducible.
+USER root
+RUN curl -fsSL https://claude.ai/install.sh | HOME=/opt/claude bash || echo "Claude native install failed (non-fatal at build time)"
+RUN if [ -e /opt/claude/.local/bin/claude ]; then \
+        ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude; \
+        chmod -R a+rX /opt/claude; \
+    fi
+
+# Set up npm global directory for dev user (kept for ad-hoc dev-installed CLIs).
 USER dev
 WORKDIR /home/dev
-
 RUN mkdir -p ~/.npm-global && \
     npm config set prefix ~/.npm-global
 
-# Install Claude Code via the official native installer (not via npm).
-# Drops a binary at ~/.local/bin/claude — no Node runtime dep at startup.
-RUN curl -fsSL https://claude.ai/install.sh | bash || echo "Claude native install failed, retry at runtime"
-
 # OpenAI Codex CLI: AWS Bedrock now serves Codex (announced 2026-04-28 at openai.com/index/openai-on-aws),
 # so we can wire it up with the same IAM-role flow as Claude — no per-user OPENAI_API_KEY.
-# Pinning the install method until the Bedrock-backed `codex` CLI ships its docs/env-var
-# spec; once known, install + set OPENAI_USE_BEDROCK (or whatever the flag turns out to be).
 # TODO(codex-bedrock): add `RUN curl -fsSL https://... | bash` (or pip/npm equivalent) once the
 # Bedrock-backed install path is documented, plus the corresponding env var in shell_env.
 
@@ -166,8 +170,7 @@ RUN mkdir -p /devserver-setup && \
     cp -r /home/dev/.npm-global /devserver-setup/npm-global && \
     cp -r /home/dev/.oh-my-zsh /devserver-setup/oh-my-zsh && \
     cp -r /home/dev/.jupyter /devserver-setup/jupyter && \
-    cp /home/dev/.npmrc /devserver-setup/.npmrc && \
-    if [ -d /home/dev/.local ]; then cp -r /home/dev/.local /devserver-setup/dotlocal; fi
+    cp /home/dev/.npmrc /devserver-setup/.npmrc
 
 COPY --chown=root:root shell_env /devserver-setup/.shell_env
 COPY --chown=root:root zshrc /devserver-setup/.zshrc

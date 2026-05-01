@@ -4454,6 +4454,24 @@ EOF_ZSHRC_EXT
                             sed -i '/ANTHROPIC_MODEL.*sonnet-4-20250514/d' /home/dev/.shell_env || true
                         fi
 
+                        # Remove stale claude installs from persistent disk that would shadow the
+                        # image-controlled /usr/local/bin/claude on PATH. We installed Claude system-wide
+                        # in the image (under /opt/claude) — any user-disk binary at ~/.npm-global/bin/claude
+                        # or ~/.local/bin/claude is leftover from an older image and will outrank the system one
+                        # because $HOME/.npm-global/bin appears before /usr/local/bin in $PATH. Removing them
+                        # forces every user onto the controlled, image-pinned Claude version.
+                        for stale_claude in /home/dev/.npm-global/bin/claude /home/dev/.local/bin/claude; do
+                            if [ -L "$stale_claude" ] || [ -f "$stale_claude" ]; then
+                                echo "[STARTUP] Removing stale claude install at $stale_claude"
+                                rm -f "$stale_claude" || true
+                            fi
+                        done
+                        # Also drop any /home/dev/.local/share/claude directory left behind (it grows over time).
+                        if [ -d /home/dev/.local/share/claude ]; then
+                            echo "[STARTUP] Removing stale /home/dev/.local/share/claude directory"
+                            rm -rf /home/dev/.local/share/claude || true
+                        fi
+
                         # Fix ownership - recursive only for new disks (fast, empty disk)
                         # For existing disks, only fix the specific files we just created/modified
                         if [ "$CREATE_SH_ENV" = "true" ]; then
