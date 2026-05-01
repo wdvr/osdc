@@ -220,7 +220,18 @@ def select_gpu_count_interactive(
 
     choices = []
 
-    # Add single-node options
+    # MIG slice options come first (smallest unit), h100-only.
+    if mig_options:
+        choices.append(questionary.Separator(
+            "--- MIG slices (partial GPU, single node) ---"))
+        for sku, count, label in mig_options:
+            choices.append(questionary.Choice(title=label, value=(sku, count)))
+
+    # Full single-node options. Header only when slices were rendered above
+    # (otherwise the type already implies "Full GPUs").
+    if mig_options:
+        choices.append(questionary.Separator(
+            "--- Full GPUs (single node) ---"))
     for count in valid_counts:
         if count == 1:
             label = f"1 GPU (single node)"
@@ -228,14 +239,7 @@ def select_gpu_count_interactive(
             label = f"{count} GPUs (single node)"
         choices.append(questionary.Choice(title=label, value=count))
 
-    # Add separator and MIG slice options (h100 only)
-    if mig_options:
-        choices.append(questionary.Separator(
-            "--- MIG slices (partial GPU, single node) ---"))
-        for sku, count, label in mig_options:
-            choices.append(questionary.Choice(title=label, value=(sku, count)))
-
-    # Add separator and multinode options
+    # Multinode at the bottom.
     if multinode_counts:
         choices.append(questionary.Separator(
             "--- Multinode (Distributed) ---"))
