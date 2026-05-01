@@ -149,10 +149,15 @@ WORKDIR /home/dev
 RUN mkdir -p ~/.npm-global && \
     npm config set prefix ~/.npm-global
 
-# OpenAI Codex CLI: AWS Bedrock now serves Codex (announced 2026-04-28 at openai.com/index/openai-on-aws),
-# so we can wire it up with the same IAM-role flow as Claude — no per-user OPENAI_API_KEY.
-# TODO(codex-bedrock): add `RUN curl -fsSL https://... | bash` (or pip/npm equivalent) once the
-# Bedrock-backed install path is documented, plus the corresponding env var in shell_env.
+# OpenAI Codex CLI installed SYSTEM-WIDE as root (parallels the Claude install above).
+# Auth is per-user: either `export OPENAI_API_KEY=sk-…` in their shell, or `codex login`
+# for the browser/ChatGPT-account flow. AWS Bedrock now serves Codex (announced 2026-04-28
+# at openai.com/index/openai-on-aws) — once we have early access, swap in the Bedrock-backed
+# install + flip an env var; users won't need their own keys anymore.
+USER root
+RUN npm install -g --prefix /usr/local @openai/codex || echo "Codex CLI install failed (non-fatal at build time)"
+
+USER dev
 
 # Install oh-my-zsh for dev user
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
