@@ -6233,7 +6233,13 @@ def should_use_persistent_disk(user_id: str, current_reservation_id: str) -> boo
 
 
 def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]:
-    """Get instance type and GPU type from the node where pod is scheduled"""
+    """Get instance type and GPU type from the node where pod is scheduled.
+
+    For MIG slice pods, the SKU is derived from the pod's resource request
+    (nvidia.com/mig-Ng.NNgb) rather than the host instance type, so the DDB
+    record reflects the actual partition the user reserved instead of the
+    physical card.
+    """
     try:
         v1 = client.CoreV1Api(k8s_client)
 
@@ -6250,7 +6256,27 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
             "node.kubernetes.io/instance-type", "unknown"
         )
 
-        # Map instance type to GPU type
+        # If the pod requests a MIG slice resource, the GPU type is the slice SKU.
+        # Map back to the canonical SKU stored elsewhere in this code (matches CLI flag).
+        mig_resource_to_sku = {
+            "nvidia.com/mig-1g.10gb": "h100-mig-1g",
+            "nvidia.com/mig-1g.20gb": "h100-mig-1g",  # memory-doubled variant, same SKU bucket
+            "nvidia.com/mig-2g.20gb": "h100-mig-2g",
+            "nvidia.com/mig-3g.40gb": "h100-mig-3g",
+            "nvidia.com/mig-4g.40gb": "h100-mig-4g",
+            "nvidia.com/mig-7g.80gb": "h100-mig-7g",
+        }
+        if pod.spec.containers:
+            for c in pod.spec.containers:
+                reqs = (c.resources.requests if c.resources and c.resources.requests else {}) or {}
+                for r_name, sku in mig_resource_to_sku.items():
+                    if reqs.get(r_name):
+                        logger.info(
+                            f"Pod {pod_name} on {node_name} requests {r_name} -> MIG SKU {sku}"
+                        )
+                        return instance_type, sku
+
+        # Map instance type to GPU type for non-MIG (full GPU) pods
         gpu_type_mapping = {
             "g4dn.4xlarge": "T4",
             "g4dn.8xlarge": "T4",
@@ -6261,6 +6287,7 @@ def get_instance_type_and_gpu_info(k8s_client, pod_name: str) -> tuple[str, str]
             "g6.12xlarge": "L4",
             "g6.16xlarge": "L4",
             "g6.24xlarge": "L4",
+            "g7e.24xlarge": "rtxpro6000",
             "p4d.24xlarge": "A100",
             "p5.48xlarge": "H100",
             "p5e.48xlarge": "H200",

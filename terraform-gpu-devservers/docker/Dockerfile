@@ -132,13 +132,20 @@ RUN mkdir -p /run/sshd /var/run/sshd && \
 # Create SSH config
 COPY ssh_config /etc/ssh/sshd_config
 
-# Set up npm global directory for dev user and install Claude CLI
+# Set up npm global directory for dev user (used for Codex CLI; Claude uses native installer below)
 USER dev
 WORKDIR /home/dev
 
 RUN mkdir -p ~/.npm-global && \
-    npm config set prefix ~/.npm-global && \
-    npm install -g @anthropic-ai/claude-code || echo "Claude CLI install failed, will retry at runtime"
+    npm config set prefix ~/.npm-global
+
+# Install Claude Code via the official native installer (not via npm).
+# Drops a binary at ~/.local/bin/claude — no Node runtime dep at startup.
+RUN curl -fsSL https://claude.ai/install.sh | bash || echo "Claude native install failed, retry at runtime"
+
+# Install OpenAI Codex CLI (no AWS Bedrock equivalent — uses OpenAI directly with user's OPENAI_API_KEY).
+# npm-based for now (no widely-shipped native installer); harmless to keep alongside the native Claude bin.
+RUN npm install -g @openai/codex || echo "Codex CLI install failed, retry at runtime"
 
 # Install oh-my-zsh for dev user
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
@@ -156,7 +163,8 @@ RUN mkdir -p /devserver-setup && \
     cp -r /home/dev/.npm-global /devserver-setup/npm-global && \
     cp -r /home/dev/.oh-my-zsh /devserver-setup/oh-my-zsh && \
     cp -r /home/dev/.jupyter /devserver-setup/jupyter && \
-    cp /home/dev/.npmrc /devserver-setup/.npmrc
+    cp /home/dev/.npmrc /devserver-setup/.npmrc && \
+    if [ -d /home/dev/.local ]; then cp -r /home/dev/.local /devserver-setup/dotlocal; fi
 
 COPY --chown=root:root shell_env /devserver-setup/.shell_env
 COPY --chown=root:root zshrc /devserver-setup/.zshrc
