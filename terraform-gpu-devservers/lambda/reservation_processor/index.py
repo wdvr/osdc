@@ -4454,22 +4454,23 @@ EOF_ZSHRC_EXT
                             sed -i '/ANTHROPIC_MODEL.*sonnet-4-20250514/d' /home/dev/.shell_env || true
                         fi
 
-                        # Remove stale claude installs from persistent disk that would shadow the
-                        # image-controlled /usr/local/bin/claude on PATH. We installed Claude system-wide
-                        # in the image (under /opt/claude) — any user-disk binary at ~/.npm-global/bin/claude
-                        # or ~/.local/bin/claude is leftover from an older image and will outrank the system one
-                        # because $HOME/.npm-global/bin appears before /usr/local/bin in $PATH. Removing them
-                        # forces every user onto the controlled, image-pinned Claude version.
-                        for stale_claude in /home/dev/.npm-global/bin/claude /home/dev/.local/bin/claude; do
-                            if [ -L "$stale_claude" ] || [ -f "$stale_claude" ]; then
-                                echo "[STARTUP] Removing stale claude install at $stale_claude"
-                                rm -f "$stale_claude" || true
-                            fi
-                        done
-                        # Also drop any /home/dev/.local/share/claude directory left behind (it grows over time).
-                        if [ -d /home/dev/.local/share/claude ]; then
-                            echo "[STARTUP] Removing stale /home/dev/.local/share/claude directory"
-                            rm -rf /home/dev/.local/share/claude || true
+                        # Remove the legacy npm-based Claude install (~/.npm-global/bin/claude).
+                        # Older docker images ran `npm install -g @anthropic-ai/claude-code` and that
+                        # binary still lingers on persistent disks where it shadows the system-wide
+                        # /usr/local/bin/claude (because $HOME/.npm-global/bin precedes /usr/local/bin
+                        # on PATH). The system-wide install is kept current via image rebuilds; the
+                        # user's own ~/.local/bin/claude (from `claude install` in their home, or
+                        # Claude's self-update mechanism) is left intact so users can opt into newer
+                        # versions ahead of our image refresh.
+                        if [ -e /home/dev/.npm-global/bin/claude ]; then
+                            echo "[STARTUP] Removing legacy npm-installed claude at /home/dev/.npm-global/bin/claude"
+                            rm -f /home/dev/.npm-global/bin/claude || true
+                        fi
+                        # Also drop the npm package files for @anthropic-ai/claude-code so npm doesn't
+                        # think it's still installed on next `npm list -g`.
+                        if [ -d /home/dev/.npm-global/lib/node_modules/@anthropic-ai/claude-code ]; then
+                            echo "[STARTUP] Removing legacy @anthropic-ai/claude-code npm package files"
+                            rm -rf /home/dev/.npm-global/lib/node_modules/@anthropic-ai/claude-code || true
                         fi
 
                         # Fix ownership - recursive only for new disks (fast, empty disk)
