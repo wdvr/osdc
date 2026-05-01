@@ -4445,6 +4445,15 @@ EOF_ZSHRC_EXT
                         done
                         echo "[STARTUP] ✓ Shell extension sourcing configured"
 
+                        # Surgically remove the deprecated ANTHROPIC_MODEL pinning that older docker
+                        # images baked into shell_env. claude-sonnet-4-20250514 is being deprecated
+                        # by Anthropic, and an old hardcoded value lingers on persistent disks.
+                        # Idempotent — strips only the matching line, leaves any user-customized value alone.
+                        if [ -f /home/dev/.shell_env ] && grep -q "ANTHROPIC_MODEL.*sonnet-4-20250514" /home/dev/.shell_env 2>/dev/null; then
+                            echo "[STARTUP] Removing deprecated ANTHROPIC_MODEL=sonnet-4-20250514 line from .shell_env"
+                            sed -i '/ANTHROPIC_MODEL.*sonnet-4-20250514/d' /home/dev/.shell_env || true
+                        fi
+
                         # Fix ownership - recursive only for new disks (fast, empty disk)
                         # For existing disks, only fix the specific files we just created/modified
                         if [ "$CREATE_SH_ENV" = "true" ]; then
