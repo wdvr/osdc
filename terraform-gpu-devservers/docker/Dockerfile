@@ -143,9 +143,12 @@ RUN mkdir -p ~/.npm-global && \
 # Drops a binary at ~/.local/bin/claude — no Node runtime dep at startup.
 RUN curl -fsSL https://claude.ai/install.sh | bash || echo "Claude native install failed, retry at runtime"
 
-# Install OpenAI Codex CLI (no AWS Bedrock equivalent — uses OpenAI directly with user's OPENAI_API_KEY).
-# npm-based for now (no widely-shipped native installer); harmless to keep alongside the native Claude bin.
-RUN npm install -g @openai/codex || echo "Codex CLI install failed, retry at runtime"
+# OpenAI Codex CLI: AWS Bedrock now serves Codex (announced 2026-04-28 at openai.com/index/openai-on-aws),
+# so we can wire it up with the same IAM-role flow as Claude — no per-user OPENAI_API_KEY.
+# Pinning the install method until the Bedrock-backed `codex` CLI ships its docs/env-var
+# spec; once known, install + set OPENAI_USE_BEDROCK (or whatever the flag turns out to be).
+# TODO(codex-bedrock): add `RUN curl -fsSL https://... | bash` (or pip/npm equivalent) once the
+# Bedrock-backed install path is documented, plus the corresponding env var in shell_env.
 
 # Install oh-my-zsh for dev user
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended

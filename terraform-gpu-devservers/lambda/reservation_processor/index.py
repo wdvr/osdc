@@ -4030,7 +4030,9 @@ def create_pod(
                 client.V1Container(
                     name="gpu-dev",
                     image=container_image,
-                    image_pull_policy="IfNotPresent",
+                    # :latest is a moving tag — always re-pull so a new docker image
+                    # rolled out to ECR is picked up by every fresh reservation.
+                    image_pull_policy="Always",
                     **({
                         "command": ["/bin/bash"],
                         "args": [
