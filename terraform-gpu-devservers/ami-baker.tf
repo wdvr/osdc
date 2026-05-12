@@ -11,7 +11,6 @@ locals {
   ami_baker_trigger = sha256(join("\n", [
     data.aws_ami.eks_gpu_ami_x86_64.id,
     filesha256("${path.module}/templates/al2023-user-data.sh"),
-    filesha256("${path.module}/templates/ami-baker-user-data.sh"),
     local.latest_image_uri,
   ]))
   ami_baker_name = "gpu-dev-baked-${substr(local.ami_baker_trigger, 0, 8)}"

@@ -1821,7 +1821,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                             east1_table = east1_ddb.Table("pytorch-gpu-dev-reservations")
                             results = []
                             # Fetch active + recent failures/expired (last 24h) from east1
-                            all_statuses = list(statuses_to_include or ["active", "preparing", "queued", "pending"]) + ["failed", "expired", "cancelled"]
+                            all_statuses = (statuses_to_include or ["active", "preparing", "queued", "pending"]) + ["failed", "expired", "cancelled"]
                             for s in all_statuses:
                                 resp = east1_table.query(
                                     IndexName="StatusIndex",
