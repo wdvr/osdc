@@ -3478,32 +3478,52 @@ def update_reservation_fields(reservation_id: str, **fields) -> None:
         logger.error(f"Error updating reservation fields: {str(e)}")
 
 
+_ssh_key_cache = {}
+_SSH_KEY_CACHE_TTL = 7 * 24 * 3600  # 7 days — keys rarely change, pods fetch live keys anyway
+
+
 def get_github_public_key(github_username: str, validate: bool = True) -> str:
-    """Fetch GitHub public keys for user (all keys)
+    """Fetch GitHub public keys for user, cached in-memory and DynamoDB."""
+    import urllib.request
 
-    Args:
-        github_username: GitHub username to fetch keys for
-        validate: If True, validate and filter keys to only include valid SSH key formats
+    username_lower = github_username.lower()
 
-    Returns:
-        String containing SSH keys (one per line) or None if no keys found
-    """
+    # In-memory cache (survives across warm Lambda invocations)
+    cached = _ssh_key_cache.get(username_lower)
+    if cached and time.time() - cached["ts"] < _SSH_KEY_CACHE_TTL:
+        logger.info(f"SSH keys for {github_username} from memory cache")
+        return cached["keys"]
+
+    # DynamoDB cache (survives cold starts)
     try:
-        import urllib.request
+        resp = reservations_table.get_item(
+            Key={"reservation_id": f"ssh-key-cache-{username_lower}"},
+            ProjectionExpression="ssh_keys, cached_at",
+        )
+        if "Item" in resp:
+            item = resp["Item"]
+            cached_at = float(item.get("cached_at", 0))
+            if time.time() - cached_at < _SSH_KEY_CACHE_TTL:
+                keys = item["ssh_keys"]
+                _ssh_key_cache[username_lower] = {"keys": keys, "ts": cached_at}
+                logger.info(f"SSH keys for {github_username} from DynamoDB cache")
+                return keys
+    except Exception as e:
+        logger.warning(f"DynamoDB SSH key cache read failed: {e}")
 
+    # Cache miss — fetch from GitHub
+    try:
         url = f"https://github.com/{github_username}.keys"
         logger.info(f"Fetching SSH keys for {github_username} from {url}")
 
-        with urllib.request.urlopen(url) as response:
+        with urllib.request.urlopen(url, timeout=10) as response:
             keys_data = response.read().decode("utf-8").strip()
 
         if not keys_data:
-            logger.error(
-                f"No public SSH keys found for GitHub user {github_username}")
+            logger.error(f"No public SSH keys found for GitHub user {github_username}")
             return None
 
         if validate:
-            # Validate keys format (basic check for ssh-rsa/ssh-ed25519/ssh-ecdsa)
             valid_keys = []
             for line in keys_data.split("\n"):
                 line = line.strip()
@@ -3513,22 +3533,31 @@ def get_github_public_key(github_username: str, validate: bool = True) -> str:
                     or line.startswith("ssh-ecdsa")
                 ):
                     valid_keys.append(line)
-
             if not valid_keys:
-                logger.error(
-                    f"No valid SSH keys found for GitHub user {github_username}"
-                )
+                logger.error(f"No valid SSH keys found for GitHub user {github_username}")
                 return None
+            keys_data = "\n".join(valid_keys)
 
-            logger.info(
-                f"Found {len(valid_keys)} valid SSH keys for {github_username}")
-            return "\n".join(valid_keys)
-        else:
-            return keys_data
+        logger.info(f"Found {len(keys_data.splitlines())} valid SSH keys for {github_username}")
+
+        # Store in both caches
+        now = time.time()
+        _ssh_key_cache[username_lower] = {"keys": keys_data, "ts": now}
+        try:
+            reservations_table.put_item(Item={
+                "reservation_id": f"ssh-key-cache-{username_lower}",
+                "ssh_keys": keys_data,
+                "cached_at": str(now),
+                "github_user": github_username,
+                "status": "cache",
+            })
+        except Exception as e:
+            logger.warning(f"DynamoDB SSH key cache write failed: {e}")
+
+        return keys_data
 
     except Exception as e:
-        logger.error(
-            f"Error fetching GitHub key for {github_username}: {str(e)}")
+        logger.error(f"Error fetching GitHub key for {github_username}: {str(e)}")
         return None
 
 
