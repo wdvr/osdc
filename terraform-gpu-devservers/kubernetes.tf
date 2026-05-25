@@ -467,6 +467,22 @@ resource "kubernetes_manifest" "image_prepuller_daemonset" {
                   memory = "10Mi"
                 }
               }
+              volumeMounts = [
+                {
+                  name      = "nvme-cache"
+                  mountPath = "/mnt/nvme/user-cache"
+                  readOnly  = true
+                }
+              ]
+            }
+          ]
+          volumes = [
+            {
+              name = "nvme-cache"
+              hostPath = {
+                path = "/mnt/nvme/user-cache"
+                type = "DirectoryOrCreate"
+              }
             }
           ]
         }
