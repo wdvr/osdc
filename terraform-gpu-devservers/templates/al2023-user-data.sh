@@ -119,6 +119,56 @@ nvidia-smi -pm 1 || echo "Could not enable persistent mode (device files still c
 # Install basic monitoring tools
 yum install -y htop wget
 
+# ── Mount local NVMe instance store for containerd image cache ──
+# GPU instances (p5, p6, g4dn, g6, g7e) have fast local NVMe SSDs that sit idle.
+# Moving containerd's root here makes image pulls instant from cache and avoids
+# EBS IOPS contention with user workloads.
+NVME_MOUNT="/mnt/nvme"
+NVME_DEVS=()
+for dev in /dev/nvme*n1; do
+    [ -b "$dev" ] || continue
+    # Instance store NVMe has model "Amazon EC2 NVMe Instance Storage"
+    # EBS NVMe has model "Amazon Elastic Block Store"
+    DEV_NAME=$(basename "$dev")
+    MODEL=$(cat /sys/block/$${DEV_NAME}/device/model 2>/dev/null | tr -d ' ')
+    if echo "$MODEL" | grep -qi "Instance"; then
+        NVME_DEVS+=("$dev")
+    fi
+done
+
+if [ $${#NVME_DEVS[@]} -gt 0 ]; then
+    echo "Found $${#NVME_DEVS[@]} local NVMe device(s): $${NVME_DEVS[*]}"
+    mkdir -p "$NVME_MOUNT"
+
+    if [ $${#NVME_DEVS[@]} -eq 1 ]; then
+        mkfs.xfs -f "$${NVME_DEVS[0]}"
+        mount "$${NVME_DEVS[0]}" "$NVME_MOUNT"
+    else
+        # RAID0 across all NVMe devices for maximum throughput
+        dnf install -y mdadm 2>/dev/null || yum install -y mdadm 2>/dev/null
+        mdadm --create /dev/md0 --level=0 --raid-devices=$${#NVME_DEVS[@]} "$${NVME_DEVS[@]}" --force --run
+        mkfs.xfs -f /dev/md0
+        mount /dev/md0 "$NVME_MOUNT"
+    fi
+
+    # Move baked AMI's containerd cache to NVMe, then bind-mount
+    # This preserves pre-pulled images from the AMI while using NVMe speed
+    mkdir -p "$NVME_MOUNT/containerd"
+    if [ -d /var/lib/containerd ] && [ "$(ls -A /var/lib/containerd 2>/dev/null)" ]; then
+        echo "Copying baked containerd cache to NVMe..."
+        cp -a /var/lib/containerd/* "$NVME_MOUNT/containerd/" 2>/dev/null || true
+    fi
+    mkdir -p /var/lib/containerd
+    mount --bind "$NVME_MOUNT/containerd" /var/lib/containerd
+
+    NVME_SIZE=$(df -h "$NVME_MOUNT" | awk 'NR==2{print $2}')
+    echo "NVMe mounted at $NVME_MOUNT ($NVME_SIZE) — containerd image cache on local SSD"
+    NVME_LABEL=",nvme-cache=true"
+else
+    echo "No local NVMe instance store found — using EBS root for containerd"
+    NVME_LABEL=""
+fi
+
 # Configure and run nodeadm for EKS cluster joining
 # Get the base64 certificate data from AWS
 CA_DATA=$(aws eks describe-cluster --region ${region} --name ${cluster_name} --query 'cluster.certificateAuthority.data' --output text)
@@ -145,7 +195,7 @@ spec:
         cpu: "2"
         memory: "4Gi"
     flags:
-      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false${profiling_dedicated ? ",gpu.monitoring/profiling-dedicated=true,nvidia.com/gpu.deploy.dcgm-exporter=false" : ""}${mig_profile != "" ? ",nvidia.com/mig.config=${mig_profile}" : ""}
+      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false${profiling_dedicated ? ",gpu.monitoring/profiling-dedicated=true,nvidia.com/gpu.deploy.dcgm-exporter=false" : ""}${mig_profile != "" ? ",nvidia.com/mig.config=${mig_profile}" : ""}$NVME_LABEL
 EOF
 
 # Configure EFA if hardware present (BEFORE nodeadm so kubelet sees hugepages)
