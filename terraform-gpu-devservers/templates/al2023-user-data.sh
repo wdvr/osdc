@@ -235,6 +235,8 @@ ECR_IMAGE="${container_image}"
     sleep 2
   done
   crictl pull "$ECR_IMAGE" 2>&1 || echo "Image pre-pull failed"
+  # Pre-pull init container image (used by every pod for SSH key setup)
+  crictl pull docker.io/library/alpine:3.21 2>&1 || echo "Alpine pre-pull failed"
   # Pre-pull GPU Operator images (saves ~10 min waiting for DaemonSet pod startup)
   for IMG in \
     nvcr.io/nvidia/k8s/container-toolkit:v1.17.8-ubuntu20.04 \
