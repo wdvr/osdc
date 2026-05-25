@@ -2687,6 +2687,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         gpu_type = request.get("gpu_type", "a100")
         user_id = request.get("user_id")
         recreate_env = request.get("recreate_env", False)
+        fast_cache = request.get("fast_cache", False)
         pod_name = f"gpu-dev-{reservation_id[:8]}"
         disk_name = request.get("disk_name")  # Named disk identifier (optional)
 
@@ -2928,7 +2929,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             if not _target_az:
                 raise ValueError(f"No {gpu_type} nodes found in cluster")
 
-            _cache_hit = _check_nvme_cache_on_node(_target_node, user_id)
+            _cache_hit = fast_cache and _check_nvme_cache_on_node(_target_node, user_id)
             if _cache_hit:
                 logger.info(f"NVMe cache HIT on {_target_node} for {user_id} — creating empty volume")
                 update_reservation_status(reservation_id, "preparing",
@@ -5567,7 +5568,18 @@ EOF
                         pre_stop=client.V1LifecycleHandler(
                             _exec=client.V1ExecAction(
                                 command=["/bin/sh", "-c",
-                                    f"rsync -a --delete --exclude='.cache/huggingface' /home/dev/ /nvme-cache/{_nvme_cache_user_dir(user_id or 'dev')}/ 2>/dev/null || true"
+                                    f"""
+                                    CACHE_DIR="/nvme-cache/{_nvme_cache_user_dir(user_id or 'dev')}"
+                                    echo "[CACHE] Starting NVMe cache sync to $CACHE_DIR" | tee -a /tmp/nvme-cache.log
+                                    START=$(date +%s)
+                                    mkdir -p "$CACHE_DIR"
+                                    rsync -a --delete --exclude='.cache/huggingface' --exclude='.cache/torch' /home/dev/ "$CACHE_DIR/" 2>&1 | tail -5 | tee -a /tmp/nvme-cache.log
+                                    RC=$?
+                                    END=$(date +%s)
+                                    SIZE=$(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1)
+                                    echo "[CACHE] Done in $((END-START))s, size=$SIZE, exit=$RC" | tee -a /tmp/nvme-cache.log
+                                    cp /tmp/nvme-cache.log "$CACHE_DIR/.cache-log" 2>/dev/null || true
+                                    """
                                 ]
                             )
                         )
