@@ -2843,16 +2843,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         elif dockerimage:
             logger.info(f"Custom Docker image specified: {dockerimage}")
 
-        record_trace_event(trace_data, "github_keys_fetch_start")
-        github_public_key = get_github_public_key(github_user, validate=True)
-        record_trace_event(trace_data, "github_keys_fetch_end")
-        if not github_public_key:
-            raise ValueError(
-                f"Could not fetch GitHub public key for GitHub user '{github_user}'"
-            )
-
-        # Check if user should get persistent disk
-        # Check if user explicitly requested no persistent disk (e.g., confirmed continuing without disk when another reservation has it)
+        # ── Determine disk eligibility (quick, no I/O) ──
         no_persistent_disk_requested = request.get("no_persistent_disk", False)
 
         if no_persistent_disk_requested:
@@ -2895,119 +2886,93 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                 logger.error(f"Failed to reserve persistent disk slot: {e}")
                 use_persistent_disk = False
 
-        if use_persistent_disk:
+        # ── Run SSH key fetch, disk setup, and EFS setup in parallel ──
+        # These are independent I/O operations that together take ~8s sequentially
+        def _fetch_ssh_keys():
+            record_trace_event(trace_data, "github_keys_fetch_start")
+            keys = get_github_public_key(github_user, validate=True)
+            record_trace_event(trace_data, "github_keys_fetch_end")
+            return keys
+
+        def _setup_disk():
+            if not use_persistent_disk:
+                return None, True, None, None, None
+            update_reservation_status(
+                reservation_id, "preparing",
+                detailed_status="Setting up persistent disk" + (f" '{disk_name}'" if disk_name else ""))
+            _target_az, _target_node = get_target_az_for_reservation(gpu_type, gpu_count)
+            if not _target_az:
+                raise ValueError(f"No {gpu_type} nodes found in cluster")
+            logger.info(f"Target AZ: {_target_az}, disk_name={disk_name or 'default'}")
+            record_trace_event(trace_data, "disk_create_start")
+            vol_id, new_disk, warning = create_disk_from_snapshot_or_empty(
+                user_id=user_id, availability_zone=_target_az,
+                disk_name=disk_name, reservation_id=reservation_id)
+            record_trace_event(trace_data, "disk_create_end")
+            return vol_id, new_disk, warning, _target_az, _target_node
+
+        def _setup_efs():
+            if not (EFS_SECURITY_GROUP_ID and EFS_SUBNET_IDS):
+                return None
+            update_reservation_status(
+                reservation_id, "preparing",
+                "Setting up shared storage (/shared) for user collaboration")
+            record_trace_event(trace_data, "efs_setup_start")
+            efs_id = create_or_find_user_efs(user_id)
+            record_trace_event(trace_data, "efs_setup_end")
+            return efs_id
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            ssh_future = executor.submit(_fetch_ssh_keys)
+            disk_future = executor.submit(_setup_disk)
+            efs_future = executor.submit(_setup_efs)
+
+            github_public_key = ssh_future.result()
             try:
-                # NEW snapshot-first workflow (replaces old migration logic below)
-                # Always recreate volume from latest snapshot or create empty
-                update_reservation_status(
-                    reservation_id,
-                    "preparing",
-                    detailed_status="Setting up persistent disk" + (f" '{disk_name}'" if disk_name else "")
-                )
-
-                # Determine target AZ + node for this reservation (binpacking)
-                target_az, target_node = get_target_az_for_reservation(gpu_type, gpu_count)
-                if not target_az:
-                    raise ValueError(f"No {gpu_type} nodes found in cluster")
-
-                logger.info(f"Target AZ for reservation: {target_az}")
-                logger.info(f"Creating persistent disk for user {user_id}, disk_name={disk_name or 'default'}")
-
-                # Use new snapshot-first function
-                record_trace_event(trace_data, "disk_create_start")
-                persistent_volume_id, is_new_disk, disk_warning = create_disk_from_snapshot_or_empty(
-                    user_id=user_id,
-                    availability_zone=target_az,
-                    disk_name=disk_name,
-                    reservation_id=reservation_id
-                )
-                record_trace_event(trace_data, "disk_create_end")
-
-                logger.info(f"Persistent disk ready: {persistent_volume_id} (is_new={is_new_disk})")
-
-                # Mark disk as in_use in disks table (prevents CLI from showing as available)
-                # Use "default" as fallback when no explicit disk_name provided
-                effective_disk_name = disk_name or "default"
-                try:
-                    mark_disk_in_use(user_id, effective_disk_name, True, reservation_id)
-                    logger.info(f"Marked disk '{effective_disk_name}' as in_use for reservation {reservation_id[:8]}")
-                except Exception as mark_error:
-                    logger.warning(f"Failed to mark disk as in_use: {mark_error}")
-
-                # Store disk_name in DynamoDB for tracking (ALWAYS store, using "default" as fallback)
-                # This is required for expiry cleanup to know which disk to mark as not in use
-                update_reservation_fields(reservation_id, disk_name=effective_disk_name)
-
-                # Store warning if any
-                if disk_warning:
-                    update_reservation_fields(reservation_id, warning=disk_warning)
-                    logger.warning(f"Stored warning for reservation {reservation_id}: {disk_warning}")
+                disk_result = disk_future.result()
             except Exception as disk_error:
                 logger.error(f"Failed to set up persistent disk: {disk_error}")
-
                 error_msg = str(disk_error)
-
-                # If user explicitly requested a named disk, NEVER silently fall back to temporary.
-                # Any disk error (in use, timeout, creation failure) should fail the reservation
-                # so the user knows what happened instead of getting surprise temporary storage.
                 if disk_name:
-                    logger.error(f"Named disk '{disk_name}' was explicitly requested but setup failed - failing reservation")
-                    update_reservation_status(
-                        reservation_id,
-                        "failed",
-                        failure_reason=f"Persistent disk '{disk_name}' setup failed: {error_msg}"
-                    )
+                    logger.error(f"Named disk '{disk_name}' setup failed - failing reservation")
+                    update_reservation_status(reservation_id, "failed",
+                        failure_reason=f"Persistent disk '{disk_name}' setup failed: {error_msg}")
                     raise RuntimeError(f"Cannot create reservation: disk '{disk_name}' setup failed: {error_msg}")
-
-                # Check if this is a "disk in use" error - these should fail the reservation
                 if "in use" in error_msg.lower():
-                    # Don't fall back - fail the reservation with clear error
-                    update_reservation_status(
-                        reservation_id,
-                        "failed",
-                        failure_reason=error_msg
-                    )
+                    update_reservation_status(reservation_id, "failed", failure_reason=error_msg)
                     raise RuntimeError(f"Cannot create reservation: {error_msg}")
-
-                # For other errors without explicit disk_name, continue without persistent disk (backwards compatibility)
-                logger.warning(f"Falling back to non-persistent storage due to disk error: {disk_error}")
+                logger.warning(f"Falling back to non-persistent storage: {disk_error}")
                 use_persistent_disk = False
-                persistent_volume_id = None  # Clear any volume that was set before the error
-                is_new_disk = True  # EmptyDir volume will need shell environment setup
-                update_reservation_status(
-                    reservation_id,
-                    "preparing",
-                    "Persistent disk setup failed - continuing without persistent storage",
-                )
-        else:
-            logger.info(
-                f"User {user_id} has existing reservations - no persistent disk")
-            # Non-persistent reservations always need shell environment setup
-            is_new_disk = True
-            logger.info(
-                "Non-persistent reservation - will always set up shell environment (CREATE_SH_ENV=true)")
+                persistent_volume_id = None
+                is_new_disk = True
+                disk_result = None
+                update_reservation_status(reservation_id, "preparing",
+                    "Persistent disk setup failed - continuing without persistent storage")
+            try:
+                efs_filesystem_id = efs_future.result()
+            except Exception as efs_error:
+                logger.error(f"Failed to set up EFS: {efs_error}")
+                efs_filesystem_id = None
 
-        # Set up shared EFS storage for user
-        efs_filesystem_id = None
-        try:
-            if EFS_SECURITY_GROUP_ID and EFS_SUBNET_IDS:
-                update_reservation_status(
-                    reservation_id,
-                    "preparing",
-                    "Setting up shared storage (/shared) for user collaboration",
-                )
-                record_trace_event(trace_data, "efs_setup_start")
-                efs_filesystem_id = create_or_find_user_efs(user_id)
-                record_trace_event(trace_data, "efs_setup_end")
-                logger.info(
-                    f"EFS filesystem {efs_filesystem_id} ready for user {user_id}")
-            else:
-                logger.warning(
-                    "EFS configuration missing - skipping shared storage setup")
-        except Exception as efs_error:
-            logger.error(f"Failed to set up EFS: {efs_error}")
-            # Continue without EFS rather than failing
-            efs_filesystem_id = None
+        if not github_public_key:
+            raise ValueError(f"Could not fetch GitHub public key for GitHub user '{github_user}'")
+
+        if use_persistent_disk and disk_result:
+            persistent_volume_id, is_new_disk, disk_warning, target_az, target_node = disk_result
+            logger.info(f"Persistent disk ready: {persistent_volume_id} (is_new={is_new_disk})")
+            effective_disk_name = disk_name or "default"
+            try:
+                mark_disk_in_use(user_id, effective_disk_name, True, reservation_id)
+            except Exception as mark_error:
+                logger.warning(f"Failed to mark disk as in_use: {mark_error}")
+            update_reservation_fields(reservation_id, disk_name=effective_disk_name)
+            if disk_warning:
+                update_reservation_fields(reservation_id, warning=disk_warning)
+        elif not use_persistent_disk:
+            is_new_disk = True
+
+        if efs_filesystem_id:
+            logger.info(f"EFS filesystem {efs_filesystem_id} ready for user {user_id}")
 
         # Update status: Creating Kubernetes resources
         disk_status = "with persistent disk" if use_persistent_disk else "without persistent disk"
