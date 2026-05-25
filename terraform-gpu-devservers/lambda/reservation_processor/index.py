@@ -3149,30 +3149,29 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         try:
             v1 = client.CoreV1Api(k8s_client)
 
-            # Try multiple times to find SSH daemon in logs (custom images may take longer)
-            # Default image has openssh-server pre-installed so SSH starts in ~2-5s
-            # Custom/minimal images may need apt-get install which takes longer
-            # 60 retries * 3s = 180 seconds total (3 minutes) - same max but much faster detection
-            max_retries = 60
-            retry_delay = 3  # seconds between retries
+            # Poll for SSH daemon: 100ms for first 8s, then backoff to 5s
+            # Default image starts SSH in ~2-5s, so rapid polling catches it instantly
+            # Custom images may take longer, backoff keeps API load reasonable
+            max_attempts = 60
+            elapsed = 0.0
 
-            for attempt in range(max_retries):
+            for attempt in range(max_attempts):
                 logs = v1.read_namespaced_pod_log(
                     name=pod_name, namespace="gpu-dev", container="gpu-dev", tail_lines=100
                 )
                 if "SSH daemon starting on port 22" in logs or "Server listening on" in logs:
                     logger.info(
-                        f"SSH daemon confirmed running in pod logs for {pod_name} (attempt {attempt + 1})")
+                        f"SSH daemon confirmed running in pod logs for {pod_name} (attempt {attempt + 1}, {elapsed:.1f}s elapsed)")
                     ssh_ready = True
                     break
                 else:
-                    if attempt < max_retries - 1:
-                        logger.info(
-                            f"SSH daemon not yet started, waiting {retry_delay}s (attempt {attempt + 1}/{max_retries})")
-                        time.sleep(retry_delay)
+                    if attempt < max_attempts - 1:
+                        delay = 0.1 if elapsed < 8.0 else min(1.0 + (elapsed - 8.0) * 0.3, 5.0)
+                        time.sleep(delay)
+                        elapsed += delay
                     else:
                         logger.warning(
-                            f"SSH daemon not detected after {max_retries} attempts, logs preview: {logs[-200:]}")
+                            f"SSH daemon not detected after {max_attempts} attempts, logs preview: {logs[-200:]}")
         except Exception as e:
             logger.warning(f"Could not check SSH daemon logs: {e}")
             # Assume ready if pod is running (NLB will handle routing)
