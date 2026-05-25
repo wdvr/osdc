@@ -152,7 +152,8 @@ if [ $${#NVME_DEVS[@]} -gt 0 ]; then
     fi
 
     # Move baked AMI's containerd cache to NVMe, then bind-mount
-    # This preserves pre-pulled images from the AMI while using NVMe speed
+    # Stop containerd first to avoid corrupting boltdb during copy
+    systemctl stop containerd 2>/dev/null || true
     mkdir -p "$NVME_MOUNT/containerd"
     if [ -d /var/lib/containerd ] && [ "$(ls -A /var/lib/containerd 2>/dev/null)" ]; then
         echo "Copying baked containerd cache to NVMe..."
@@ -160,6 +161,7 @@ if [ $${#NVME_DEVS[@]} -gt 0 ]; then
     fi
     mkdir -p /var/lib/containerd
     mount --bind "$NVME_MOUNT/containerd" /var/lib/containerd
+    # nodeadm will restart containerd with proper config
 
     NVME_SIZE=$(df -h "$NVME_MOUNT" | awk 'NR==2{print $2}')
     echo "NVMe mounted at $NVME_MOUNT ($NVME_SIZE) — containerd image cache on local SSD"
