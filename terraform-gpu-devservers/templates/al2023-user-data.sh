@@ -236,7 +236,15 @@ ECR_IMAGE="${container_image}"
     crictl version &>/dev/null && break
     sleep 2
   done
-  crictl pull "$ECR_IMAGE" 2>&1 || echo "Image pre-pull failed"
+  # Check if baked AMI image survived nodeadm restart
+  CACHED=$(crictl images -o json 2>/dev/null | python3 -c "import sys,json; imgs=json.load(sys.stdin).get('images',[]); print('yes' if any('gpu-dev-image' in str(i.get('repoTags',[])) for i in imgs) else 'no')" 2>/dev/null || echo "no")
+  echo "PRE-PULL: Baked AMI image cached=$CACHED"
+  if [ "$CACHED" = "yes" ]; then
+    echo "PRE-PULL: Using cached image from baked AMI"
+  else
+    echo "PRE-PULL: Pulling image fresh..."
+    crictl pull "$ECR_IMAGE" 2>&1 || echo "Image pre-pull failed"
+  fi
   # Pre-pull init container image (used by every pod for SSH key setup)
   crictl pull docker.io/library/alpine:3.21 2>&1 || echo "Alpine pre-pull failed"
   # Pre-pull GPU Operator images (saves ~10 min waiting for DaemonSet pod startup)
