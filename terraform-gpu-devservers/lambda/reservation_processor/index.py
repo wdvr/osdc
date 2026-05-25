@@ -7802,6 +7802,14 @@ def process_scheduled_queue_management():
                     except Exception:
                         cpu_spot_ready = False
                 if type_available_gpus >= requested_gpus and max_single_node >= requested_gpus and cpu_spot_ready:
+                    # Re-check DDB status before allocating — another invocation may have already started
+                    _current = reservations_table.get_item(Key={"reservation_id": reservation_id}).get("Item", {})
+                    _cur_status = _current.get("status", "queued")
+                    if _cur_status != "queued":
+                        logger.info(f"Reservation {reservation_id} already {_cur_status} (race avoided), skipping allocation")
+                        processed_count += 1
+                        continue
+
                     logger.info(
                         f"Allocating {requested_gpus} {gpu_type.upper()} GPUs for reservation {reservation_id} - {type_available_gpus} available"
                     )
