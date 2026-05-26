@@ -2905,7 +2905,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                 pods = v1.list_namespaced_pod(
                     "kube-system",
                     field_selector=f"spec.nodeName={_target_node},status.phase=Running",
-                    label_selector="app=gpu-dev-image-prepuller",
+                    label_selector="app=image-prepuller",
                 ).items
                 if not pods:
                     return False
