@@ -456,7 +456,6 @@ class ReservationManager:
         node_labels: Optional[Dict[str, str]] = None,
         trace: bool = False,
         spot: bool = False,
-        fast_cache: bool = False,
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
@@ -538,9 +537,6 @@ class ReservationManager:
 
             if spot:
                 message["spot"] = True
-
-            if fast_cache:
-                message["fast_cache"] = True
 
             # Add trace flag and CLI start timestamp
             if trace:

@@ -626,8 +626,6 @@ def main(ctx: click.Context) -> None:
 )
 @click.option("--spot", is_flag=True, default=False,
               help="Acknowledge spot instance (~1/3 cost, may be preempted with 2-min notice). Required for spot-only types.")
-@click.option("--fast-cache", is_flag=True, default=False, hidden=True,
-              help="Use NVMe local cache for faster session restore (experimental).")
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -649,7 +647,6 @@ def reserve(
     disk: Optional[str],
     node_label: tuple,
     spot: bool = False,
-    fast_cache: bool = False,
 ) -> None:
     """Reserve GPU development server(s)
 
@@ -1398,7 +1395,6 @@ def reserve(
                     spot=spot,
                     node_labels=node_labels if node_labels else None,
                     trace=trace,
-                    fast_cache=fast_cache,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 

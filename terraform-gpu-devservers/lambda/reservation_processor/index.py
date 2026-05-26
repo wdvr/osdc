@@ -2686,7 +2686,6 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         gpu_type = request.get("gpu_type", "a100")
         user_id = request.get("user_id")
         recreate_env = request.get("recreate_env", False)
-        fast_cache = request.get("fast_cache", False)
         pod_name = f"gpu-dev-{reservation_id[:8]}"
         disk_name = request.get("disk_name")  # Named disk identifier (optional)
 
@@ -2894,48 +2893,9 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             record_trace_event(trace_data, "github_keys_fetch_end")
             return keys
 
-        def _check_nvme_cache_on_node(_target_node, _user_id):
-            """Check if target node (or any node of this GPU type) has NVMe cache."""
-            try:
-                v1 = client.CoreV1Api(k8s_client)
-                cache_dir = f"/mnt/nvme/user-cache/{_nvme_cache_user_dir(_user_id)}"
-
-                if _target_node:
-                    field_sel = f"spec.nodeName={_target_node},status.phase=Running"
-                else:
-                    field_sel = "status.phase=Running"
-
-                pods = v1.list_namespaced_pod(
-                    "kube-system",
-                    field_selector=field_sel,
-                    label_selector="app=image-prepuller",
-                ).items
-                if not pods:
-                    logger.info(f"NVMe cache check: no prepuller pods found")
-                    return False
-
-                for pod in pods[:3]:
-                    try:
-                        stream.stream(
-                            v1.connect_get_namespaced_pod_exec,
-                            pod.metadata.name, "kube-system",
-                            container="pause",
-                            command=["test", "-d", cache_dir],
-                            stderr=True, stdout=True, stdin=False, tty=False,
-                        )
-                        logger.info(f"NVMe cache HIT on {pod.spec.node_name}")
-                        return True
-                    except Exception:
-                        continue
-                logger.info(f"NVMe cache MISS for {_user_id}")
-                return False
-            except Exception as e:
-                logger.warning(f"NVMe cache check error: {e}")
-                return False
-
         def _setup_disk():
             if not use_persistent_disk:
-                return None, True, None, None, None, False
+                return None, True, None, None, None
             update_reservation_status(
                 reservation_id, "preparing",
                 detailed_status="Setting up persistent disk" + (f" '{disk_name}'" if disk_name else ""))
@@ -2943,20 +2903,13 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             if not _target_az:
                 raise ValueError(f"No {gpu_type} nodes found in cluster")
 
-            _cache_hit = fast_cache and _check_nvme_cache_on_node(_target_node, user_id)
-            if _cache_hit:
-                logger.info(f"NVMe cache HIT on {_target_node} for {user_id} — creating empty volume")
-                update_reservation_status(reservation_id, "preparing",
-                    detailed_status="Fast restore from local cache")
-
-            logger.info(f"Target AZ: {_target_az}, disk_name={disk_name or 'default'}, cache_hit={_cache_hit}")
+            logger.info(f"Target AZ: {_target_az}, disk_name={disk_name or 'default'}")
             record_trace_event(trace_data, "disk_create_start")
             vol_id, new_disk, warning = create_disk_from_snapshot_or_empty(
                 user_id=user_id, availability_zone=_target_az,
-                disk_name=disk_name, reservation_id=reservation_id,
-                skip_snapshot_restore=_cache_hit)
+                disk_name=disk_name, reservation_id=reservation_id)
             record_trace_event(trace_data, "disk_create_end")
-            return vol_id, new_disk, warning, _target_az, _target_node, _cache_hit
+            return vol_id, new_disk, warning, _target_az, _target_node
 
         def _setup_efs():
             if not (EFS_SECURITY_GROUP_ID and EFS_SUBNET_IDS):
@@ -3004,9 +2957,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         if not github_public_key:
             raise ValueError(f"Could not fetch GitHub public key for GitHub user '{github_user}'")
 
-        nvme_cache_hit = False
         if use_persistent_disk and disk_result:
-            persistent_volume_id, is_new_disk, disk_warning, target_az, target_node, nvme_cache_hit = disk_result
+            persistent_volume_id, is_new_disk, disk_warning, target_az, target_node = disk_result
             logger.info(f"Persistent disk ready: {persistent_volume_id} (is_new={is_new_disk})")
             effective_disk_name = disk_name or "default"
             try:
@@ -3073,7 +3025,6 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             preserve_entrypoint=preserve_entrypoint,
             node_labels=node_labels,
             trace_data=trace_data,
-            nvme_cache_hit=nvme_cache_hit,
         )
         record_trace_event(trace_data, "k8s_resources_create_end")
 
@@ -3638,7 +3589,6 @@ def create_kubernetes_resources(
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
     trace_data: dict = None,
-    nvme_cache_hit: bool = False,
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
@@ -3743,7 +3693,6 @@ def create_kubernetes_resources(
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
                         trace_data=trace_data,
-                        nvme_cache_hit=nvme_cache_hit,
                     )
                     logger.info(f"Created new pod {pod_name} with Jupyter")
                     update_reservation_status(
@@ -3834,7 +3783,6 @@ def create_kubernetes_resources(
                         preserve_entrypoint=preserve_entrypoint,
                         node_labels=node_labels,
                         trace_data=trace_data,
-                        nvme_cache_hit=nvme_cache_hit,
                     )
                     logger.info(f"Created new pod {pod_name} without Jupyter")
                     update_reservation_status(
@@ -4165,11 +4113,6 @@ def _get_multinode_env_vars(peer_pods: list, rank: int) -> list:
     ]
 
 
-def _nvme_cache_user_dir(user_id: str) -> str:
-    """Sanitized directory name for user's NVMe cache."""
-    return user_id.replace("@", "_at_").replace(".", "_")
-
-
 def create_pod(
     k8s_client,
     pod_name: str,
@@ -4193,7 +4136,6 @@ def create_pod(
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
     trace_data: dict = None,
-    nvme_cache_hit: bool = False,
 ):
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
@@ -4345,16 +4287,6 @@ def create_pod(
                             export AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/irsa-token
                             # Keep token fresh (projected volume auto-rotates, our copy doesn't)
                             (while true; do cp /var/run/secrets/eks.amazonaws.com/serviceaccount/token /tmp/irsa-token 2>/dev/null; chmod 644 /tmp/irsa-token 2>/dev/null; sleep 3600; done) &
-                        fi
-
-                        # Restore from NVMe cache if available (fast path — skips EBS snapshot lazy loading)
-                        NVME_CACHE_DIR="/nvme-cache/{_nvme_cache_user_dir(user_id or 'dev')}"
-                        if [ "{'true' if nvme_cache_hit else 'false'}" = "true" ] && [ -d "$NVME_CACHE_DIR" ] && [ "$(ls -A $NVME_CACHE_DIR 2>/dev/null)" ]; then
-                            echo "[STARTUP] Restoring workspace from NVMe cache ($NVME_CACHE_DIR)..."
-                            CACHE_START=$(date +%s)
-                            rsync -a "$NVME_CACHE_DIR/" /home/dev/ 2>/dev/null || echo "[STARTUP] NVMe cache rsync had warnings (non-fatal)"
-                            CACHE_END=$(date +%s)
-                            echo "[STARTUP] NVMe cache restore complete in $((CACHE_END - CACHE_START))s"
                         fi
 
                         # Debug environment variables
@@ -5576,8 +5508,7 @@ EOF
                         client.V1VolumeMount(
                             name="ccache-shared", mount_path="/ccache_shared"),
                     ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else [])
-                    + ([client.V1VolumeMount(name="hugepages-2mi", mount_path="/dev/hugepages")] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else [])
-                    + ([client.V1VolumeMount(name="nvme-cache", mount_path="/nvme-cache")] if use_persistent_disk else []),
+                    + ([client.V1VolumeMount(name="hugepages-2mi", mount_path="/dev/hugepages")] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else []),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
                             add=["IPC_LOCK", "SYS_ADMIN", "SYS_RESOURCE"]
@@ -5585,26 +5516,6 @@ EOF
                         run_as_user=0 if dockerimage else None,
                         run_as_group=0 if dockerimage else None
                     ),
-                    lifecycle=client.V1Lifecycle(
-                        pre_stop=client.V1LifecycleHandler(
-                            _exec=client.V1ExecAction(
-                                command=["/bin/sh", "-c",
-                                    f"""
-                                    CACHE_DIR="/nvme-cache/{_nvme_cache_user_dir(user_id or 'dev')}"
-                                    echo "[CACHE] Starting NVMe cache sync to $CACHE_DIR" | tee -a /tmp/nvme-cache.log
-                                    START=$(date +%s)
-                                    mkdir -p "$CACHE_DIR"
-                                    rsync -a --delete --exclude='.cache/huggingface' --exclude='.cache/torch' /home/dev/ "$CACHE_DIR/" 2>&1 | tail -5 | tee -a /tmp/nvme-cache.log
-                                    RC=$?
-                                    END=$(date +%s)
-                                    SIZE=$(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1)
-                                    echo "[CACHE] Done in $((END-START))s, size=$SIZE, exit=$RC" | tee -a /tmp/nvme-cache.log
-                                    cp /tmp/nvme-cache.log "$CACHE_DIR/.cache-log" 2>/dev/null || true
-                                    """
-                                ]
-                            )
-                        )
-                    ) if use_persistent_disk else None,
                 )
             ] + ([
                 # Disk warming sidecar - runs in background, prioritizes git repos
@@ -5718,16 +5629,7 @@ EOF
                     name="hugepages-2mi",
                     empty_dir=client.V1EmptyDirVolumeSource(medium="HugePages-2Mi")
                 )
-            ] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else [])
-            + ([
-                client.V1Volume(
-                    name="nvme-cache",
-                    host_path=client.V1HostPathVolumeSource(
-                        path="/mnt/nvme/user-cache",
-                        type="DirectoryOrCreate"
-                    )
-                )
-            ] if use_persistent_disk else []),
+            ] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else []),
             node_selector={
                 "GpuType": get_node_gpu_type(gpu_type),
                 **({} if target_az is None else {"topology.kubernetes.io/zone": target_az}),
@@ -6132,19 +6034,15 @@ def mark_disk_in_use(user_id: str, disk_name: str, in_use: bool, reservation_id:
         raise
 
 
-def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, disk_name: str = None, reservation_id: str = None, skip_snapshot_restore: bool = False) -> tuple[str, bool, str]:
+def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, disk_name: str = None, reservation_id: str = None) -> tuple[str, bool, str]:
     """
-    Create disk from latest snapshot, or empty if no snapshot/NVMe cache hit.
+    Create disk from latest snapshot, or empty if no snapshot.
     Returns (volume_id, is_new_disk, warning_message)
-
-    When skip_snapshot_restore=True (NVMe cache hit on target node), creates an
-    empty volume immediately. The pod's init will rsync from NVMe cache instead.
-    EBS snapshots still exist as safety net — this only skips the restore step.
     """
     try:
         from shared.snapshot_utils import get_latest_snapshot
 
-        logger.info(f"Creating disk for user {user_id} in AZ {availability_zone}" + (f", disk_name={disk_name}" if disk_name else "") + (f" (skip_snapshot_restore=True, NVMe cache hit)" if skip_snapshot_restore else ""))
+        logger.info(f"Creating disk for user {user_id} in AZ {availability_zone}" + (f", disk_name={disk_name}" if disk_name else ""))
 
         # Step 1: Check for in-use volumes with matching disk_name (prevent concurrent use)
         # If volume is in-use, wait for it to be released (cleanup in progress)
@@ -6194,37 +6092,6 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                 error_msg = f"Disk '{disk_name}' is still in use after waiting {max_wait_seconds}s (volume {volume_id}). The previous reservation may not have cleaned up properly."
                 logger.error(error_msg)
                 raise RuntimeError(error_msg)
-
-        # NVMe cache hit — skip snapshot restore entirely, create empty volume.
-        # Pod init will rsync from NVMe cache. EBS snapshot still exists as backup.
-        if skip_snapshot_restore:
-            logger.info(f"NVMe cache hit — creating empty 1TB volume (skipping snapshot restore)")
-            if reservation_id:
-                update_reservation_status(reservation_id, "preparing",
-                    detailed_status="Creating disk (fast restore from local cache)")
-            new_volume = ec2_client.create_volume(
-                AvailabilityZone=availability_zone,
-                VolumeType="gp3",
-                Size=1024,
-                Iops=16000,
-                Throughput=1000,
-                TagSpecifications=[{
-                    "ResourceType": "volume",
-                    "Tags": [
-                        {"Key": "gpu-dev-user", "Value": user_id},
-                        {"Key": "Name", "Value": f"gpu-dev-persistent-{user_id.split('@')[0]}"},
-                        {"Key": "Project", "Value": "gpu-dev-servers"},
-                        {"Key": "ManagedBy", "Value": "gpu-dev-cli"},
-                        {"Key": "ActiveVolume", "Value": "true"},
-                        {"Key": "RestoreSource", "Value": "nvme-cache"},
-                    ] + ([{"Key": "disk_name", "Value": disk_name}] if disk_name else [])
-                }]
-            )
-            vol_id = new_volume["VolumeId"]
-            waiter = ec2_client.get_waiter("volume_available")
-            waiter.wait(VolumeIds=[vol_id], WaiterConfig={"Delay": 2, "MaxAttempts": 30})
-            logger.info(f"Empty volume {vol_id} ready (NVMe cache will populate it)")
-            return vol_id, True, None
 
         # Step 2: Find latest snapshot for this disk
         # First check for pending snapshots (from recent reservation expiry)
