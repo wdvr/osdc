@@ -1083,9 +1083,16 @@ class ReservationManager:
                 )
                 all_items.extend(response.get("Items", []))
 
+            # Fetch queue lengths for all GPU types in parallel
+            from concurrent.futures import ThreadPoolExecutor
+            gpu_types_list = [item["gpu_type"] for item in all_items]
+            with ThreadPoolExecutor(max_workers=10) as ex:
+                queue_futures = {gt: ex.submit(self._get_queue_length_for_gpu_type, gt) for gt in gpu_types_list}
+                queue_lengths = {gt: f.result() for gt, f in queue_futures.items()}
+
             for item in all_items:
                 gpu_type = item["gpu_type"]
-                queue_length = self._get_queue_length_for_gpu_type(gpu_type)
+                queue_length = queue_lengths.get(gpu_type, 0)
                 estimated_wait = queue_length * 15 if queue_length > 0 else 0
 
                 # size_etas is a DDB Map of {size_str: epoch_seconds (Decimal)} — pass through
@@ -1215,7 +1222,6 @@ class ReservationManager:
         try:
             total_count = 0
 
-            # Count queued reservations for this GPU type
             for status in ["queued", "pending"]:
                 try:
                     response = self.reservations_table.query(
@@ -1226,10 +1232,10 @@ class ReservationManager:
                             ":status": status,
                             ":gpu_type": gpu_type,
                         },
+                        Select="COUNT",
                     )
-                    total_count += len(response.get("Items", []))
+                    total_count += response.get("Count", 0)
 
-                    # Handle pagination for StatusGpuTypeIndex query
                     while "LastEvaluatedKey" in response:
                         response = self.reservations_table.query(
                             IndexName="StatusGpuTypeIndex",
@@ -1239,9 +1245,10 @@ class ReservationManager:
                                 ":status": status,
                                 ":gpu_type": gpu_type,
                             },
+                            Select="COUNT",
                             ExclusiveStartKey=response["LastEvaluatedKey"]
                         )
-                        total_count += len(response.get("Items", []))
+                        total_count += response.get("Count", 0)
                 except Exception as query_error:
                     # Fallback to scanning if the composite index doesn't exist yet
                     console.print(

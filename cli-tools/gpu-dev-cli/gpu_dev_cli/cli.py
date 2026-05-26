@@ -2894,35 +2894,41 @@ def _show_availability() -> None:
         ) as live:
             config = load_config()
 
-            # Authenticate using AWS credentials
+            # Authenticate and fetch availability (both regions in parallel)
             try:
                 user_info = authenticate_user(config)
                 reservation_mgr = ReservationManager(config)
-                availability_info = reservation_mgr.get_gpu_availability_by_type()
+
+                from concurrent.futures import ThreadPoolExecutor
+                _env_name = config.user_config.get("environment", "prod")
+                _east1_spot_types = frozenset(Config.ENVIRONMENTS.get("prod-east1", {}).get("spot_types", []))
+
+                def _fetch_east1_spot():
+                    if _env_name != "prod" or not _east1_spot_types:
+                        return {}
+                    east1_r = Config.ENVIRONMENTS["prod-east1"]["region"]
+                    east1_table = config.session.resource("dynamodb", region_name=east1_r).Table("pytorch-gpu-dev-gpu-availability")
+                    result = {}
+                    for item in east1_table.scan().get("Items", []):
+                        gt = item.get("gpu_type", "")
+                        if gt in _east1_spot_types:
+                            result[gt] = {
+                                "available": int(item.get("available_gpus", 0)),
+                                "total": int(item.get("total_gpus", 0)),
+                                "max_reservable": int(item.get("max_reservable", 0)),
+                                "spot_info": item.get("spot_info", {}),
+                            }
+                    return result
+
+                with ThreadPoolExecutor(max_workers=2) as ex:
+                    f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
+                    f_spot = ex.submit(_fetch_east1_spot)
+                    availability_info = f_avail.result()
+                    spot_region_info = f_spot.result()
             except RuntimeError as e:
                 live.stop()
                 rprint(f"[red]❌ {str(e)}[/red]")
                 return
-
-        # Cross-region: fetch spot availability from prod-east1
-        spot_region_info = {}
-        _env_name = config.user_config.get("environment", "prod")
-        _east1_spot_types = frozenset(Config.ENVIRONMENTS.get("prod-east1", {}).get("spot_types", []))
-        if _env_name == "prod" and _east1_spot_types:
-            try:
-                import boto3 as _b3
-                east1_r = Config.ENVIRONMENTS["prod-east1"]["region"]
-                for item in _b3.resource("dynamodb", region_name=east1_r).Table("pytorch-gpu-dev-gpu-availability").scan().get("Items", []):
-                    gt = item.get("gpu_type", "")
-                    if gt in _east1_spot_types:
-                        spot_region_info[gt] = {
-                            "available": int(item.get("available_gpus", 0)),
-                            "total": int(item.get("total_gpus", 0)),
-                            "max_reservable": int(item.get("max_reservable", 0)),
-                            "spot_info": item.get("spot_info", {}),
-                        }
-            except Exception:
-                pass
 
         if availability_info:
             # GPU architecture mapping (for display)
