@@ -23,6 +23,8 @@ from .name_generator import sanitize_name
 def _spot_stage_number(status: str) -> tuple:
     """Map a spot provisioning status message to a numbered step (N, total)."""
     s = status.lower()
+    if "no spot capacity" in s or "no capacity" in s:
+        return 1, 7  # stuck at step 1, but message itself says why
     if "requested" in s or "waiting for aws" in s or "allocate capacity" in s:
         return 1, 7
     if "allocated" in s or "launching" in s or "booting" in s:
@@ -1916,9 +1918,12 @@ class ReservationManager:
                                 detailed = first_queued.get("current_detailed_status", "")
                                 # Spot stages come through current_detailed_status — show as
                                 # numbered steps so users see progress and don't give up.
-                                if detailed and ("spot" in detailed.lower() or "node" in detailed.lower() or "instance" in detailed.lower()):
+                                if detailed and ("spot" in detailed.lower() or "node" in detailed.lower() or "instance" in detailed.lower() or "capacity" in detailed.lower()):
                                     step, total = _spot_stage_number(detailed)
-                                    message = f"⏳ Step {step}/{total}: {detailed}"
+                                    if "no spot capacity" in detailed.lower() or "no capacity" in detailed.lower():
+                                        message = f"⚠️  {detailed}"
+                                    else:
+                                        message = f"⏳ Step {step}/{total}: {detailed}"
                                 elif is_multinode:
                                     total_gpus = sum(
                                         node["gpu_count"] for node in node_details if node["reservation"])
