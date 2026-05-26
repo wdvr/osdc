@@ -1114,10 +1114,12 @@ def reserve(
                     rprint(f"[red]❌ {str(e)}[/red]")
                     return
 
-                # Validate SSH key matches configured GitHub username
-                live.update(Spinner("dots", text="🔐 Validating SSH key..."))
+                # Validate SSH key matches configured GitHub username (cached, ~0ms)
                 if not _validate_ssh_key_or_exit(config, live):
                     return
+
+                live.update(Spinner("dots", text="📡 Preparing reservation..."))
+                reservation_mgr = ReservationManager(config)
 
                 # Track if user explicitly requests no persistent disk
                 explicit_no_disk = explicit_no_disk_from_param
@@ -1229,11 +1231,6 @@ def reserve(
                                 rprint(f"[red]❌ Disk '{disk}' is already in use[/red]")
                                 rprint(f"[yellow]Use a different disk or wait for the reservation to end[/yellow]")
                                 return
-
-                live.update(
-                    Spinner("dots", text="📡 Setting up reservation manager...")
-                )
-                reservation_mgr = ReservationManager(config)
 
             # Submit reservation request
             live.update(
