@@ -1715,22 +1715,27 @@ def cleanup_pod(pod_name: str, namespace: str = "gpu-dev", reservation_data: dic
                                 logger.warning(f"Error updating DynamoDB for snapshot completion: {update_error}")
                                 # Don't fail cleanup if DynamoDB update fails
 
-                        # Step 4: Delete the EBS volume after snapshot completes
+                        # Step 4: Keep EBS volume alive for fast reattach on next session
+                        # (previously deleted here — now kept to skip snapshot restore on next reservation)
+                        logger.info(f"Keeping EBS volume {volume_id} alive for fast reattach")
                         try:
-                            logger.info(f"Deleting EBS volume {volume_id} after successful snapshot")
-                            ec2_client.delete_volume(VolumeId=volume_id)
-                            logger.info(f"Successfully deleted volume {volume_id}")
+                            ec2_client.create_tags(
+                                Resources=[volume_id],
+                                Tags=[
+                                    {"Key": "ActiveVolume", "Value": "true"},
+                                    {"Key": "last_used", "Value": str(int(time.time()))},
+                                ]
+                            )
+                        except Exception as tag_error:
+                            logger.warning(f"Failed to tag volume {volume_id}: {tag_error}")
 
-                            # Step 5: Mark disk as no longer in use (allows CLI to show as available)
-                            if disk_name:
-                                try:
-                                    mark_disk_not_in_use(user_id, disk_name)
-                                    logger.info(f"Marked disk '{disk_name}' as not in use")
-                                except Exception as mark_error:
-                                    logger.warning(f"Failed to mark disk as not in use: {mark_error}")
-                        except Exception as delete_error:
-                            logger.error(f"Failed to delete volume {volume_id}: {delete_error}")
-                            # Don't fail the whole cleanup if volume deletion fails
+                        # Step 5: Mark disk as no longer in use (allows CLI to show as available)
+                        if disk_name:
+                            try:
+                                mark_disk_not_in_use(user_id, disk_name)
+                                logger.info(f"Marked disk '{disk_name}' as not in use")
+                            except Exception as mark_error:
+                                logger.warning(f"Failed to mark disk as not in use: {mark_error}")
 
                     except Exception as waiter_error:
                         logger.warning(f"Error waiting for snapshot completion or deleting volume: {waiter_error}")

@@ -6093,7 +6093,31 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                 logger.error(error_msg)
                 raise RuntimeError(error_msg)
 
-        # Step 2: Find latest snapshot for this disk
+        # Step 1b: Check for existing available volume (kept alive from previous session)
+        # If found in the same AZ, reattach it directly — skip snapshot restore entirely
+        available_filters = [
+            {"Name": "tag:gpu-dev-user", "Values": [user_id]},
+            {"Name": "tag:ActiveVolume", "Values": ["true"]},
+            {"Name": "status", "Values": ["available"]},
+            {"Name": "availability-zone", "Values": [availability_zone]},
+        ]
+        if disk_name:
+            available_filters.append({"Name": "tag:disk_name", "Values": [disk_name]})
+
+        available_response = ec2_client.describe_volumes(Filters=available_filters)
+        available_volumes = available_response.get("Volumes", [])
+
+        if available_volumes:
+            # Reuse existing volume — no snapshot restore needed
+            reuse_volume = available_volumes[0]
+            vol_id = reuse_volume["VolumeId"]
+            logger.info(f"Reattaching existing volume {vol_id} (skipping snapshot restore)")
+            if reservation_id:
+                update_reservation_status(reservation_id, "preparing",
+                    detailed_status="Fast restore: reattaching existing disk")
+            return vol_id, False, None
+
+        # Step 2: No existing volume — find latest snapshot to create from
         # First check for pending snapshots (from recent reservation expiry)
         pending_filters = [
             {"Name": "tag:gpu-dev-user", "Values": [user_id]},
