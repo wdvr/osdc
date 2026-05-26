@@ -73,15 +73,52 @@ class Config:
         self._sqs_client = None
         self._dynamodb = None
 
+    _CRED_CACHE = Path.home() / ".config" / "gpu-dev" / "aws-cred-cache.json"
+
     def _create_aws_session(self):
-        """Create AWS session with profile support"""
-        # Avoid creating a throwaway Session() just to list profiles
+        """Create AWS session, caching resolved credentials to skip SSO resolution (~900ms)."""
+        import time as _time
+
+        # Try cached credentials first (avoids 900ms SSO resolution)
+        try:
+            if self._CRED_CACHE.exists():
+                cached = json.loads(self._CRED_CACHE.read_text())
+                if _time.time() < cached.get("expires", 0):
+                    return boto3.Session(
+                        aws_access_key_id=cached["access_key"],
+                        aws_secret_access_key=cached["secret_key"],
+                        aws_session_token=cached["token"],
+                        region_name=self.aws_region,
+                    )
+        except Exception:
+            pass
+
+        # Resolve credentials from SSO/profile (slow path, ~900ms)
         try:
             session = boto3.Session(profile_name="gpu-dev")
-            session.get_credentials()
-            return session
-        except (botocore.exceptions.ProfileNotFound, Exception):
-            return boto3.Session()
+            creds = session.get_credentials()
+            if not creds:
+                raise Exception("no credentials")
+        except Exception:
+            session = boto3.Session()
+            creds = session.get_credentials()
+
+        # Cache resolved credentials (safe — they're short-lived STS tokens)
+        try:
+            frozen = creds.get_frozen_credentials()
+            if frozen.token:
+                self._CRED_CACHE.parent.mkdir(parents=True, exist_ok=True)
+                self._CRED_CACHE.write_text(json.dumps({
+                    "access_key": frozen.access_key,
+                    "secret_key": frozen.secret_key,
+                    "token": frozen.token,
+                    "expires": _time.time() + 3000,  # cache ~50min (tokens last ~1h)
+                }))
+                self._CRED_CACHE.chmod(0o600)
+        except Exception:
+            pass
+
+        return session
 
     @property
     def sts_client(self):

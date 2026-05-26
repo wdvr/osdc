@@ -749,7 +749,10 @@ def reserve(
                     else:
                         f_ssh = ex.submit(validate_ssh_key_matches_github_user, config, None)
                         ssh_result = None
-                    f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
+                    # Only fetch availability if we need the interactive picker
+                    need_interactive = gpu_type is None
+                    if need_interactive:
+                        f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
 
                     # Surface auth failure first (most actionable).
                     try:
@@ -761,7 +764,7 @@ def reserve(
 
                     if ssh_result is None:
                         ssh_result = f_ssh.result()
-                    availability_info = f_avail.result()
+                    availability_info = f_avail.result() if need_interactive else None
 
             # Surface SSH validation failure with the same UX as before.
             if not ssh_result.get("valid"):
