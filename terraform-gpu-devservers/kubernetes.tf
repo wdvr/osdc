@@ -437,8 +437,9 @@ resource "kubernetes_daemonset" "image_prepuller" {
         }
 
         container {
-          name  = "pause"
-          image = "registry.k8s.io/pause:3.10"
+          name    = "pause"
+          image   = "alpine:3.21"
+          command = ["sleep", "infinity"]
 
           resources {
             requests = {
