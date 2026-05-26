@@ -2912,6 +2912,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
                 result = stream.stream(
                     v1.connect_get_namespaced_pod_exec,
                     pods[0].metadata.name, "kube-system",
+                    container="pause",
                     command=["test", "-d", cache_dir],
                     stderr=True, stdout=True, stdin=False, tty=False,
                 )
