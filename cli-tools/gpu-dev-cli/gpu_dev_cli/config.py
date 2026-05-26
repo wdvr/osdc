@@ -3,6 +3,7 @@
 import os
 import json
 import boto3
+import botocore.exceptions
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -74,15 +75,13 @@ class Config:
 
     def _create_aws_session(self):
         """Create AWS session with profile support"""
-        available_profiles = boto3.Session().available_profiles
-        if "gpu-dev" in available_profiles:
-            try:
-                session = boto3.Session(profile_name="gpu-dev")
-                session.get_credentials()
-                return session
-            except Exception:
-                pass
-        return boto3.Session()
+        # Avoid creating a throwaway Session() just to list profiles
+        try:
+            session = boto3.Session(profile_name="gpu-dev")
+            session.get_credentials()
+            return session
+        except (botocore.exceptions.ProfileNotFound, Exception):
+            return boto3.Session()
 
     @property
     def sts_client(self):
