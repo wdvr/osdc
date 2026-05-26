@@ -3277,8 +3277,19 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
     For VS Code Remote or manual SSH, use 'gpu-dev show' to see full SSH command.
     """
     import subprocess
+    from pathlib import Path
 
     try:
+        # Fast path: if reservation ID given, check local SSH config first (no network)
+        if reservation_id:
+            ssh_config_dir = Path.home() / ".gpu-dev"
+            matches = list(ssh_config_dir.glob(f"{reservation_id}*-sshconfig")) if ssh_config_dir.exists() else []
+            if matches:
+                pod_name = f"gpu-dev-{reservation_id[:8]}"
+                rprint(f"[cyan]Connecting to {pod_name}...[/cyan]\n")
+                os.execvp("ssh", ["ssh", pod_name])
+                return
+
         with Live(
             Spinner("dots", text="📡 Fetching reservation details..."), console=console
         ) as live:

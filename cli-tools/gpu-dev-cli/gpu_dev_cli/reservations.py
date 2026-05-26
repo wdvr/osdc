@@ -805,20 +805,21 @@ class ReservationManager:
         For multi-node reservations, returns info for all nodes in the group.
         """
         try:
-            # Query by user first (efficient), then filter by reservation_id prefix
+            # Short ID prefix — query UserIndex with server-side filter
             response = self.reservations_table.query(
                 IndexName="UserIndex",
                 KeyConditionExpression="user_id = :user_id",
-                ExpressionAttributeValues={":user_id": user_id},
+                FilterExpression="begins_with(reservation_id, :rid)",
+                ExpressionAttributeValues={":user_id": user_id, ":rid": reservation_id},
             )
             all_reservations = response.get("Items", [])
 
-            # Handle pagination for UserIndex query
             while "LastEvaluatedKey" in response:
                 response = self.reservations_table.query(
                     IndexName="UserIndex",
                     KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
+                    FilterExpression="begins_with(reservation_id, :rid)",
+                    ExpressionAttributeValues={":user_id": user_id, ":rid": reservation_id},
                     ExclusiveStartKey=response["LastEvaluatedKey"]
                 )
                 all_reservations.extend(response.get("Items", []))
