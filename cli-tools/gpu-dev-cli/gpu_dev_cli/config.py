@@ -112,7 +112,7 @@ class Config:
                     "access_key": frozen.access_key,
                     "secret_key": frozen.secret_key,
                     "token": frozen.token,
-                    "expires": _time.time() + 3000,  # cache ~50min (tokens last ~1h)
+                    "expires": _time.time() + 28800,  # cache 8h (SSO tokens last ~12h)
                 }))
                 self._CRED_CACHE.chmod(0o600)
         except Exception:
