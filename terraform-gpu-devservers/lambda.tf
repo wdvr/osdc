@@ -278,6 +278,10 @@ resource "aws_lambda_alias" "reservation_processor_live" {
   name             = "live"
   function_name    = aws_lambda_function.reservation_processor.function_name
   function_version = aws_lambda_function.reservation_processor.version
+
+  lifecycle {
+    ignore_changes = [routing_config]
+  }
 }
 
 resource "aws_lambda_provisioned_concurrency_config" "reservation_processor" {
