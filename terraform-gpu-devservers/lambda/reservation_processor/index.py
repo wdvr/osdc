@@ -3043,6 +3043,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             preserve_entrypoint=preserve_entrypoint,
             node_labels=node_labels,
             trace_data=trace_data,
+            nvme_cache_hit=nvme_cache_hit,
         )
         record_trace_event(trace_data, "k8s_resources_create_end")
 
@@ -3618,6 +3619,7 @@ def create_kubernetes_resources(
     preserve_entrypoint: bool = False,
     node_labels: dict = None,
     trace_data: dict = None,
+    nvme_cache_hit: bool = False,
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
