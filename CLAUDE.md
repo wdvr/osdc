@@ -329,6 +329,11 @@ module "us_east_1" {
 - **Scale up T4 instances** - Add 3 more T4 nodes (g4dn.12xlarge) to cluster
 - **Scale up L4 instances** - Add 3 more L4 nodes (g6.12xlarge) to cluster
 - **Add on-demand H100/H200/B200 capacity** - Add at least 2 nodes each of H100 (p5.48xlarge), H200 (p5e.48xlarge), and B200 (p6-b200.48xlarge) as on-demand capacity in addition to existing reserved instances
+- **Run pytorch tests via gpu-dev** - Add a way to run a specific test / set of tests in ../pytorch (see `python run.py` in pytorch for how tests are normally invoked). Short term: `gpu-dev test <paths/test ids>` that reserves, stages pytorch (via --ref), and runs the test command. Long term (stretch, "magic TD"): an agent does target determination from the repo diff, picks the affected tests, kicks off a gpu-dev run, and streams test output back. Builds on the warm-pool + pytorch-snapshot work (instant-sandboxes branch).
+- **Warm pool follow-ups** (from instant-sandboxes branch):
+  - Claim-with-ref: today an explicit `--ref` skips the warm pool (cold path). Could instead claim a warm pod and incrementally `git fetch`+checkout the ref in-place.
+  - Availability display: warm-ready pods count as "used" in the availability table, so `gpu-dev avail` under-reports free MIG/CPU even though a claim is instant. Reconcile the display with warm claimability.
+  - CPU/MIG node disk: the pytorch-snapshot DaemonSet writes ~5-10GB to /mnt/nvme (root disk on nodes without instance NVMe); confirm CPU dev node root volumes are sized for it.
 - **Future features**:
   - Multi-server (16 GPU) reservations
   - GitHub organization/team verification
