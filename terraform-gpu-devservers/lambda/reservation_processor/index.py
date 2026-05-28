@@ -1385,12 +1385,20 @@ def try_claim_warm_pod(body: dict) -> bool:
         gpu_count = int(body.get("gpu_count", 0))
         github_user = body.get("github_user", "")
         user_id = body.get("user_id")
+
+        trace_enabled = bool(body.get("trace"))
+        trace_data = {} if trace_enabled else None
+        if trace_enabled and body.get("trace_cli_start"):
+            trace_data["trace_cli_start"] = Decimal(str(body["trace_cli_start"]))
+        record_trace_event(trace_data, "warm_claim_start")
+
         if gpu_count != _warm_gpu_count(gpu_type):
             return False
 
         github_public_key = get_github_public_key(github_user)
         if not github_public_key:
             return False
+        record_trace_event(trace_data, "github_key_fetched")
 
         k8s_client = get_k8s_client()
         v1 = client.CoreV1Api(k8s_client)
@@ -1403,6 +1411,7 @@ def try_claim_warm_pod(body: dict) -> bool:
                 break
         if candidate is None:
             return False
+        record_trace_event(trace_data, "warm_pod_selected")
 
         pod_name = candidate.metadata.name
         # Lambda runs serialized (reserved concurrency 1) so no claim race.
@@ -1411,6 +1420,7 @@ def try_claim_warm_pod(body: dict) -> bool:
             {"metadata": {"labels": {"warm-state": "claimed"},
                           "annotations": {"gpu-dev-user-id": user_id or ""}}},
         )
+        record_trace_event(trace_data, "warm_pod_labeled")
 
         inject_cmd = (
             "mkdir -p /home/dev/.ssh && touch /home/dev/.ssh/authorized_keys\n"
@@ -1424,6 +1434,7 @@ def try_claim_warm_pod(body: dict) -> bool:
             command=["/bin/bash", "-c", inject_cmd], container="gpu-dev",
             stderr=True, stdin=False, stdout=True, tty=False,
         )
+        record_trace_event(trace_data, "ssh_key_injected")
 
         duration_hours = float(body.get("duration_hours", 8))
         reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
@@ -1442,31 +1453,20 @@ def try_claim_warm_pod(body: dict) -> bool:
             "source_command": body.get("source_command", "reserve"),
             "warm_claimed": True,
         })
+        record_trace_event(trace_data, "ddb_record_written")
 
         node_port = find_available_node_port(k8s_client)
         create_service(k8s_client, pod_name, node_port, ssh_port=22)
+        record_trace_event(trace_data, "ssh_service_created")
         node_public_ip = get_pod_node_public_ip(pod_name)
         node_private_ip = get_pod_node_private_ip(pod_name)
         pod_ip = get_pod_internal_ip(pod_name)
+        record_trace_event(trace_data, "node_ips_fetched")
+        # Direct NodePort SSH — fast and works without the proxy/ALB. We skip the
+        # FQDN/Route53 setup the cold path does on purpose: a CNAME adds ~5s
+        # (which the cold path hides behind the long pod build) and routes SSH
+        # through the jupyter ALB, neither of which suits an instant claim.
         ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
-
-        # Optional stable FQDN, same as the cold path, so `gpu-dev connect`
-        # builds a clean SSH config instead of warning about missing details.
-        domain_name = None
-        if get_dns_enabled():
-            try:
-                domain_name = generate_unique_name(body.get("name"))
-                if create_dns_record(domain_name, "", 0):
-                    expires_ts = int(time.time()) + int(duration_hours * 3600)
-                    store_domain_mapping(
-                        domain_name, node_private_ip or node_public_ip,
-                        node_port, reservation_id, expires_ts)
-                    ssh_command = format_ssh_command_with_domain(domain_name, node_port)
-                else:
-                    domain_name = None
-            except Exception as dns_e:
-                logger.warning(f"warm claim DNS setup failed (non-fatal): {dns_e}")
-                domain_name = None
 
         update_reservation_connection_info(
             reservation_id=reservation_id,
@@ -1480,8 +1480,17 @@ def try_claim_warm_pod(body: dict) -> bool:
             jupyter_url_base="",
             jupyter_enabled=False,
             k8s_client=k8s_client,
-            domain_name=domain_name,
         )
+        record_trace_event(trace_data, "warm_claim_complete")
+        if trace_data:
+            try:
+                reservations_table.update_item(
+                    Key={"reservation_id": reservation_id},
+                    UpdateExpression="SET trace_data = :td, claim_path = :cp",
+                    ExpressionAttributeValues={":td": trace_data, ":cp": "warm"},
+                )
+            except Exception as te:
+                logger.warning(f"warm claim trace store failed: {te}")
         logger.info(f"Claimed warm pod {pod_name} for reservation {reservation_id}")
         try:
             trigger_availability_update()
