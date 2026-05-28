@@ -607,8 +607,10 @@ class ReservationManager:
                      github_user: Optional[str] = None, ref: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Try a synchronous warm-pool claim via the Function URL. Returns the
         active reservation dict if claimed, else None (caller falls back to SQS)."""
+        self._direct_reason = None
         url = self._get_direct_url()
         if not url:
+            self._direct_reason = "url_unavailable"
             return None
         payload = {
             "reservation_id": str(uuid.uuid4()),
@@ -626,7 +628,11 @@ class ReservationManager:
         if ref:
             payload["ref"] = ref
         result = self._signed_post(url, payload)
-        if not result or not result.get("claimed"):
+        if result is None:
+            self._direct_reason = "request_failed"  # transport/IAM (likely InvokeFunctionUrl)
+            return None
+        if not result.get("claimed"):
+            self._direct_reason = result.get("reason", "unavailable")
             return None
         return result.get("reservation")
 

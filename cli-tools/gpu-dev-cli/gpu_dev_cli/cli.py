@@ -1389,7 +1389,13 @@ def reserve(
                 if direct_res:
                     _show_direct_success(direct_res, time.time() - _t0)
                     return
-                rprint("[dim]No warm pod available — falling back to standard reservation...[/dim]")
+                _reason = getattr(reservation_mgr, "_direct_reason", None)
+                if _reason in ("url_unavailable", "request_failed"):
+                    rprint("[dim]Instant claim unavailable (--direct needs lambda:InvokeFunctionUrl) — using standard reservation...[/dim]")
+                elif _reason == "no_warm_pod":
+                    rprint("[dim]No warm pod ready — using standard reservation...[/dim]")
+                else:
+                    rprint("[dim]Instant claim unavailable — using standard reservation...[/dim]")
 
             if gpu_count > max_gpus:
                 # Multinode reservation
