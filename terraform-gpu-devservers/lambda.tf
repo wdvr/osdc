@@ -293,30 +293,11 @@ resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   batch_size       = 1
 }
 
-# Cutover gate: block `tf apply` until the new processor version's provisioned
-# concurrency is READY and the previous version's provisioned envs have drained.
-# Without this, SQS (the claim path) can briefly run the old version right after
-# an apply, so a fresh reservation hits stale code. Only runs when code changes.
-resource "null_resource" "processor_cutover_gate" {
-  triggers = {
-    code_hash = null_resource.reservation_processor_build.triggers.code_hash
-  }
-
-  depends_on = [
-    aws_lambda_provisioned_concurrency_config.reservation_processor,
-    aws_lambda_event_source_mapping.sqs_trigger,
-  ]
-
-  # The aws_lambda_provisioned_concurrency_config dependency already blocks until
-  # the new version's PC is READY; this just waits out the drain of the previous
-  # version's provisioned envs (~90s observed) so SQS never serves stale code.
-  # Pure sleep — no AWS CLI, so it doesn't depend on the shell inheriting the
-  # provider's credentials/profile.
-  provisioner "local-exec" {
-    interpreter = ["/bin/bash", "-c"]
-    command     = "echo '[cutover] Draining previous provisioned Lambda instances (120s)...'; sleep 120; echo '[cutover] Done — live alias serves the new version.'"
-  }
-}
+# Note: aws_lambda_provisioned_concurrency_config already blocks `tf apply` until
+# the new version's PC is READY (a real check). AWS still drains the previous
+# version's provisioned envs for ~60-90s afterward, during which SQS can briefly
+# run the old code — there's no clean API to gate on that, so we don't try. If a
+# reservation right after apply hits old behavior, re-run it a minute later.
 
 # CloudWatch Event Rule to trigger processor every minute for queue management
 resource "aws_cloudwatch_event_rule" "reservation_processor_schedule" {
