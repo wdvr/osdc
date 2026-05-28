@@ -69,9 +69,21 @@ resource "aws_iam_role_policy" "gpu_dev_pod_policy" {
         ]
       },
       {
-        Effect = "Allow"
-        Action = "sts:GetCallerIdentity"
+        Effect   = "Allow"
+        Action   = "sts:GetCallerIdentity"
         Resource = "*"
+      },
+      {
+        # Only for `gpu-dev reserve --direct` (synchronous warm-pool claim).
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunctionUrl",
+          "lambda:GetFunctionUrlConfig"
+        ]
+        Resource = [
+          "arn:aws:lambda:*:*:function:pytorch-gpu-dev-reservation-processor",
+          "arn:aws:lambda:*:*:function:pytorch-gpu-dev-reservation-processor:*"
+        ]
       },
       {
         Effect = "Allow"
