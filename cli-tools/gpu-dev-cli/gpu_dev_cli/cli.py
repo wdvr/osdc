@@ -624,6 +624,12 @@ def main(ctx: click.Context) -> None:
     help="Pytorch ref to pre-stage in /home/dev/pytorch: a branch/tag, a PR (pr/123, #123, or bare 123), or a commit sha. Defaults to master; 'none' to skip. Ignored with --disk.",
 )
 @click.option(
+    "--direct",
+    is_flag=True,
+    default=False,
+    help="Try a synchronous warm-pool claim (sub-second) via the Lambda Function URL instead of SQS. Falls back to the standard SQS flow if no warm pod is available or the request isn't warm-eligible. Requires lambda:InvokeFunctionUrl.",
+)
+@click.option(
     "--node-label",
     "-l",
     type=str,
@@ -654,6 +660,7 @@ def reserve(
     preserve_entrypoint: bool,
     disk: Optional[str],
     ref: Optional[str],
+    direct: bool,
     node_label: tuple,
     spot: bool = False,
     fast_cache: bool = False,
@@ -1367,6 +1374,22 @@ def reserve(
                     console.print(f"[yellow]Warning: Invalid node-label format '{label}', expected key=value[/yellow]")
 
             max_gpus = gpu_configs[gpu_type]["max_gpus"]
+
+            # Fast path: synchronous warm-pool claim (opt-in via --direct). Only
+            # for single-node, ephemeral, default-image, on-demand requests — the
+            # server re-checks eligibility and we fall back to SQS otherwise.
+            if direct and gpu_count <= max_gpus and not disk and not dockerfile_s3_key and not dockerimage and not spot:
+                _t0 = time.time()
+                rprint("[cyan]⚡ Trying instant claim...[/cyan]")
+                direct_res = reservation_mgr.claim_direct(
+                    user_id=user_info["user_id"], gpu_count=gpu_count, gpu_type=gpu_type,
+                    duration_hours=hours, name=name,
+                    github_user=user_info["github_user"], ref=ref)
+                if direct_res:
+                    _show_direct_success(direct_res, time.time() - _t0)
+                    return
+                rprint("[dim]No warm pod available — falling back to standard reservation...[/dim]")
+
             if gpu_count > max_gpus:
                 # Multinode reservation
                 num_nodes = gpu_count // max_gpus
@@ -2913,6 +2936,19 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
     except Exception as e:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
+
+
+def _show_direct_success(res: dict, elapsed: float) -> None:
+    """Print the success block for an instant (--direct) warm-pool claim."""
+    rid = res.get("reservation_id", "") or ""
+    rprint(f"\n[green]✅ Instant reservation ready in {elapsed:.1f}s![/green]")
+    rprint(f"[bold]📋 Reservation ID:[/bold] {rid}")
+    if res.get("ssh_command"):
+        rprint(f"[bold]🖥️  SSH Command:[/bold] {res['ssh_command']}")
+    if rid:
+        rprint(f"[bold]⚡ Quick Connect:[/bold] gpu-dev connect {rid[:8]}")
+    if res.get("expires_at"):
+        rprint(f"[dim]⏰ Expires: {res['expires_at']}[/dim]")
 
 
 def _format_gpu_display(gpu_count, gpu_type):

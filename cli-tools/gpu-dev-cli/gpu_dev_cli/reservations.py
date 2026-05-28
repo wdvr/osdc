@@ -11,6 +11,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional, List, Dict, Any, Union
 
+import requests
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
 from botocore.exceptions import ClientError
 from rich.console import Console
 from rich.live import Live
@@ -568,6 +571,64 @@ class ReservationManager:
         except Exception as e:
             console.print(f"[red]❌ Error creating reservation: {str(e)}[/red]")
             return None
+
+    def _get_direct_url(self) -> Optional[str]:
+        """Function URL for synchronous claims (cached). None if unavailable."""
+        if getattr(self, "_direct_url", None) is not None:
+            return self._direct_url or None
+        try:
+            lam = self.config.session.client("lambda", region_name=self.config.aws_region)
+            resp = lam.get_function_url_config(
+                FunctionName=f"{self.config.prefix}-reservation-processor", Qualifier="live")
+            self._direct_url = resp.get("FunctionUrl", "")
+        except Exception:
+            self._direct_url = ""
+        return self._direct_url or None
+
+    def _signed_post(self, url: str, payload: dict) -> Optional[dict]:
+        """SigV4-signed POST to the Function URL. Returns parsed JSON or None."""
+        try:
+            creds = self.config.session.get_credentials()
+            if creds is None:
+                return None
+            data = json.dumps(payload)
+            aws_req = AWSRequest(method="POST", url=url, data=data,
+                                 headers={"Content-Type": "application/json"})
+            SigV4Auth(creds, "lambda", self.config.aws_region).add_auth(aws_req)
+            resp = requests.post(url, data=data, headers=dict(aws_req.headers), timeout=20)
+            if resp.status_code != 200:
+                return None
+            return resp.json()
+        except Exception:
+            return None
+
+    def claim_direct(self, *, user_id: str, gpu_count: int, gpu_type: str,
+                     duration_hours: Union[int, float], name: Optional[str] = None,
+                     github_user: Optional[str] = None, ref: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Try a synchronous warm-pool claim via the Function URL. Returns the
+        active reservation dict if claimed, else None (caller falls back to SQS)."""
+        url = self._get_direct_url()
+        if not url:
+            return None
+        payload = {
+            "reservation_id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "gpu_count": gpu_count,
+            "gpu_type": gpu_type,
+            "duration_hours": float(duration_hours),
+            "name": name,
+            "created_at": datetime.utcnow().isoformat(),
+            "status": "pending",
+            "github_user": github_user or "",
+            "version": get_version(),
+            "source_command": "reserve",
+        }
+        if ref:
+            payload["ref"] = ref
+        result = self._signed_post(url, payload)
+        if not result or not result.get("claimed"):
+            return None
+        return result.get("reservation")
 
     def create_multinode_reservation(
         self,
