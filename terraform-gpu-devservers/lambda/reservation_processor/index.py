@@ -77,6 +77,25 @@ def sanitize_pytorch_ref(raw: Any) -> str:
         return val
     return "master"
 
+
+# Warm pool: how many pre-booted, unclaimed pods to keep ready per GPU type.
+# Tiered on purpose — cheap for CPU and MIG slices, none for full GPUs (idle
+# full GPUs are too expensive to hold). Override via the WARM_POOL_TARGETS env
+# var (JSON object). Reconciled by a scheduled tick; claimed instantly.
+_DEFAULT_WARM_TARGETS = {
+    "cpu-x86": 5, "cpu-arm": 5,
+    "h100-mig-1g": 2, "h100-mig-2g": 2, "h100-mig-3g": 2,
+    "b200-mig-1g": 2, "b200-mig-2g": 2, "b200-mig-3g": 2,
+}
+try:
+    WARM_POOL_TARGETS = (
+        json.loads(os.environ["WARM_POOL_TARGETS"])
+        if os.environ.get("WARM_POOL_TARGETS") else _DEFAULT_WARM_TARGETS
+    )
+except Exception:
+    WARM_POOL_TARGETS = _DEFAULT_WARM_TARGETS
+WARM_POD_MAX_AGE_HOURS = float(os.environ.get("WARM_POD_MAX_AGE_HOURS", "12"))
+
 # Version validation - injected via Terraform
 LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.9")
 MIN_CLI_VERSION = os.environ.get("MIN_CLI_VERSION", "0.3.9")
@@ -1276,10 +1295,193 @@ def record_trace_event(trace_data: dict, event_name: str) -> None:
         trace_data[event_name] = Decimal(str(time.time()))
 
 
+# ── Warm pool ────────────────────────────────────────────────────────────────
+
+def _warm_gpu_count(gpu_type: str) -> int:
+    """GPUs a warm pod of this type should hold (0 for CPU, 1 for MIG slices)."""
+    return 0 if gpu_type.startswith("cpu-") else 1
+
+
+def _list_warm_pods(v1, gpu_type: str = None, state: str = None) -> list:
+    sel = "app=gpu-dev-warm"
+    if state:
+        sel += f",warm-state={state}"
+    if gpu_type:
+        sel += f",warm-gpu-type={gpu_type}"
+    return v1.list_namespaced_pod(namespace="gpu-dev", label_selector=sel).items
+
+
+def _create_warm_pod(gpu_type: str, gpu_count: int) -> str:
+    pod_name = f"gpu-dev-warm-{gpu_type}-{uuid.uuid4().hex[:6]}"
+    create_pod(
+        get_k8s_client(), pod_name, gpu_count, gpu_type,
+        github_public_key="", user_id="warm", warm=True, pytorch_ref="master",
+    )
+    logger.info(f"Created warm pod {pod_name} ({gpu_count}x {gpu_type})")
+    return pod_name
+
+
+def reconcile_warm_pool() -> dict:
+    """Top up / recycle the standby pool of pre-booted pods per GPU type."""
+    v1 = client.CoreV1Api(get_k8s_client())
+    created = recycled = 0
+    max_age_s = WARM_POD_MAX_AGE_HOURS * 3600
+    for gpu_type, target in WARM_POOL_TARGETS.items():
+        try:
+            pods = _list_warm_pods(v1, gpu_type=gpu_type)
+            live = []
+            for p in pods:
+                labels = p.metadata.labels or {}
+                phase = p.status.phase
+                created_ts = p.metadata.creation_timestamp.timestamp() if p.metadata.creation_timestamp else time.time()
+                age_s = time.time() - created_ts
+                stale = labels.get("warm-state") == "ready" and age_s > max_age_s
+                if phase in ("Failed", "Succeeded") or stale:
+                    try:
+                        v1.delete_namespaced_pod(p.metadata.name, "gpu-dev")
+                        recycled += 1
+                    except Exception as de:
+                        logger.warning(f"warm recycle delete failed for {p.metadata.name}: {de}")
+                    continue
+                live.append(p)
+            deficit = int(target) - len(live)
+            for _ in range(max(0, deficit)):
+                try:
+                    _create_warm_pod(gpu_type, _warm_gpu_count(gpu_type))
+                    created += 1
+                except Exception as ce:
+                    logger.warning(f"warm create failed for {gpu_type}: {ce}")
+                    break
+        except Exception as e:
+            logger.warning(f"warm reconcile failed for {gpu_type}: {e}")
+    logger.info(f"Warm pool reconcile: created={created} recycled={recycled}")
+    return {"statusCode": 200, "body": json.dumps({"created": created, "recycled": recycled})}
+
+
+def warm_pool_eligible(body: dict) -> bool:
+    """A reservation can be served from the warm pool only if it matches a warm
+    pod's shape: a pooled GPU type, ephemeral, default image, single node."""
+    gpu_type = body.get("gpu_type", "")
+    if gpu_type not in WARM_POOL_TARGETS:
+        return False
+    if body.get("dockerimage") or body.get("dockerfile"):
+        return False
+    if body.get("spot") or body.get("is_multinode") or body.get("disk_name"):
+        return False
+    # Warm pods carry master; an explicit ref must take the cold path that
+    # stages it. (Default/no ref resolves to master -> claimable.)
+    if sanitize_pytorch_ref(body.get("ref")) != "master":
+        return False
+    return True
+
+
+def try_claim_warm_pod(body: dict) -> bool:
+    """Claim a ready warm pod for this reservation. Returns False (fail-open) so
+    the caller falls back to the normal cold path on any miss/error."""
+    try:
+        reservation_id = body.get("reservation_id")
+        gpu_type = body.get("gpu_type")
+        gpu_count = int(body.get("gpu_count", 0))
+        github_user = body.get("github_user", "")
+        user_id = body.get("user_id")
+        if gpu_count != _warm_gpu_count(gpu_type):
+            return False
+
+        github_public_key = get_github_public_key(github_user)
+        if not github_public_key:
+            return False
+
+        k8s_client = get_k8s_client()
+        v1 = client.CoreV1Api(k8s_client)
+
+        candidate = None
+        for p in _list_warm_pods(v1, gpu_type=gpu_type, state="ready"):
+            labels = p.metadata.labels or {}
+            if p.status.phase == "Running" and labels.get("warm-gpu-count") == str(gpu_count):
+                candidate = p
+                break
+        if candidate is None:
+            return False
+
+        pod_name = candidate.metadata.name
+        # Lambda runs serialized (reserved concurrency 1) so no claim race.
+        v1.patch_namespaced_pod(
+            pod_name, "gpu-dev",
+            {"metadata": {"labels": {"warm-state": "claimed"},
+                          "annotations": {"gpu-dev-user-id": user_id or ""}}},
+        )
+
+        inject_cmd = (
+            "mkdir -p /home/dev/.ssh && touch /home/dev/.ssh/authorized_keys\n"
+            "while IFS= read -r k; do [ -n \"$k\" ] && ! grep -Fq \"$k\" /home/dev/.ssh/authorized_keys && echo \"$k\" >> /home/dev/.ssh/authorized_keys; done <<'KEOF'\n"
+            f"{github_public_key}\n"
+            "KEOF\n"
+            "chmod 700 /home/dev/.ssh && chmod 600 /home/dev/.ssh/authorized_keys && chown -R 1081:1081 /home/dev/.ssh"
+        )
+        stream(
+            v1.connect_get_namespaced_pod_exec, pod_name, "gpu-dev",
+            command=["/bin/bash", "-c", inject_cmd], container="gpu-dev",
+            stderr=True, stdin=False, stdout=True, tty=False,
+        )
+
+        duration_hours = float(body.get("duration_hours", 8))
+        reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
+        reservations_table.put_item(Item={
+            "reservation_id": reservation_id,
+            "user_id": user_id,
+            "gpu_count": gpu_count,
+            "gpu_type": gpu_type,
+            "duration_hours": Decimal(str(duration_hours)),
+            "name": body.get("name", f"{gpu_count}x {gpu_type}"),
+            "created_at": body.get("created_at", datetime.utcnow().isoformat()),
+            "status": "preparing",
+            "expires_at": (datetime.utcnow() + timedelta(hours=duration_hours)).isoformat(),
+            "github_user": github_user,
+            "lambda_version": LAMBDA_VERSION,
+            "source_command": body.get("source_command", "reserve"),
+            "warm_claimed": True,
+        })
+
+        node_port = find_available_node_port(k8s_client)
+        create_service(k8s_client, pod_name, node_port, ssh_port=22)
+        node_public_ip = get_pod_node_public_ip(pod_name)
+        node_private_ip = get_pod_node_private_ip(pod_name)
+        pod_ip = get_pod_internal_ip(pod_name)
+        ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
+
+        update_reservation_connection_info(
+            reservation_id=reservation_id,
+            ssh_command=ssh_command,
+            pod_name=pod_name,
+            node_port=node_port,
+            node_ip=node_public_ip,
+            node_private_ip=node_private_ip,
+            pod_ip=pod_ip,
+            jupyter_port=0,
+            jupyter_url_base="",
+            jupyter_enabled=False,
+            k8s_client=k8s_client,
+        )
+        logger.info(f"Claimed warm pod {pod_name} for reservation {reservation_id}")
+        try:
+            trigger_availability_update()
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        logger.warning(f"Warm claim failed, falling back to cold path: {e}")
+        return False
+
+
 def handler(event, context):
     """Main Lambda handler"""
     try:
         logger.info(f"Processing event: {json.dumps(event)}")
+
+        # Scheduled tick to keep the warm pool topped up.
+        if event.get("warm_pool_reconcile"):
+            logger.info("Reconciling warm pool")
+            return reconcile_warm_pool()
 
         # Check if this is a scheduled event for queue processing
         if event.get("source") == "cloudwatch.schedule":
@@ -1352,7 +1554,12 @@ def handler(event, context):
                         success = process_multinode_individual_node(
                             message_body)
                     else:
-                        success = process_reservation_request(record)
+                        # Try the warm pool first (fail-open); else cold path.
+                        success = False
+                        if message_type == "reservation" and not action and warm_pool_eligible(message_body):
+                            success = try_claim_warm_pod(message_body)
+                        if not success:
+                            success = process_reservation_request(record)
 
                     # Delete message from queue if processed successfully
                     if success:
@@ -4217,6 +4424,7 @@ def create_pod(
     trace_data: dict = None,
     nvme_cache_hit: bool = False,
     pytorch_ref: str = "master",
+    warm: bool = False,
 ):
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
@@ -5895,10 +6103,21 @@ EOF
         if user_id:
             annotations["gpu-dev-user-id"] = user_id
 
+        if warm:
+            pod_labels = {
+                "app": "gpu-dev-warm",
+                "reservation": pod_name,
+                "warm-state": "ready",
+                "warm-gpu-type": gpu_type,
+                "warm-gpu-count": str(gpu_count),
+            }
+        else:
+            pod_labels = {"app": "gpu-dev-pod", "reservation": pod_name}
+
         pod_metadata = client.V1ObjectMeta(
             name=pod_name,
             namespace="gpu-dev",
-            labels={"app": "gpu-dev-pod", "reservation": pod_name},
+            labels=pod_labels,
             annotations=annotations if annotations else None,
         )
 
