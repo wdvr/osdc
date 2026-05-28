@@ -307,23 +307,14 @@ resource "null_resource" "processor_cutover_gate" {
     aws_lambda_event_source_mapping.sqs_trigger,
   ]
 
+  # The aws_lambda_provisioned_concurrency_config dependency already blocks until
+  # the new version's PC is READY; this just waits out the drain of the previous
+  # version's provisioned envs (~90s observed) so SQS never serves stale code.
+  # Pure sleep — no AWS CLI, so it doesn't depend on the shell inheriting the
+  # provider's credentials/profile.
   provisioner "local-exec" {
     interpreter = ["/bin/bash", "-c"]
-    command     = <<-EOT
-      set -e
-      FN="${aws_lambda_function.reservation_processor.function_name}"
-      REGION="${var.aws_region}"
-      echo "[cutover] Waiting for provisioned concurrency READY on $FN:live..."
-      for i in $(seq 1 60); do
-        STATUS=$(aws lambda get-provisioned-concurrency-config --function-name "$FN" --qualifier live --region "$REGION" --query Status --output text 2>/dev/null || echo PENDING)
-        echo "[cutover] PC status: $STATUS"
-        [ "$STATUS" = "READY" ] && break
-        sleep 5
-      done
-      echo "[cutover] Draining previous provisioned instances (90s)..."
-      sleep 90
-      echo "[cutover] Done — live alias serves the new version."
-    EOT
+    command     = "echo '[cutover] Draining previous provisioned Lambda instances (120s)...'; sleep 120; echo '[cutover] Done — live alias serves the new version.'"
   }
 }
 
