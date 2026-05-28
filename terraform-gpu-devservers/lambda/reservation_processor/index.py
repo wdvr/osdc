@@ -11,6 +11,7 @@ import time
 import uuid
 import socket
 import random
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -19,6 +20,7 @@ from decimal import Decimal
 from typing import Any
 
 import boto3
+import botocore.exceptions
 
 from shared import K8sGPUTracker, setup_kubernetes_client
 from shared.snapshot_utils import create_pod_shutdown_snapshot, get_latest_snapshot, safe_create_snapshot, capture_disk_contents
@@ -55,6 +57,25 @@ EFS_SUBNET_IDS = os.environ.get("EFS_SUBNET_IDS", "").split(
     ",") if os.environ.get("EFS_SUBNET_IDS") else []
 CCACHE_SHARED_EFS_ID = os.environ.get("CCACHE_SHARED_EFS_ID")
 ECR_REPOSITORY_URL = os.environ.get("ECR_REPOSITORY_URL")
+
+# Pytorch ref staging: which working tree to drop into /home/dev/pytorch.
+# Accepts a branch/tag, a PR ("pr/123" or "123"), a commit sha, or a skip
+# sentinel ("none"). Refs only ever contain these chars, so anything else is
+# rejected to keep the value safe for shell interpolation.
+_PYTORCH_REF_RE = re.compile(r"^[A-Za-z0-9._/#-]{1,200}$")
+_PYTORCH_REF_SKIP = {"none", "off", "false", "no", "skip"}
+
+
+def sanitize_pytorch_ref(raw: Any) -> str:
+    """Normalize a user-supplied pytorch ref. Defaults to master; 'none' skips."""
+    if not raw:
+        return "master"
+    val = str(raw).strip()
+    if val.lower() in _PYTORCH_REF_SKIP:
+        return "none"
+    if _PYTORCH_REF_RE.match(val):
+        return val
+    return "master"
 
 # Version validation - injected via Terraform
 LAMBDA_VERSION = os.environ.get("LAMBDA_VERSION", "0.3.9")
@@ -229,8 +250,6 @@ def retry_with_backoff(func, *args, max_retries=5, initial_delay=1, max_delay=32
     Raises:
         Last exception if all retries fail
     """
-    import botocore.exceptions
-
     delay = initial_delay
     last_exception = None
 
@@ -1281,25 +1300,20 @@ def handler(event, context):
                 try:
                     message_body = json.loads(record["body"])
 
-                    # Validate CLI version for all requests
-                    try:
-                        validate_cli_version(message_body)
-                    except ValueError as version_error:
-                        error_str = str(version_error)
-                        action = message_body.get("action")
-                        reservation_id = message_body.get("reservation_id")
+                    message_type = message_body.get("type", "reservation")
+                    action = message_body.get("action")
 
-                        # For extend actions, write to extension_error so CLI polling detects it
-                        if action == "extend_reservation" and reservation_id:
-                            try:
-                                reservation = find_reservation_by_prefix(
-                                    reservation_id, message_body.get("user_id"))
-                                update_reservation_error(
-                                    reservation["reservation_id"], error_str, "extension_error")
-                            except Exception as lookup_err:
-                                logger.error(
-                                    f"Could not write extension_error for {reservation_id}: {lookup_err}")
-                        else:
+                    # Validate CLI version for new reservation requests. Management
+                    # messages such as cancellation/clone/delete historically did not
+                    # include a version, and treating them as reservation requests can
+                    # discard the action or even mark a live reservation as failed.
+                    if message_type == "reservation" and not action:
+                        try:
+                            validate_cli_version(message_body)
+                        except ValueError as version_error:
+                            error_str = str(version_error)
+                            reservation_id = message_body.get("reservation_id")
+
                             # Write error to operations table (for CLI polling)
                             operation_id = message_body.get("operation_id")
                             write_operation_result(operation_id, "failed", error_str)
@@ -1311,11 +1325,9 @@ def handler(event, context):
                                     detailed_status="CLI version validation failed",
                                     failure_reason=error_str
                                 )
-                        logger.error(f"Version validation failed: {error_str}")
-                        delete_sqs_message(record)
-                        continue
-
-                    message_type = message_body.get("type", "reservation")
+                            logger.error(f"Version validation failed: {error_str}")
+                            delete_sqs_message(record)
+                            continue
 
                     if message_type == "cancellation":
                         success = process_cancellation_request(record)
@@ -1419,6 +1431,8 @@ def process_multinode_reservation_request(reservation_request: dict[str, Any]) -
                     initial_record["github_user"] = reservation_request["github_user"]
                 if reservation_request.get("version"):
                     initial_record["cli_version"] = reservation_request["version"]
+                if reservation_request.get("source_command"):
+                    initial_record["source_command"] = reservation_request["source_command"]
                 # Store Lambda version
                 initial_record["lambda_version"] = LAMBDA_VERSION
 
@@ -2153,6 +2167,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                     initial_record["no_persistent_disk"] = reservation_request["no_persistent_disk"]
                 if "recreate_env" in reservation_request:
                     initial_record["recreate_env"] = reservation_request["recreate_env"]
+                if reservation_request.get("source_command"):
+                    initial_record["source_command"] = reservation_request["source_command"]
 
                 # Store initial record
                 reservations_table = dynamodb.Table(RESERVATIONS_TABLE)
@@ -3004,6 +3020,8 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
         if not github_public_key:
             raise ValueError(f"Could not fetch GitHub public key for GitHub user '{github_user}'")
 
+        pytorch_ref = sanitize_pytorch_ref(request.get("ref"))
+
         nvme_cache_hit = False
         if use_persistent_disk and disk_result:
             persistent_volume_id, is_new_disk, disk_warning, target_az, target_node, nvme_cache_hit = disk_result
@@ -3074,6 +3092,7 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             node_labels=node_labels,
             trace_data=trace_data,
             nvme_cache_hit=nvme_cache_hit,
+            pytorch_ref=pytorch_ref,
         )
         record_trace_event(trace_data, "k8s_resources_create_end")
 
@@ -3639,6 +3658,7 @@ def create_kubernetes_resources(
     node_labels: dict = None,
     trace_data: dict = None,
     nvme_cache_hit: bool = False,
+    pytorch_ref: str = "master",
 ) -> tuple[int, int]:
     """Create Kubernetes pod and NodePort services using Python client"""
     try:
@@ -3744,6 +3764,7 @@ def create_kubernetes_resources(
                         node_labels=node_labels,
                         trace_data=trace_data,
                         nvme_cache_hit=nvme_cache_hit,
+                        pytorch_ref=pytorch_ref,
                     )
                     logger.info(f"Created new pod {pod_name} with Jupyter")
                     update_reservation_status(
@@ -3835,6 +3856,7 @@ def create_kubernetes_resources(
                         node_labels=node_labels,
                         trace_data=trace_data,
                         nvme_cache_hit=nvme_cache_hit,
+                        pytorch_ref=pytorch_ref,
                     )
                     logger.info(f"Created new pod {pod_name} without Jupyter")
                     update_reservation_status(
@@ -4194,6 +4216,7 @@ def create_pod(
     node_labels: dict = None,
     trace_data: dict = None,
     nvme_cache_hit: bool = False,
+    pytorch_ref: str = "master",
 ):
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
@@ -4237,6 +4260,14 @@ def create_pod(
                 f"Will use EBS volume {persistent_volume_id} for /home/dev")
         else:
             logger.info(f"Using EmptyDir for /home/dev (no persistent disk)")
+
+        # Pre-stage pytorch into /home/dev/pytorch from the in-cluster worktree
+        # snapshot. Only for ephemeral homes (a persistent disk brings its own
+        # checkout) and unless explicitly skipped with ref="none".
+        should_stage_pytorch = (not use_persistent_disk) and pytorch_ref != "none"
+        stage_flag = "true" if should_stage_pytorch else "false"
+        logger.info(
+            f"Pod {pod_name} pytorch staging: {should_stage_pytorch} (ref={pytorch_ref})")
 
         # Create pod spec
         # Use OnFailure to auto-restart on OOM kills - init container is idempotent
@@ -5134,6 +5165,68 @@ GITCACHESCRIPT
                         # NOTE: Git wrapper disabled - cache is opt-in only via git-clone-cached command
                         # Users can run: git-clone-cached pytorch
                         # Instead of: git clone https://github.com/pytorch/pytorch.git
+
+                        # Install stage-pytorch: drops the prebuilt worktree snapshot into
+                        # /home/dev/pytorch, then checks out the requested ref (PR/commit/branch).
+                        cat > /usr/local/bin/stage-pytorch << 'STAGEPYTORCH'
+#!/bin/bash
+# stage-pytorch [ref] — drop pytorch into /home/dev/pytorch from the in-cluster
+# worktree snapshot, then optionally check out a PR / commit / branch.
+REF="$1"
+CACHE_URL="http://git-cache.management.svc.cluster.local:8080"
+DEST=/home/dev/pytorch
+
+if ! command -v git >/dev/null 2>&1; then echo "[pytorch] git unavailable, skipping"; exit 0; fi
+
+if [ -d "$DEST/.git" ]; then
+    echo "[pytorch] $DEST already present, skipping snapshot drop-in"
+else
+    echo "[pytorch] Fetching worktree snapshot..."
+    mkdir -p "$DEST"
+    if curl -sf "$CACHE_URL/pytorch-worktree-master.tar.gz" | tar -xz -C "$DEST" --strip-components=1; then
+        echo "[pytorch] Snapshot extracted to $DEST"
+    else
+        echo "[pytorch] Snapshot unavailable, falling back to git-clone-cached"
+        rm -rf "$DEST"
+        git-clone-cached pytorch "$DEST" || exit 0
+    fi
+fi
+
+cd "$DEST" || exit 0
+git config --global --add safe.directory "$DEST" 2>/dev/null || true
+
+case "$REF" in
+    ""|master|main|MASTER|MAIN)
+        echo "[pytorch] master snapshot, no ref override" ;;
+    *)
+        FETCH="$REF"
+        case "$REF" in
+            pr/*) FETCH="pull/$(echo "$REF" | sed 's|^pr/||')/head" ;;
+            '#'*) FETCH="pull/$(echo "$REF" | sed 's|^#||')/head" ;;
+            *[!0-9]*) : ;;
+            *) FETCH="pull/$REF/head" ;;
+        esac
+        echo "[pytorch] Checking out $REF (fetch $FETCH)..."
+        if git fetch origin "$FETCH" 2>/dev/null; then
+            git checkout -f FETCH_HEAD 2>/dev/null || true
+        else
+            git fetch origin 2>/dev/null || true
+            git checkout -f "$REF" 2>/dev/null || echo "[pytorch] WARNING: could not check out $REF"
+        fi
+        git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 2>/dev/null || true ;;
+esac
+
+chown -R 1081:1081 "$DEST" 2>/dev/null || true
+git rev-parse HEAD 2>/dev/null > /home/dev/.pytorch-ready || echo unknown > /home/dev/.pytorch-ready
+echo "[pytorch] Ready at $DEST ($(cat /home/dev/.pytorch-ready))"
+STAGEPYTORCH
+                        chmod +x /usr/local/bin/stage-pytorch
+
+                        if [ "{stage_flag}" = "true" ]; then
+                            echo "[STARTUP] Staging pytorch (ref={pytorch_ref}) in background..."
+                            touch /home/dev/.pytorch-staging 2>/dev/null || true
+                            ( /usr/local/bin/stage-pytorch "{pytorch_ref}" > /home/dev/.pytorch-staging.log 2>&1; rm -f /home/dev/.pytorch-staging; ) &
+                        fi
 
                         echo "[STARTUP] Configuring SSH..."
                         mkdir -p /run/sshd
@@ -6308,17 +6401,43 @@ def create_disk_from_snapshot_or_empty(user_id: str, availability_zone: str, dis
                 ).get('Item', {})
                 clone_source = disk_item.get('clone_source_snapshot')
                 if clone_source:
-                    # Verify the source snapshot still exists and is completed
+                    # Clone entries reference an immutable source snapshot. If a
+                    # previous lazy clone left a pending reference, wait here so
+                    # cloned disks never silently fall back to empty volumes.
                     try:
                         snap_response = ec2_client.describe_snapshots(SnapshotIds=[clone_source])
                         snap_list = snap_response.get('Snapshots', [])
-                        if snap_list and snap_list[0]['State'] == 'completed':
-                            latest_snapshot = snap_list[0]
-                            logger.info(f"Using clone source snapshot {clone_source} for disk '{disk_name}'")
+                        if snap_list:
+                            clone_snapshot = snap_list[0]
+                            if clone_snapshot['State'] == 'pending':
+                                logger.info(f"Clone source snapshot {clone_source} is pending for disk '{disk_name}' - waiting for completion")
+                                if reservation_id:
+                                    update_reservation_status(
+                                        reservation_id,
+                                        "preparing",
+                                        "Waiting for cloned disk snapshot to complete"
+                                    )
+                                waiter = ec2_client.get_waiter('snapshot_completed')
+                                waiter.wait(
+                                    SnapshotIds=[clone_source],
+                                    WaiterConfig={'Delay': 15, 'MaxAttempts': 120}
+                                )
+                                snap_response = ec2_client.describe_snapshots(SnapshotIds=[clone_source])
+                                clone_snapshot = snap_response.get('Snapshots', [])[0]
+
+                            if clone_snapshot['State'] == 'completed':
+                                latest_snapshot = clone_snapshot
+                                logger.info(f"Using clone source snapshot {clone_source} for disk '{disk_name}'")
+                            else:
+                                raise RuntimeError(
+                                    f"Clone source snapshot {clone_source} is {clone_snapshot['State']}"
+                                )
                     except Exception as snap_err:
                         logger.warning(f"Clone source snapshot {clone_source} not accessible: {snap_err}")
+                        raise
             except Exception as db_err:
                 logger.warning(f"Could not check clone_source_snapshot for disk '{disk_name}': {db_err}")
+                raise
 
         # Step 3: Create volume from snapshot or empty
         if latest_snapshot:
@@ -9114,9 +9233,14 @@ def process_clone_disk_action(record: dict[str, Any]) -> bool:
                 }],
             )
             snap_id = snap["SnapshotId"]
-            logger.info(f"Live snapshot {snap_id} initiated (lazy — won't wait for completion)")
-            # Don't wait — the snapshot is usable immediately as a reference.
-            # create_disk_from_snapshot_or_empty handles pending snapshots at reserve time.
+            logger.info(f"Live snapshot {snap_id} initiated; waiting for completion")
+            waiter = ec2_client.get_waiter("snapshot_completed")
+            waiter.wait(
+                SnapshotIds=[snap_id],
+                WaiterConfig={"Delay": 15, "MaxAttempts": 120},
+            )
+            snap = ec2_client.describe_snapshots(SnapshotIds=[snap_id])["Snapshots"][0]
+            logger.info(f"Live snapshot {snap_id} completed")
             active_snapshots = [snap]
 
         source_snapshot = max(active_snapshots, key=lambda s: s['StartTime'])
@@ -9167,27 +9291,6 @@ def process_clone_disk_action(record: dict[str, Any]) -> bool:
             logger.info(f"Disk '{target_disk}' already exists for user '{user_id}', skipping creation")
             write_operation_result(operation_id, "completed")
             return True
-
-        # Copy the snapshot with target disk tags (source snapshot keeps its own tags)
-        try:
-            copy_resp = ec2_client.copy_snapshot(
-                SourceSnapshotId=source_snapshot_id,
-                SourceRegion=os.environ.get("REGION", "us-east-2"),
-                Description=f"gpu-dev clone of {source_disk} -> {target_disk} for {user_id}",
-                TagSpecifications=[{
-                    "ResourceType": "snapshot",
-                    "Tags": [
-                        {"Key": "gpu-dev-user", "Value": user_id},
-                        {"Key": "disk_name", "Value": target_disk},
-                        {"Key": "Name", "Value": f"gpu-dev-{target_disk}-clone"},
-                    ],
-                }],
-            )
-            clone_snapshot_id = copy_resp["SnapshotId"]
-            logger.info(f"Snapshot copy {clone_snapshot_id} initiated for target disk '{target_disk}' (lazy — no wait)")
-            # Don't wait — create_disk_from_snapshot_or_empty handles pending snapshots
-        except Exception as copy_err:
-            logger.warning(f"Snapshot copy failed, clone will use source snapshot directly: {copy_err}")
 
         logger.info(f"Disk clone complete: '{source_disk}' -> '{target_disk}' (snapshot {source_snapshot_id})")
         write_operation_result(operation_id, "completed")
