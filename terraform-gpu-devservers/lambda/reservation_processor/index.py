@@ -1544,7 +1544,16 @@ def try_claim_warm_pod(body: dict) -> bool:
                 store_domain_mapping(
                     domain_name, node_private_ip or node_public_ip,
                     node_port, reservation_id, expires_ts)
-                ssh_command = format_ssh_command_with_domain(domain_name, node_port)
+                # Proxy-form command (same as the cold path): SSH dials the fixed
+                # ssh.devservers.io endpoint via ProxyCommand, which resolves the
+                # FQDN -> node:port server-side. A bare `ssh dev@<fqdn>` would try
+                # to DNS-resolve the per-reservation name (no record) and fail.
+                _suffix = os.environ.get("DOMAIN_NAME", "")
+                _full = f"{domain_name}.{_suffix}" if _suffix else domain_name
+                ssh_command = (
+                    "ssh -o ProxyCommand='gpu-dev-ssh-proxy %h %p' "
+                    "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                    f"dev@{_full}")
             except Exception as dns_e:
                 logger.warning(f"warm claim domain mapping failed (non-fatal): {dns_e}")
                 domain_name = None
