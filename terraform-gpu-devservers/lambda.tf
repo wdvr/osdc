@@ -160,7 +160,7 @@ resource "aws_lambda_function" "reservation_processor" {
   role             = aws_iam_role.reservation_processor_role.arn
   handler          = "index.handler"
   runtime          = "python3.13"
-  timeout          = 900 # 15 minutes for K8s operations
+  timeout          = 900  # 15 minutes for K8s operations
   memory_size      = 2048 # 2GB memory to prevent out-of-memory crashes
   source_code_hash = null_resource.reservation_processor_build.triggers.code_hash
   publish          = true
@@ -176,7 +176,7 @@ resource "aws_lambda_function" "reservation_processor" {
       QUEUE_URL                          = aws_sqs_queue.gpu_reservation_queue.url
       AVAILABILITY_UPDATER_FUNCTION_NAME = aws_lambda_function.availability_updater.function_name
       PRIMARY_AVAILABILITY_ZONE          = data.aws_availability_zones.available.names[0]
-      GPU_DEV_CONTAINER_IMAGE            = local.latest_image_uri  # Use stable 'latest' tag so pods can restart after OOM
+      GPU_DEV_CONTAINER_IMAGE            = local.latest_image_uri # Use stable 'latest' tag so pods can restart after OOM
       EFS_SECURITY_GROUP_ID              = aws_security_group.efs_sg.id
       EFS_SUBNET_IDS                     = join(",", concat([aws_subnet.gpu_dev_subnet.id, aws_subnet.gpu_dev_subnet_secondary.id], length(aws_subnet.gpu_dev_subnet_tertiary) > 0 ? [aws_subnet.gpu_dev_subnet_tertiary[0].id] : []))
       CCACHE_SHARED_EFS_ID               = aws_efs_file_system.ccache_shared.id
@@ -190,12 +190,12 @@ resource "aws_lambda_function" "reservation_processor" {
       MIN_CLI_VERSION                    = "0.6.5"
       # Comma-separated GPU types that require --spot flag, or "all" for every type.
       # Empty = no spot types (on-demand / reserved). Set per-workspace.
-      ASG_NAME_PREFIX                    = "${var.prefix}-gpu-nodes"
-      SPOT_GPU_TYPES                     = lookup({
+      ASG_NAME_PREFIX = "${var.prefix}-gpu-nodes"
+      SPOT_GPU_TYPES = lookup({
         "prod-east1" = "b300,b200,h200,h100,a100,t4,l4,rtxpro6000,cpu-spot"
       }, terraform.workspace, "")
-      DISK_CONTENTS_BUCKET               = aws_s3_bucket.disk_contents.bucket
-      OPERATIONS_TABLE                   = aws_dynamodb_table.operations.name
+      DISK_CONTENTS_BUCKET = aws_s3_bucket.disk_contents.bucket
+      OPERATIONS_TABLE     = aws_dynamodb_table.operations.name
     }, local.alb_env_vars)
   }
 
@@ -281,8 +281,8 @@ resource "aws_lambda_alias" "reservation_processor_live" {
 }
 
 resource "aws_lambda_provisioned_concurrency_config" "reservation_processor" {
-  function_name                  = aws_lambda_function.reservation_processor.function_name
-  qualifier                      = aws_lambda_alias.reservation_processor_live.name
+  function_name                     = aws_lambda_function.reservation_processor.function_name
+  qualifier                         = aws_lambda_alias.reservation_processor_live.name
   provisioned_concurrent_executions = 2
 }
 
@@ -291,6 +291,40 @@ resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   event_source_arn = aws_sqs_queue.gpu_reservation_queue.arn
   function_name    = aws_lambda_alias.reservation_processor_live.arn
   batch_size       = 1
+}
+
+# Cutover gate: block `tf apply` until the new processor version's provisioned
+# concurrency is READY and the previous version's provisioned envs have drained.
+# Without this, SQS (the claim path) can briefly run the old version right after
+# an apply, so a fresh reservation hits stale code. Only runs when code changes.
+resource "null_resource" "processor_cutover_gate" {
+  triggers = {
+    code_hash = null_resource.reservation_processor_build.triggers.code_hash
+  }
+
+  depends_on = [
+    aws_lambda_provisioned_concurrency_config.reservation_processor,
+    aws_lambda_event_source_mapping.sqs_trigger,
+  ]
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -e
+      FN="${aws_lambda_function.reservation_processor.function_name}"
+      REGION="${var.aws_region}"
+      echo "[cutover] Waiting for provisioned concurrency READY on $FN:live..."
+      for i in $(seq 1 60); do
+        STATUS=$(aws lambda get-provisioned-concurrency-config --function-name "$FN" --qualifier live --region "$REGION" --query Status --output text 2>/dev/null || echo PENDING)
+        echo "[cutover] PC status: $STATUS"
+        [ "$STATUS" = "READY" ] && break
+        sleep 5
+      done
+      echo "[cutover] Draining previous provisioned instances (90s)..."
+      sleep 90
+      echo "[cutover] Done — live alias serves the new version."
+    EOT
+  }
 }
 
 # CloudWatch Event Rule to trigger processor every minute for queue management
