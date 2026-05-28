@@ -1449,6 +1449,24 @@ def try_claim_warm_pod(body: dict) -> bool:
         pod_ip = get_pod_internal_ip(pod_name)
         ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
 
+        # Optional stable FQDN, same as the cold path, so `gpu-dev connect`
+        # builds a clean SSH config instead of warning about missing details.
+        domain_name = None
+        if get_dns_enabled():
+            try:
+                domain_name = generate_unique_name(body.get("name"))
+                if create_dns_record(domain_name, "", 0):
+                    expires_ts = int(time.time()) + int(duration_hours * 3600)
+                    store_domain_mapping(
+                        domain_name, node_private_ip or node_public_ip,
+                        node_port, reservation_id, expires_ts)
+                    ssh_command = format_ssh_command_with_domain(domain_name, node_port)
+                else:
+                    domain_name = None
+            except Exception as dns_e:
+                logger.warning(f"warm claim DNS setup failed (non-fatal): {dns_e}")
+                domain_name = None
+
         update_reservation_connection_info(
             reservation_id=reservation_id,
             ssh_command=ssh_command,
@@ -1461,6 +1479,7 @@ def try_claim_warm_pod(body: dict) -> bool:
             jupyter_url_base="",
             jupyter_enabled=False,
             k8s_client=k8s_client,
+            domain_name=domain_name,
         )
         logger.info(f"Claimed warm pod {pod_name} for reservation {reservation_id}")
         try:

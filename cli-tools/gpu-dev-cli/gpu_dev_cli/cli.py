@@ -774,8 +774,9 @@ def reserve(
                     else:
                         f_ssh = ex.submit(validate_ssh_key_matches_github_user, config, None)
                         ssh_result = None
-                    # Only fetch availability if we need the interactive picker
-                    need_interactive = gpu_type is None
+                    # Fetch availability whenever a picker needs it: the GPU-type
+                    # picker (no gpu_type) or the count picker (no gpus).
+                    need_interactive = gpu_type is None or gpus is None
                     if need_interactive:
                         f_avail = ex.submit(reservation_mgr.get_gpu_availability_by_type)
 
@@ -805,7 +806,7 @@ def reserve(
                     rprint("[yellow]💡 Check https://fburl.com/gh-ssh for info on how to add your ssh key to Github[/yellow]")
                 return
 
-            if not availability_info:
+            if need_interactive and not availability_info:
                 rprint("[red]❌ Could not get GPU availability information[/red]")
                 return
 
@@ -895,7 +896,7 @@ def reserve(
 
             # Interactive disk selection (if not multinode - only master node gets persistent disk)
             # This comes BEFORE duration so user knows what they're reserving
-            if disk is None and not explicit_no_disk_from_param:
+            if disk is None and not explicit_no_disk_from_param and not no_persist:
                 disk = select_disk_interactive(user_info["user_id"], config)
                 # Check if user cancelled
                 if disk == "__cancelled__":
@@ -951,7 +952,7 @@ def reserve(
 
             # Non-interactive disk selection (if not specified via flag)
             # Only for single-node reservations
-            if disk is None and max_gpus is not None and gpu_count <= max_gpus and not explicit_no_disk_from_param:
+            if disk is None and max_gpus is not None and gpu_count <= max_gpus and not explicit_no_disk_from_param and not no_persist:
                 # In non-interactive mode, check if terminal supports interactive prompts
                 if check_interactive_support():
                     # Load config and authenticate if not already done
