@@ -368,3 +368,121 @@ resource "kubernetes_service" "git_cache" {
     }
   }
 }
+
+# DaemonSet: keep a node-local copy of the pytorch worktree snapshot on each
+# dev node's NVMe (falls back to root disk via DirectoryOrCreate). Pods then
+# drop pytorch in with a local copy instead of pulling the tarball from the
+# in-cluster cache every time. Refreshes when the snapshot sha changes.
+resource "kubernetes_daemonset" "pytorch_snapshot" {
+  metadata {
+    name      = "pytorch-snapshot"
+    namespace = "kube-system"
+    labels    = { app = "pytorch-snapshot" }
+  }
+
+  spec {
+    selector {
+      match_labels = { app = "pytorch-snapshot" }
+    }
+
+    strategy {
+      type = "RollingUpdate"
+      rolling_update {
+        max_unavailable = "100%"
+      }
+    }
+
+    template {
+      metadata {
+        labels = { app = "pytorch-snapshot" }
+      }
+
+      spec {
+        # GPU + CPU dev nodes only (skip mgmt/control-plane).
+        affinity {
+          node_affinity {
+            required_during_scheduling_ignored_during_execution {
+              node_selector_term {
+                match_expressions {
+                  key      = "NodeType"
+                  operator = "In"
+                  values   = ["gpu", "cpu"]
+                }
+              }
+            }
+          }
+        }
+
+        toleration {
+          key      = "nvidia.com/gpu"
+          operator = "Exists"
+          effect   = "NoSchedule"
+        }
+        toleration {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "cpu-only"
+          effect   = "NoSchedule"
+        }
+
+        container {
+          name    = "snapshot"
+          image   = "alpine:3.21"
+          command = ["/bin/sh", "-c"]
+          args = [<<-EOT
+            apk add --no-cache curl tar >/dev/null 2>&1 || true
+            CACHE="http://git-cache.management.svc.cluster.local:8080"
+            DEST=/mnt/nvme/pytorch-worktree
+            echo "[nvme-pytorch] snapshot maintainer started"
+            while true; do
+              NEW=$(curl -sf "$CACHE/pytorch-worktree-master.sha" 2>/dev/null || echo none)
+              OLD=$(cat "$DEST/.sha" 2>/dev/null || echo never)
+              if [ "$NEW" != "none" ] && [ "$NEW" != "$OLD" ]; then
+                echo "[nvme-pytorch] updating $OLD -> $NEW"
+                rm -rf /mnt/nvme/pytorch-worktree.tmp
+                mkdir -p /mnt/nvme/pytorch-worktree.tmp
+                if curl -sf "$CACHE/pytorch-worktree-master.tar.gz" | tar -xz -C /mnt/nvme/pytorch-worktree.tmp --strip-components=1; then
+                  echo "$NEW" > /mnt/nvme/pytorch-worktree.tmp/.sha
+                  rm -rf /mnt/nvme/pytorch-worktree.old
+                  [ -d "$DEST" ] && mv "$DEST" /mnt/nvme/pytorch-worktree.old
+                  mv /mnt/nvme/pytorch-worktree.tmp "$DEST"
+                  rm -rf /mnt/nvme/pytorch-worktree.old
+                  echo "[nvme-pytorch] ready at $NEW"
+                else
+                  echo "[nvme-pytorch] download failed, will retry"
+                  rm -rf /mnt/nvme/pytorch-worktree.tmp
+                fi
+              fi
+              sleep 900
+            done
+          EOT
+          ]
+
+          volume_mount {
+            name       = "nvme-root"
+            mount_path = "/mnt/nvme"
+          }
+
+          resources {
+            requests = {
+              cpu    = "50m"
+              memory = "64Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+          }
+        }
+
+        volume {
+          name = "nvme-root"
+          host_path {
+            path = "/mnt/nvme"
+            type = "DirectoryOrCreate"
+          }
+        }
+      }
+    }
+  }
+}

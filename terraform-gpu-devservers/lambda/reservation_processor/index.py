@@ -5179,9 +5179,13 @@ DEST=/home/dev/pytorch
 if ! command -v git >/dev/null 2>&1; then echo "[pytorch] git unavailable, skipping"; exit 0; fi
 
 if [ -d "$DEST/.git" ]; then
-    echo "[pytorch] $DEST already present, skipping snapshot drop-in"
+    echo "[pytorch] $DEST already present, skipping drop-in"
+elif [ -d /nvme-pytorch/.git ]; then
+    echo "[pytorch] Copying worktree from node-local NVMe..."
+    mkdir -p "$DEST"
+    cp -a --reflink=auto /nvme-pytorch/. "$DEST/" 2>/dev/null || cp -a /nvme-pytorch/. "$DEST/"
 else
-    echo "[pytorch] Fetching worktree snapshot..."
+    echo "[pytorch] Fetching worktree snapshot from cache..."
     mkdir -p "$DEST"
     if curl -sf "$CACHE_URL/pytorch-worktree-master.tar.gz" | tar -xz -C "$DEST" --strip-components=1; then
         echo "[pytorch] Snapshot extracted to $DEST"
@@ -5670,7 +5674,8 @@ EOF
                             name="ccache-shared", mount_path="/ccache_shared"),
                     ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else [])
                     + ([client.V1VolumeMount(name="hugepages-2mi", mount_path="/dev/hugepages")] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else [])
-                    + ([client.V1VolumeMount(name="nvme-cache", mount_path="/nvme-cache")] if use_persistent_disk else []),
+                    + ([client.V1VolumeMount(name="nvme-cache", mount_path="/nvme-cache")] if use_persistent_disk else [])
+                    + ([client.V1VolumeMount(name="nvme-pytorch", mount_path="/nvme-pytorch", read_only=True)] if should_stage_pytorch else []),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
                             add=["IPC_LOCK", "SYS_ADMIN", "SYS_RESOURCE"]
@@ -5820,7 +5825,16 @@ EOF
                         type="DirectoryOrCreate"
                     )
                 )
-            ] if use_persistent_disk else []),
+            ] if use_persistent_disk else [])
+            + ([
+                client.V1Volume(
+                    name="nvme-pytorch",
+                    host_path=client.V1HostPathVolumeSource(
+                        path="/mnt/nvme/pytorch-worktree",
+                        type="DirectoryOrCreate"
+                    )
+                )
+            ] if should_stage_pytorch else []),
             node_selector={
                 "GpuType": get_node_gpu_type(gpu_type),
                 **({} if target_az is None else {"topology.kubernetes.io/zone": target_az}),
