@@ -618,6 +618,12 @@ def main(ctx: click.Context) -> None:
     help="Named persistent disk to use (e.g., 'pytorch-main'), or 'none' for temporary storage only. Use 'gpu-dev disk list' to see available disks.",
 )
 @click.option(
+    "--ref",
+    type=str,
+    default=None,
+    help="Pytorch ref to pre-stage in /home/dev/pytorch: a branch/tag, a PR (pr/123, #123, or bare 123), or a commit sha. Defaults to master; 'none' to skip. Ignored with --disk.",
+)
+@click.option(
     "--node-label",
     "-l",
     type=str,
@@ -647,6 +653,7 @@ def reserve(
     dockerimage: Optional[str],
     preserve_entrypoint: bool,
     disk: Optional[str],
+    ref: Optional[str],
     node_label: tuple,
     spot: bool = False,
     fast_cache: bool = False,
@@ -1378,6 +1385,7 @@ def reserve(
                     disk_name=disk,
                     spot=spot,
                     node_labels=node_labels if node_labels else None,
+                    ref=ref,
                 )
             else:
                 # Single node reservation
@@ -1399,6 +1407,7 @@ def reserve(
                     node_labels=node_labels if node_labels else None,
                     trace=trace,
                     fast_cache=fast_cache,
+                    ref=ref,
                 )
                 reservation_ids = [reservation_id] if reservation_id else None
 
@@ -1469,6 +1478,8 @@ _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g"
 @click.option("--gpus", type=int, default=1, show_default=True, help="GPU count (multinode if > per-node max).")
 @click.option("--hours", type=float, default=1.0, show_default=True, help="Reservation lifetime ceiling — job auto-cancels well before this if it finishes.")
 @click.option("--disk", type=str, default=None, help="Persistent disk name (master node only). Omit for ephemeral storage.")
+@click.option("--ref", type=str, default=None,
+              help="Pytorch ref to pre-stage in /home/dev/pytorch: branch/tag, PR (pr/123, #123, or bare 123), or commit sha. Defaults to master; 'none' to skip. Ignored with --disk.")
 @click.option("--no-persistent-disk", is_flag=True, help="Skip persistent disk entirely.")
 @click.option("--spot", is_flag=True, default=False,
               help="Acknowledge spot instance (~1/3 cost, may be preempted). Required for spot-only types.")
@@ -1487,7 +1498,7 @@ _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g"
               help="Minutes to wait for the reservation to become active. Defaults to 24h since GPU reservations may queue when the cluster is full.")
 @click.argument("command", nargs=-1, required=True)
 @click.pass_context
-def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, spot, dockerfile, dockerimage, preserve_entrypoint,
+def submit(ctx, gpu_type, gpus, hours, disk, ref, no_persistent_disk, spot, dockerfile, dockerimage, preserve_entrypoint,
            runtime, no_pull, keep_alive, name, timeout, command):
     """Submit a job: reserve, sync code, run, sync results back, auto-cancel.
 
@@ -1602,7 +1613,7 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, spot, dockerfil
             duration_hours=hours, name=name, github_user=user_info["github_user"],
             no_persistent_disk=no_persistent_disk, disk_name=disk_name,
             spot=spot, dockerfile=dockerfile_payload, dockerimage=dockerimage,
-            preserve_entrypoint=preserve_entrypoint)
+            preserve_entrypoint=preserve_entrypoint, source_command="submit", ref=ref)
         if not reservation_ids:
             rprint("[red]❌ Failed to create multinode reservation[/red]")
             sys.exit(2)
@@ -1613,7 +1624,7 @@ def submit(ctx, gpu_type, gpus, hours, disk, no_persistent_disk, spot, dockerfil
             duration_hours=hours, name=name, github_user=user_info["github_user"],
             no_persistent_disk=no_persistent_disk, disk_name=disk_name,
             spot=spot, dockerfile=dockerfile_payload, dockerimage=dockerimage,
-            preserve_entrypoint=preserve_entrypoint)
+            preserve_entrypoint=preserve_entrypoint, source_command="submit", ref=ref)
         if not primary_id:
             rprint("[red]❌ Failed to create reservation[/red]")
             sys.exit(2)
@@ -1965,6 +1976,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
 
             table = Table(title="GPU Reservations")
             table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("Type", style="dim", no_wrap=True)
             table.add_column("User", style="green")
             table.add_column("GPUs", style="magenta")
             table.add_column("Status")
@@ -2153,10 +2165,15 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                         lambda_version = reservation.get("lambda_version", "")
                         lambda_version_display = lambda_version if lambda_version else "<0.2.6"
 
+                    # Format source command type
+                    source_cmd = reservation.get("source_command", "reserve")
+                    type_display = source_cmd if source_cmd else "reserve"
+
                     # Apply dimming to entire row for cancelled/expired reservations
                     row_data = [
                         f"[dim]{str(reservation_id)[:8]}[/dim]" if dim_row else str(
                             reservation_id)[:8],
+                        f"[dim]{type_display}[/dim]" if dim_row else type_display,
                         f"[dim]{user_display}[/dim]" if dim_row else user_display,
                         f"[dim]{gpu_display}[/dim]" if dim_row else gpu_display,
                         status_display,
@@ -2298,6 +2315,7 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                             # Create table
                             table = Table(title="GPU Reservations")
                             table.add_column("ID", style="cyan", no_wrap=True)
+                            table.add_column("Type", style="dim", no_wrap=True)
                             table.add_column("User", style="green")
                             table.add_column("GPUs", style="magenta")
                             table.add_column("Status")
@@ -2399,7 +2417,9 @@ def list(ctx: click.Context, user: Optional[str], status: Optional[str], details
                                     else:
                                         expires_formatted = "N/A"
 
-                                    table.add_row(res_id, user_display, gpu_display, status_display,
+                                    source_cmd = reservation.get("source_command", "reserve")
+                                    type_display = source_cmd if source_cmd else "reserve"
+                                    table.add_row(res_id, type_display, user_display, gpu_display, status_display,
                                                 storage_display, queue_info, created_formatted, expires_formatted)
                                 except:
                                     continue

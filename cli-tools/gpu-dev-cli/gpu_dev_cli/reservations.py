@@ -457,6 +457,8 @@ class ReservationManager:
         trace: bool = False,
         spot: bool = False,
         fast_cache: bool = False,
+        source_command: str = "reserve",
+        ref: Optional[str] = None,
     ) -> Optional[str]:
         """Create a new GPU reservation"""
         try:
@@ -542,6 +544,11 @@ class ReservationManager:
             if fast_cache:
                 message["fast_cache"] = True
 
+            message["source_command"] = source_command
+
+            if ref:
+                message["ref"] = ref
+
             # Add trace flag and CLI start timestamp
             if trace:
                 message["trace"] = True
@@ -579,6 +586,8 @@ class ReservationManager:
         disk_name: Optional[str] = None,
         node_labels: Optional[Dict[str, str]] = None,
         spot: bool = False,
+        source_command: str = "reserve",
+        ref: Optional[str] = None,
     ) -> Optional[List[str]]:
         """Create multiple GPU reservations for multinode setup"""
         try:
@@ -646,7 +655,11 @@ class ReservationManager:
                     "is_multinode": True,
                     "no_persistent_disk": no_persistent_disk,
                     "spot": spot,
+                    "source_command": source_command,
                 }
+
+                if ref:
+                    message["ref"] = ref
 
                 if github_user:
                     message["github_user"] = github_user

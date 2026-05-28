@@ -6,7 +6,7 @@ from .._backend.aws import AwsBackend
 from .._backend.protocol import Backend
 from ..common.config import GpuDevConfig
 from ..common.enums import GPU_MAX_COUNT, ReservationStatus
-from ..common.errors import GpuDevValidationError
+from ..common.errors import GpuDevTimeoutError, GpuDevValidationError
 from ..common.models import DiskInfo, GpuAvailability, ReservationInfo
 from .sandbox import Sandbox
 
@@ -68,6 +68,7 @@ class GpuDev:
         jupyter: bool = False,
         disk_name: str | None = None,
         docker_image: str | None = None,
+        ref: str | None = None,
         spot: bool = False,
         wait: bool = True,
         timeout_minutes: int | None = None,
@@ -83,6 +84,10 @@ class GpuDev:
             jupyter: Enable Jupyter Lab access.
             disk_name: Persistent disk to attach.
             docker_image: Custom Docker image instead of default.
+            ref: Pytorch ref to pre-stage in ``/home/dev/pytorch``. Accepts a
+                branch/tag, a PR (``"pr/123"``, ``"#123"``, or bare ``"123"``),
+                or a commit sha. Defaults to ``master``; pass ``"none"`` to skip.
+                Ignored when ``disk_name`` is set.
             spot: Use spot instances (cheaper, may be preempted).
             wait: Block until reservation is active (default ``True``).
             timeout_minutes: Max wait time. Defaults to config value.
@@ -125,6 +130,7 @@ class GpuDev:
             "jupyter": jupyter,
             "disk_name": disk_name,
             "docker_image": docker_image,
+            "ref": ref,
             "spot": spot,
         })
 
@@ -266,6 +272,9 @@ class GpuDev:
                 if any(d.name == target for d in disks):
                     return op_id
                 time.sleep(2)
+            raise GpuDevTimeoutError(
+                f"Disk clone {source!r} -> {target!r} did not appear within {timeout}s"
+            )
         return op_id
 
     def delete_disk(self, name: str) -> str:

@@ -172,6 +172,8 @@ class AwsBackend:
             message["disk_name"] = params["disk_name"]
         if params.get("docker_image"):
             message["dockerimage"] = params["docker_image"]
+        if params.get("ref"):
+            message["ref"] = params["ref"]
         if params.get("spot"):
             message["spot"] = True
 
@@ -231,6 +233,7 @@ class AwsBackend:
             "type": "cancellation",
             "reservation_id": reservation_id,
             "user_id": user_id,
+            "version": __import__("gpu_dev").__version__,
         }
         self._sqs.send_message(
             QueueUrl=self._get_queue_url(),
@@ -244,6 +247,7 @@ class AwsBackend:
             "reservation_id": reservation_id,
             "user_id": user_id,
             "extend_hours": hours,
+            "version": __import__("gpu_dev").__version__,
         }
         self._sqs.send_message(
             QueueUrl=self._get_queue_url(),
@@ -294,6 +298,7 @@ class AwsBackend:
                 "user_id": user_id,
                 "source_disk": source_disk,
                 "target_disk": target_disk,
+                "version": __import__("gpu_dev").__version__,
                 "requested_at": datetime.now(timezone.utc).isoformat(),
             }),
         )
@@ -310,6 +315,7 @@ class AwsBackend:
                 "operation_id": operation_id,
                 "user_id": user_id,
                 "disk_name": disk_name,
+                "version": __import__("gpu_dev").__version__,
                 "requested_at": datetime.now(timezone.utc).isoformat(),
             }),
         )
@@ -321,6 +327,7 @@ class AwsBackend:
             "reservation_id": reservation_id,
             "user_id": user_id,
             "github_username": github_username,
+            "version": __import__("gpu_dev").__version__,
         }
         self._sqs.send_message(
             QueueUrl=self._get_queue_url(),
