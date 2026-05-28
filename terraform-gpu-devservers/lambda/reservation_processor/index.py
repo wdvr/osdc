@@ -1587,10 +1587,55 @@ def try_claim_warm_pod(body: dict) -> bool:
         return False
 
 
+def handle_direct_claim(event) -> dict:
+    """Function URL handler for synchronous warm-pool claims. Returns the active
+    reservation on success, or {claimed: false} so the CLI falls back to SQS."""
+    def _resp(payload):
+        return {"statusCode": 200, "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(payload)}
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except Exception:
+        return _resp({"claimed": False, "reason": "bad_json"})
+
+    if not warm_pool_eligible(body):
+        return _resp({"claimed": False, "reason": "ineligible"})
+    try:
+        validate_cli_version(body)
+    except ValueError as ve:
+        return _resp({"claimed": False, "reason": str(ve)})
+
+    if not try_claim_warm_pod(body):
+        return _resp({"claimed": False, "reason": "no_warm_pod"})
+
+    item = {}
+    try:
+        item = dynamodb.Table(RESERVATIONS_TABLE).get_item(
+            Key={"reservation_id": body["reservation_id"]}).get("Item", {}) or {}
+    except Exception as e:
+        logger.warning(f"direct claim: could not read back reservation: {e}")
+    return _resp({"claimed": True, "reservation": {
+        "reservation_id": item.get("reservation_id") or body.get("reservation_id"),
+        "status": item.get("status", "active"),
+        "ssh_command": item.get("ssh_command"),
+        "pod_name": item.get("pod_name"),
+        "node_ip": item.get("node_ip"),
+        "node_port": int(item["node_port"]) if item.get("node_port") is not None else None,
+        "fqdn": item.get("fqdn"),
+        "expires_at": item.get("expires_at"),
+    }})
+
+
 def handler(event, context):
     """Main Lambda handler"""
     try:
         logger.info(f"Processing event: {json.dumps(event)}")
+
+        # Synchronous claim via Lambda Function URL (gpu-dev reserve --direct).
+        # Returns the active reservation in the HTTP response — no SQS, no poll.
+        # Only warm-eligible requests; anything else tells the CLI to use SQS.
+        if event.get("requestContext", {}).get("http") or event.get("rawPath"):
+            return handle_direct_claim(event)
 
         # Scheduled tick to keep the warm pool topped up.
         if event.get("warm_pool_reconcile"):

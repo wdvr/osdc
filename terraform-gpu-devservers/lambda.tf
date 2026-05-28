@@ -293,6 +293,29 @@ resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   batch_size       = 1
 }
 
+# Function URL for synchronous warm-pool claims (gpu-dev reserve --direct).
+# IAM-authed: callers need lambda:InvokeFunctionUrl on this function. Everything
+# else (cold reservations, cancel, etc.) keeps using SQS.
+resource "aws_lambda_function_url" "reservation_processor_direct" {
+  function_name      = aws_lambda_function.reservation_processor.function_name
+  qualifier          = aws_lambda_alias.reservation_processor_live.name
+  authorization_type = "AWS_IAM"
+}
+
+resource "aws_lambda_permission" "allow_function_url" {
+  statement_id           = "AllowFunctionUrlInvoke"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.reservation_processor.function_name
+  qualifier              = aws_lambda_alias.reservation_processor_live.name
+  principal              = "*"
+  function_url_auth_type = "AWS_IAM"
+}
+
+output "reservation_processor_direct_url" {
+  description = "Lambda Function URL for synchronous warm-pool claims (gpu-dev reserve --direct)"
+  value       = aws_lambda_function_url.reservation_processor_direct.function_url
+}
+
 # Note: aws_lambda_provisioned_concurrency_config already blocks `tf apply` until
 # the new version's PC is READY (a real check). AWS still drains the previous
 # version's provisioned envs for ~60-90s afterward, during which SQS can briefly
