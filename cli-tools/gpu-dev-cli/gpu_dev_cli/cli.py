@@ -5,6 +5,7 @@ Reserve and manage GPU development servers
 
 import click
 import os
+import time
 from typing import Optional
 from rich.console import Console
 from rich.table import Table
