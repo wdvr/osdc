@@ -1316,6 +1316,7 @@ def _create_warm_pod(gpu_type: str, gpu_count: int) -> str:
     create_pod(
         get_k8s_client(), pod_name, gpu_count, gpu_type,
         github_public_key="", user_id="warm", warm=True, pytorch_ref="master",
+        is_new_disk=True,  # ephemeral home → set up shell env (.zshrc etc.)
     )
     logger.info(f"Created warm pod {pod_name} ({gpu_count}x {gpu_type})")
     return pod_name
