@@ -1480,11 +1480,29 @@ def try_claim_warm_pod(body: dict) -> bool:
         node_private_ip = get_pod_node_private_ip(pod_name)
         pod_ip = get_pod_internal_ip(pod_name)
         record_trace_event(trace_data, "node_ips_fetched")
-        # Direct NodePort SSH — fast and works without the proxy/ALB. We skip the
-        # FQDN/Route53 setup the cold path does on purpose: a CNAME adds ~5s
-        # (which the cold path hides behind the long pod build) and routes SSH
-        # through the jupyter ALB, neither of which suits an instant claim.
-        ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
+
+        # SSH reaches the pod only through the WebSocket proxy — NodePorts aren't
+        # internet-facing (the node SG allows the range only from the proxy ECS /
+        # Jupyter ALB). The proxy resolves the FQDN via the domain-mappings table,
+        # so register a mapping + FQDN. We deliberately SKIP the Route53 CNAME: it
+        # costs ~4.5s and is only used for Jupyter HTTPS — the SSH client always
+        # dials the fixed ssh.devservers.io endpoint, not the per-reservation name.
+        domain_name = None
+        try:
+            if get_dns_enabled():
+                domain_name = generate_unique_name(body.get("name"))
+                expires_ts = int(time.time()) + int(duration_hours * 3600)
+                store_domain_mapping(
+                    domain_name, node_private_ip or node_public_ip,
+                    node_port, reservation_id, expires_ts)
+                ssh_command = format_ssh_command_with_domain(domain_name, node_port)
+        except Exception as dns_e:
+            logger.warning(f"warm claim domain mapping failed (non-fatal): {dns_e}")
+            domain_name = None
+        if not domain_name:
+            # Fallback (DNS disabled): direct NodePort, only reachable in-VPC.
+            ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
+        record_trace_event(trace_data, "domain_mapping_stored")
 
         update_reservation_connection_info(
             reservation_id=reservation_id,
@@ -1498,6 +1516,7 @@ def try_claim_warm_pod(body: dict) -> bool:
             jupyter_url_base="",
             jupyter_enabled=False,
             k8s_client=k8s_client,
+            domain_name=domain_name,
         )
         record_trace_event(trace_data, "warm_claim_complete")
         if trace_data:
