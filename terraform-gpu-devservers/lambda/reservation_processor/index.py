@@ -1330,6 +1330,43 @@ def _create_warm_pod(gpu_type: str, gpu_count: int) -> str:
     return pod_name
 
 
+def _provision_warm_pod(v1, pod) -> None:
+    """Backfill connection details on a ready warm pod (node IP/port + domain
+    mapping) and stash them as annotations, so the claim avoids live k8s/DNS
+    calls. Idempotent: skips pods already provisioned or not yet Running."""
+    ann = pod.metadata.annotations or {}
+    if ann.get("warm-domain") or pod.status.phase != "Running":
+        return
+    pod_name = pod.metadata.name
+    try:
+        svc = v1.read_namespaced_service(f"{pod_name}-ssh", "gpu-dev")
+        node_port = svc.spec.ports[0].node_port
+    except Exception:
+        return  # service not ready yet; try next tick
+    node_public_ip = get_pod_node_public_ip(pod_name)
+    node_private_ip = get_pod_node_private_ip(pod_name)
+    pod_ip = get_pod_internal_ip(pod_name)
+    domain_name = "-"
+    if get_dns_enabled():
+        try:
+            domain_name = generate_unique_name()
+            # Placeholder mapping (reservation_id='warm', far expiry); the claim
+            # rebinds it to the real reservation.
+            store_domain_mapping(
+                domain_name, node_private_ip or node_public_ip,
+                node_port, "warm", int(time.time()) + 7 * 24 * 3600)
+        except Exception as e:
+            logger.warning(f"warm provision mapping failed for {pod_name}: {e}")
+            domain_name = "-"
+    v1.patch_namespaced_pod(pod_name, "gpu-dev", {"metadata": {"annotations": {
+        "warm-node-ip": node_public_ip or "",
+        "warm-node-private-ip": node_private_ip or "",
+        "warm-pod-ip": pod_ip or "",
+        "warm-node-port": str(node_port),
+        "warm-domain": domain_name,
+    }}})
+
+
 def reconcile_warm_pool() -> dict:
     """Top up / recycle the standby pool of pre-booted pods per GPU type."""
     v1 = client.CoreV1Api(get_k8s_client())
@@ -1357,6 +1394,13 @@ def reconcile_warm_pool() -> dict:
                         logger.warning(f"warm recycle delete failed for {p.metadata.name}: {de}")
                     continue
                 live.append(p)
+            # Backfill connection details on ready pods so claims stay fast.
+            for p in live:
+                if (p.metadata.labels or {}).get("warm-state") == "ready":
+                    try:
+                        _provision_warm_pod(v1, p)
+                    except Exception as pe:
+                        logger.warning(f"warm provision failed for {p.metadata.name}: {pe}")
             deficit = int(target) - len(live)
             for _ in range(max(0, deficit)):
                 try:
@@ -1467,42 +1511,46 @@ def try_claim_warm_pod(body: dict) -> bool:
         })
         record_trace_event(trace_data, "ddb_record_written")
 
-        # Reuse the service pre-created at warm-pod birth; create one only if it's
-        # somehow missing (keeps the slow find-port + create off the hot path).
-        try:
-            svc = v1.read_namespaced_service(f"{pod_name}-ssh", "gpu-dev")
-            node_port = svc.spec.ports[0].node_port
-        except Exception:
-            node_port = find_available_node_port(k8s_client)
-            create_service(k8s_client, pod_name, node_port, ssh_port=22)
-        record_trace_event(trace_data, "ssh_service_created")
-        node_public_ip = get_pod_node_public_ip(pod_name)
-        node_private_ip = get_pod_node_private_ip(pod_name)
-        pod_ip = get_pod_internal_ip(pod_name)
-        record_trace_event(trace_data, "node_ips_fetched")
+        # Connection details — prefer values pre-provisioned on the warm pod
+        # (node IP/port + domain) so the claim skips live k8s/DNS calls. Resolve
+        # live only if the pod wasn't provisioned yet (claimed before backfill).
+        ann = candidate.metadata.annotations or {}
+        if ann.get("warm-node-port") and ann.get("warm-domain"):
+            node_port = int(ann["warm-node-port"])
+            node_public_ip = ann.get("warm-node-ip") or ""
+            node_private_ip = ann.get("warm-node-private-ip") or ""
+            pod_ip = ann.get("warm-pod-ip") or ""
+            domain_name = ann["warm-domain"] if ann["warm-domain"] != "-" else None
+        else:
+            try:
+                svc = v1.read_namespaced_service(f"{pod_name}-ssh", "gpu-dev")
+                node_port = svc.spec.ports[0].node_port
+            except Exception:
+                node_port = find_available_node_port(k8s_client)
+                create_service(k8s_client, pod_name, node_port, ssh_port=22)
+            node_public_ip = get_pod_node_public_ip(pod_name)
+            node_private_ip = get_pod_node_private_ip(pod_name)
+            pod_ip = get_pod_internal_ip(pod_name)
+            domain_name = generate_unique_name(body.get("name")) if get_dns_enabled() else None
+        record_trace_event(trace_data, "conn_details_resolved")
 
-        # SSH reaches the pod only through the WebSocket proxy — NodePorts aren't
-        # internet-facing (the node SG allows the range only from the proxy ECS /
-        # Jupyter ALB). The proxy resolves the FQDN via the domain-mappings table,
-        # so register a mapping + FQDN. We deliberately SKIP the Route53 CNAME: it
-        # costs ~4.5s and is only used for Jupyter HTTPS — the SSH client always
-        # dials the fixed ssh.devservers.io endpoint, not the per-reservation name.
-        domain_name = None
-        try:
-            if get_dns_enabled():
-                domain_name = generate_unique_name(body.get("name"))
+        # Bind the domain mapping to this reservation. SSH reaches the pod only via
+        # the WebSocket proxy (NodePorts aren't internet-facing), which resolves
+        # the FQDN from this mapping. We skip the Route53 CNAME on purpose — it's
+        # ~4.5s and only used for Jupyter HTTPS, not SSH.
+        if domain_name:
+            try:
                 expires_ts = int(time.time()) + int(duration_hours * 3600)
                 store_domain_mapping(
                     domain_name, node_private_ip or node_public_ip,
                     node_port, reservation_id, expires_ts)
                 ssh_command = format_ssh_command_with_domain(domain_name, node_port)
-        except Exception as dns_e:
-            logger.warning(f"warm claim domain mapping failed (non-fatal): {dns_e}")
-            domain_name = None
+            except Exception as dns_e:
+                logger.warning(f"warm claim domain mapping failed (non-fatal): {dns_e}")
+                domain_name = None
         if not domain_name:
-            # Fallback (DNS disabled): direct NodePort, only reachable in-VPC.
             ssh_command = f"ssh -p {node_port} dev@{node_public_ip}"
-        record_trace_event(trace_data, "domain_mapping_stored")
+        record_trace_event(trace_data, "domain_mapping_bound")
 
         update_reservation_connection_info(
             reservation_id=reservation_id,
