@@ -3513,8 +3513,6 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         config_file = gpu_dev_dir / f"{short_id}-sshconfig"
 
         if not config_file.exists():
-            rprint("[yellow]⚠️  SSH config not found, downloading...[/yellow]")
-
             # Extract connection details from the connection_info
             if is_multinode:
                 pod_name = selected_node.get("pod_name")
@@ -3527,7 +3525,11 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
                 node_res_id = reservation_id
                 node_name = connection_info.get("name")
 
+            # Only build a per-reservation SSH config when there's an FQDN to
+            # proxy through. Direct-NodePort reservations (e.g. warm-pool claims)
+            # connect straight via ssh_command — no config or warning needed.
             if fqdn and pod_name and node_res_id:
+                rprint("[yellow]⚠️  SSH config not found, downloading...[/yellow]")
                 from gpu_dev_cli.reservations import create_ssh_config_for_reservation
                 config_path, use_include = create_ssh_config_for_reservation(
                     fqdn, pod_name, node_res_id, node_name
@@ -3536,8 +3538,6 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
                     rprint(f"[green]✅ SSH config created: {config_path}[/green]\n")
                 else:
                     rprint("[yellow]⚠️  Failed to create SSH config, attempting connection anyway...[/yellow]\n")
-            else:
-                rprint("[yellow]⚠️  Missing connection details, attempting connection anyway...[/yellow]\n")
 
         # Add agent forwarding if not already present
         if "-A" not in ssh_command and "-o ForwardAgent=yes" not in ssh_command:

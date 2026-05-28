@@ -1313,11 +1313,19 @@ def _list_warm_pods(v1, gpu_type: str = None, state: str = None) -> list:
 
 def _create_warm_pod(gpu_type: str, gpu_count: int) -> str:
     pod_name = f"gpu-dev-warm-{gpu_type}-{uuid.uuid4().hex[:6]}"
+    k8s_client = get_k8s_client()
     create_pod(
-        get_k8s_client(), pod_name, gpu_count, gpu_type,
+        k8s_client, pod_name, gpu_count, gpu_type,
         github_public_key="", user_id="warm", warm=True, pytorch_ref="master",
         is_new_disk=True,  # ephemeral home → set up shell env (.zshrc etc.)
     )
+    # Pre-create the SSH NodePort service now (off the claim critical path). The
+    # selector (reservation=<podname>) is stable, so the claim just reuses it.
+    try:
+        node_port = find_available_node_port(k8s_client)
+        create_service(k8s_client, pod_name, node_port, ssh_port=22)
+    except Exception as svc_e:
+        logger.warning(f"warm pod {pod_name} service pre-create failed: {svc_e}")
     logger.info(f"Created warm pod {pod_name} ({gpu_count}x {gpu_type})")
     return pod_name
 
@@ -1340,6 +1348,10 @@ def reconcile_warm_pool() -> dict:
                 if phase in ("Failed", "Succeeded") or stale:
                     try:
                         v1.delete_namespaced_pod(p.metadata.name, "gpu-dev")
+                        try:
+                            v1.delete_namespaced_service(f"{p.metadata.name}-ssh", "gpu-dev")
+                        except Exception:
+                            pass
                         recycled += 1
                     except Exception as de:
                         logger.warning(f"warm recycle delete failed for {p.metadata.name}: {de}")
@@ -1455,8 +1467,14 @@ def try_claim_warm_pod(body: dict) -> bool:
         })
         record_trace_event(trace_data, "ddb_record_written")
 
-        node_port = find_available_node_port(k8s_client)
-        create_service(k8s_client, pod_name, node_port, ssh_port=22)
+        # Reuse the service pre-created at warm-pod birth; create one only if it's
+        # somehow missing (keeps the slow find-port + create off the hot path).
+        try:
+            svc = v1.read_namespaced_service(f"{pod_name}-ssh", "gpu-dev")
+            node_port = svc.spec.ports[0].node_port
+        except Exception:
+            node_port = find_available_node_port(k8s_client)
+            create_service(k8s_client, pod_name, node_port, ssh_port=22)
         record_trace_event(trace_data, "ssh_service_created")
         node_public_ip = get_pod_node_public_ip(pod_name)
         node_private_ip = get_pod_node_private_ip(pod_name)
