@@ -5,6 +5,7 @@ Reserve and manage GPU development servers
 
 import click
 import os
+import sys
 import time
 from typing import Optional
 from rich.console import Console
@@ -625,10 +626,9 @@ def main(ctx: click.Context) -> None:
     help="Pytorch ref to pre-stage in /home/dev/pytorch: a branch/tag, a PR (pr/123, #123, or bare 123), or a commit sha. Defaults to master; 'none' to skip. Ignored with --disk.",
 )
 @click.option(
-    "--direct",
-    is_flag=True,
-    default=False,
-    help="Try a synchronous warm-pool claim (sub-second) via the Lambda Function URL instead of SQS. Falls back to the standard SQS flow if no warm pod is available or the request isn't warm-eligible. Requires lambda:InvokeFunctionUrl.",
+    "--direct/--no-direct",
+    default=True,
+    help="Use the synchronous warm-pool fast path (sub-second, via the Lambda Function URL) when eligible. On by default; falls back to SQS automatically if there's no warm pod / not eligible / no access. --no-direct forces SQS.",
 )
 @click.option(
     "--node-label",
@@ -749,6 +749,12 @@ def reserve(
             max_gpus = gpu_configs[gpu_type]["max_gpus"]
         else:
             max_gpus = None  # Will be set later in interactive mode
+
+        # --no-persist and --disk contradict each other (ephemeral vs named disk).
+        # Fail fast rather than silently dropping the disk (no_persist used to win).
+        if no_persist and disk and disk.lower() != "none":
+            rprint("[red]❌ --no-persist and --disk are mutually exclusive — drop one.[/red]")
+            sys.exit(2)
 
         if use_interactive:
             # Interactive mode - gather parameters interactively
@@ -1376,12 +1382,12 @@ def reserve(
 
             max_gpus = gpu_configs[gpu_type]["max_gpus"]
 
-            # Fast path: synchronous warm-pool claim (opt-in via --direct). Only
-            # for single-node, ephemeral, default-image, on-demand requests — the
-            # server re-checks eligibility and we fall back to SQS otherwise.
+            # Fast path: synchronous warm-pool claim (default; --no-direct opts out).
+            # Single-node, ephemeral, default-image, on-demand only — the server
+            # re-checks eligibility and we fall back to SQS silently otherwise.
             if direct and gpu_count <= max_gpus and not disk and not dockerfile_s3_key and not dockerimage and not spot:
+                live.stop()
                 _t0 = time.time()
-                rprint("[cyan]⚡ Trying instant claim...[/cyan]")
                 direct_res = reservation_mgr.claim_direct(
                     user_id=user_info["user_id"], gpu_count=gpu_count, gpu_type=gpu_type,
                     duration_hours=hours, name=name,
@@ -1389,13 +1395,8 @@ def reserve(
                 if direct_res:
                     _show_direct_success(direct_res, time.time() - _t0)
                     return
-                _reason = getattr(reservation_mgr, "_direct_reason", None)
-                if _reason in ("url_unavailable", "request_failed"):
-                    rprint("[dim]Instant claim unavailable (--direct needs lambda:InvokeFunctionUrl) — using standard reservation...[/dim]")
-                elif _reason == "no_warm_pod":
-                    rprint("[dim]No warm pod ready — using standard reservation...[/dim]")
-                else:
-                    rprint("[dim]Instant claim unavailable — using standard reservation...[/dim]")
+                live.start()
+                live.update(Spinner("dots", text="📡 Submitting reservation request..."))
 
             if gpu_count > max_gpus:
                 # Multinode reservation

@@ -573,16 +573,37 @@ class ReservationManager:
             return None
 
     def _get_direct_url(self) -> Optional[str]:
-        """Function URL for synchronous claims (cached). None if unavailable."""
+        """Function URL for synchronous claims. Cached in-process and on disk
+        (~/.config/gpu-dev/direct-url.json, keyed by region) so we skip the
+        get_function_url_config lookup on subsequent runs."""
         if getattr(self, "_direct_url", None) is not None:
             return self._direct_url or None
+        region = self.config.aws_region
+        cache_path = os.path.expanduser("~/.config/gpu-dev/direct-url.json")
+        cache = {}
         try:
-            lam = self.config.session.client("lambda", region_name=self.config.aws_region)
+            with open(cache_path) as f:
+                cache = json.load(f)
+            if cache.get(region):
+                self._direct_url = cache[region]
+                return self._direct_url
+        except Exception:
+            cache = {}
+        try:
+            lam = self.config.session.client("lambda", region_name=region)
             resp = lam.get_function_url_config(
                 FunctionName=f"{self.config.prefix}-reservation-processor", Qualifier="live")
             self._direct_url = resp.get("FunctionUrl", "")
         except Exception:
             self._direct_url = ""
+        if self._direct_url:
+            try:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                cache[region] = self._direct_url
+                with open(cache_path, "w") as f:
+                    json.dump(cache, f)
+            except Exception:
+                pass
         return self._direct_url or None
 
     def _signed_post(self, url: str, payload: dict) -> Optional[dict]:
