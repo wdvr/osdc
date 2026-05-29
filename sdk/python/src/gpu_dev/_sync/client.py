@@ -70,6 +70,7 @@ class GpuDev:
         docker_image: str | None = None,
         ref: str | None = None,
         spot: bool = False,
+        direct: bool = True,
         wait: bool = True,
         timeout_minutes: int | None = None,
         on_progress: "Callable[[str, float], None] | bool | None" = None,
@@ -120,6 +121,36 @@ class GpuDev:
             )
 
         user_info = self._auth()
+
+        # Fast path: synchronous warm-pool claim (default). Single-node, ephemeral,
+        # default-image, on-demand only; the server re-checks and we fall back to
+        # SQS on any miss. Returns an already-active Sandbox (no polling).
+        if direct and not disk_name and not docker_image and not spot and gpu_count <= max(1, max_gpus):
+            res = self._backend.claim_direct({
+                "user_id": user_info["user_id"],
+                "github_user": user_info["github_user"],
+                "gpu_type": gpu_type_lower,
+                "gpu_count": gpu_count,
+                "duration_hours": hours,
+                "name": name,
+                "ref": ref,
+            })
+            if res:
+                info = ReservationInfo(
+                    id=res.get("reservation_id"),
+                    status=ReservationStatus.ACTIVE,
+                    gpu_type=gpu_type_lower,
+                    gpu_count=gpu_count,
+                    name=name,
+                    user_id=user_info["user_id"],
+                    ssh_command=res.get("ssh_command"),
+                    pod_name=res.get("pod_name"),
+                    node_ip=res.get("node_ip"),
+                    fqdn=res.get("fqdn"),
+                    expires_at=res.get("expires_at"),
+                )
+                return Sandbox(info, self._backend, user_info["user_id"])
+
         reservation_id = self._backend.create_reservation({
             "user_id": user_info["user_id"],
             "github_user": user_info["github_user"],
