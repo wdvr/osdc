@@ -2946,16 +2946,40 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
 
 
 def _show_direct_success(res: dict, elapsed: float) -> None:
-    """Print the success block for an instant (--direct) warm-pool claim."""
+    """Print the success block for an instant (--direct) warm-pool claim,
+    matching the normal reserve output (SSH config + VS Code/Cursor remote)."""
+    from gpu_dev_cli.reservations import (
+        create_ssh_config_for_reservation, _generate_vscode_command, _generate_cursor_command)
     rid = res.get("reservation_id", "") or ""
+    ssh_command = res.get("ssh_command", "") or ""
+    pod_name = res.get("pod_name", "") or ""
+    fqdn = res.get("fqdn") or ""
+
     rprint(f"\n[green]✅ Instant reservation ready in {elapsed:.1f}s![/green]")
     rprint(f"[bold]📋 Reservation ID:[/bold] {rid}")
-    if res.get("ssh_command"):
-        rprint(f"[bold]🖥️  SSH Command:[/bold] {res['ssh_command']}")
+    if res.get("expires_at"):
+        rprint(f"[dim]⏰ Valid until: {res['expires_at']}[/dim]")
     if rid:
         rprint(f"[bold]⚡ Quick Connect:[/bold] gpu-dev connect {rid[:8]}")
-    if res.get("expires_at"):
-        rprint(f"[dim]⏰ Expires: {res['expires_at']}[/dim]")
+
+    # Build the per-reservation SSH config so `ssh <pod>` and connect work cleanly.
+    use_include = False
+    if fqdn and pod_name and rid:
+        try:
+            _cfg, use_include = create_ssh_config_for_reservation(fqdn, pod_name, rid, None)
+        except Exception:
+            pass
+    if pod_name and use_include:
+        rprint(f"[bold]🖥️  SSH Command:[/bold] ssh {pod_name}")
+    elif ssh_command:
+        rprint(f"[bold]🖥️  SSH Command:[/bold] {ssh_command}")
+
+    vsc = _generate_vscode_command(ssh_command) if ssh_command else None
+    cur = _generate_cursor_command(ssh_command) if ssh_command else None
+    if vsc:
+        rprint(f"[bold]💻 VS Code Remote:[/bold] {vsc}")
+    if cur:
+        rprint(f"[bold]🖥️ Cursor Remote:[/bold] {cur}")
 
 
 def _format_gpu_display(gpu_count, gpu_type):
