@@ -115,7 +115,14 @@ resource "aws_iam_role_policy" "reservation_processor_policy" {
         Action = [
           "lambda:InvokeFunction"
         ]
-        Resource = aws_lambda_function.availability_updater.arn
+        Resource = [
+          aws_lambda_function.availability_updater.arn,
+          # Self-invoke for async warm-pool refill + EFS mount after a claim.
+          # Construct the ARN (don't reference the function resource) to avoid a
+          # dependency cycle: function -> role -> role_policy.
+          "arn:aws:lambda:${local.current_config.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.prefix}-reservation-processor",
+          "arn:aws:lambda:${local.current_config.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.prefix}-reservation-processor:*"
+        ]
       },
       {
         Effect = "Allow"

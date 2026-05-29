@@ -1182,6 +1182,70 @@ def trigger_availability_update():
         raise
 
 
+def trigger_warm_reconcile():
+    """Async self-invoke to refill the warm pool immediately after a claim,
+    instead of waiting up to a minute for the scheduled tick."""
+    try:
+        fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+        if not fn:
+            return
+        boto3.client("lambda").invoke(
+            FunctionName=fn, InvocationType="Event",
+            Payload=json.dumps({"warm_pool_reconcile": True}))
+    except Exception as e:
+        logger.warning(f"warm reconcile trigger failed: {e}")
+
+
+def trigger_efs_mount(reservation_id: str, user_id: str, pod_name: str):
+    """Async self-invoke to mount the user's per-user EFS into a claimed warm
+    pod — off the claim's critical path (the pod is already active)."""
+    try:
+        fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+        if not fn or not user_id or not pod_name:
+            return
+        boto3.client("lambda").invoke(
+            FunctionName=fn, InvocationType="Event",
+            Payload=json.dumps({"action": "mount_efs", "reservation_id": reservation_id,
+                                "user_id": user_id, "pod_name": pod_name}))
+    except Exception as e:
+        logger.warning(f"efs mount trigger failed: {e}")
+
+
+def mount_user_efs_into_pod(body: dict) -> bool:
+    """Mount the user's per-user EFS at /shared-personal inside a claimed warm
+    pod (EFS is NFS, so no node-attach needed — we mount it at runtime)."""
+    user_id = body.get("user_id")
+    pod_name = body.get("pod_name")
+    if not user_id or not pod_name:
+        return True
+    try:
+        fs_id = create_or_find_user_efs(user_id)
+        if not fs_id:
+            return True
+        ensure_efs_mount_target(fs_id)
+        dns = get_efs_mount_dns(fs_id)
+        if not dns:
+            return True
+        user_dir = _nvme_cache_user_dir(user_id)
+        mount_cmd = (
+            "command -v mount.nfs4 >/dev/null 2>&1 || "
+            "(apt-get update -y && apt-get install -y nfs-common) >/dev/null 2>&1 || true\n"
+            "mkdir -p /shared-personal\n"
+            "mountpoint -q /shared-personal || "
+            f"mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 {dns}:/ /shared-personal\n"
+            f"mkdir -p /shared-personal/{user_dir} && chown 1081:1081 /shared-personal/{user_dir} 2>/dev/null || true\n"
+            "chmod 755 /shared-personal 2>/dev/null || true"
+        )
+        v1 = client.CoreV1Api(get_k8s_client())
+        stream(v1.connect_get_namespaced_pod_exec, pod_name, "gpu-dev",
+               command=["/bin/bash", "-c", mount_cmd], container="gpu-dev",
+               stderr=True, stdin=False, stdout=True, tty=False)
+        logger.info(f"Mounted user EFS {fs_id} into {pod_name} at /shared-personal")
+    except Exception as e:
+        logger.warning(f"mount_user_efs_into_pod failed for {pod_name}: {e}")
+    return True
+
+
 def update_reservation_error(reservation_id: str, error_message: str, error_field: str = "failure_reason") -> None:
     """Update reservation with error message in any error field"""
     try:
@@ -1586,6 +1650,10 @@ def try_claim_warm_pod(body: dict) -> bool:
             except Exception as te:
                 logger.warning(f"warm claim trace store failed: {te}")
         logger.info(f"Claimed warm pod {pod_name} for reservation {reservation_id}")
+        # Refill the consumed slot now (don't wait for the 1-min tick), and mount
+        # the user's EFS — both async so they don't slow the claim response.
+        trigger_warm_reconcile()
+        trigger_efs_mount(reservation_id, user_id, pod_name)
         try:
             trigger_availability_update()
         except Exception:
@@ -1650,6 +1718,10 @@ def handler(event, context):
         if event.get("warm_pool_reconcile"):
             logger.info("Reconciling warm pool")
             return reconcile_warm_pool()
+
+        # Async: mount a claimed warm pod's per-user EFS (self-invoked by the claim).
+        if event.get("action") == "mount_efs":
+            return {"ok": mount_user_efs_into_pod(event)}
 
         # Check if this is a scheduled event for queue processing
         if event.get("source") == "cloudwatch.schedule":
