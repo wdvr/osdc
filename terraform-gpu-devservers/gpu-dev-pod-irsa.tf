@@ -98,6 +98,18 @@ resource "aws_iam_role_policy" "gpu_dev_pod_policy" {
         Resource = "*"
       },
       {
+        # Newer Anthropic models on Bedrock are gated behind an AWS Marketplace
+        # subscription. The pod hits Bedrock directly (IRSA, no admin pre-subscribe),
+        # so allow it to view + self-subscribe — otherwise Claude Code 403s with
+        # "aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe".
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe"
+        ]
+        Resource = "*"
+      },
+      {
         Effect = "Allow"
         Action = [
           "s3:GetObject",
