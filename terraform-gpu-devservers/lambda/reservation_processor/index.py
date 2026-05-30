@@ -86,6 +86,9 @@ _DEFAULT_WARM_TARGETS = {
     "cpu-x86": 5, "cpu-arm": 5,
     "h100-mig-1g": 2, "h100-mig-2g": 2, "h100-mig-3g": 2,
     "b200-mig-1g": 2, "b200-mig-2g": 2, "b200-mig-3g": 2,
+    # Full-GPU warm pods: instant single-GPU claims. Safe because a 2/4/8-GPU (or
+    # full-MIG-node) request evicts them via _evict_warm_for_capacity to free the node.
+    "h100": 1, "b200": 1,
 }
 try:
     WARM_POOL_TARGETS = (
@@ -386,6 +389,52 @@ def get_k8s_client():
     return _k8s_client
 
 
+def _evict_warm_for_capacity(v1, gpu_type, gpus_requested, ready_nodes):
+    """Free GPU capacity by deleting disposable warm-ready pods when no node has
+    enough room otherwise. Warm pods are recreated by the reconciler. Evicts the
+    minimum count on a SINGLE node that satisfies the request (preferring the most
+    already-free node, so we evict as few as possible). Returns (az, node) or
+    (None, None). This is what lets warm pods coexist with 2/4/8-GPU and
+    full-MIG-node requests — the request reclaims the node in ~pod-termination time."""
+    try:
+        resource_name = get_gpu_resource_name(gpu_type)
+        by_node = {}
+        for p in _list_warm_pods(v1, gpu_type=gpu_type, state="ready"):
+            node = p.spec.node_name if p.spec else None
+            if not node or p.status.phase != "Running":
+                continue
+            held = 0
+            for c in (p.spec.containers or []):
+                if c.resources and c.resources.requests:
+                    held += int(c.resources.requests.get(resource_name, "0"))
+            if held > 0:
+                by_node.setdefault(node, []).append((p, held))
+        for n in ready_nodes:  # most-free first → fewest evictions
+            freed, evict = 0, []
+            for p, held in by_node.get(n["node_name"], []):
+                if n["available_gpus"] + freed >= gpus_requested:
+                    break
+                evict.append(p)
+                freed += held
+            if evict and n["available_gpus"] + freed >= gpus_requested:
+                for p in evict:
+                    try:
+                        v1.delete_namespaced_pod(p.metadata.name, "gpu-dev")
+                        try:
+                            v1.delete_namespaced_service(f"{p.metadata.name}-ssh", "gpu-dev")
+                        except Exception:
+                            pass
+                    except Exception as de:
+                        logger.warning(f"warm evict delete failed for {p.metadata.name}: {de}")
+                logger.info(
+                    f"Evicted {len(evict)} warm {gpu_type} pod(s) on {n['node_name']} to free "
+                    f"{freed} GPU(s) for a {gpus_requested}-GPU request")
+                return n["az"], n["node_name"]
+    except Exception as e:
+        logger.warning(f"warm eviction for capacity failed: {e}")
+    return None, None
+
+
 def get_target_az_for_reservation(gpu_type, gpus_requested):
     """
     Dynamically determine which AZ the pod will land in based on available capacity.
@@ -472,7 +521,20 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
             return target_az, target_node
 
         if all_ready_nodes:
-            # No single node has enough GPUs — return AZ of the node with the most available GPUs
+            # No single node fits as-is. Before parking the pod Pending, free
+            # capacity by evicting disposable warm-ready pods (reconciler recreates
+            # them). This lets warm pods coexist with 2/4/8-GPU and full-MIG-node
+            # requests instead of blocking them.
+            if gpu_type in WARM_POOL_TARGETS:
+                ev_az, ev_node = _evict_warm_for_capacity(
+                    v1, gpu_type, gpus_requested,
+                    sorted(all_ready_nodes, key=lambda n: -n['available_gpus']),
+                )
+                if ev_node:
+                    logger.info(f"Eviction freed room for {gpu_type} {gpus_requested}gpu on {ev_node}")
+                    return ev_az, ev_node
+
+            # Still nothing — return AZ of the node with the most available GPUs
             # so disk lands in the right AZ. No node hint (pod will Pending until something frees up).
             best_node = max(all_ready_nodes, key=lambda n: n['available_gpus'])
             target_az = best_node['az']
