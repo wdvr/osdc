@@ -28,7 +28,7 @@ jobs:
             echo "::error::Tag version ($TAG_VERSION) does not match package version ($PKG_VERSION)"
             exit 1
           fi
-      - name: Build package (gpu-dev: CLI + SDK)
+      - name: "Build package (gpu-dev = CLI + SDK)"
         run: uv build
       - name: Generate attestations
         uses: actions/attest-build-provenance@v2
