@@ -90,7 +90,7 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
                 export TORCH_CUDA_ARCH_LIST="9.0;10.0"
                 export BUILD_TEST=0
                 export MAX_JOBS=128
-                export CCACHE_DIR=/ccache_shared/build-node
+                export CCACHE_DIR=/ccache_shared
                 export CMAKE_C_COMPILER_LAUNCHER=ccache
                 export CMAKE_CXX_COMPILER_LAUNCHER=ccache
                 export CMAKE_CUDA_COMPILER_LAUNCHER=ccache
