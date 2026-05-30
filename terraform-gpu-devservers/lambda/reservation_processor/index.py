@@ -1517,6 +1517,12 @@ def reconcile_warm_pool() -> dict:
             for p in pods:
                 labels = p.metadata.labels or {}
                 phase = p.status.phase
+                # Claimed pods are real reservations now (they keep the app label but
+                # warm-state flips to "claimed"). They are NOT standby: don't count
+                # them toward the target (else the pool never refills after a claim)
+                # and don't recycle them here (expiry/cancel own their lifecycle).
+                if labels.get("warm-state") == "claimed":
+                    continue
                 created_ts = p.metadata.creation_timestamp.timestamp() if p.metadata.creation_timestamp else time.time()
                 age_s = time.time() - created_ts
                 stale = labels.get("warm-state") == "ready" and age_s > max_age_s
