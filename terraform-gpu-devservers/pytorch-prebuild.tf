@@ -128,11 +128,14 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
                 # dies on per-file round-trips (0 files in 13min observed). tar|zstd reads
                 # the small files from LOCAL disk and writes ONE sequential stream to EFS.
                 # zstd -T0 uses all cores; .sha is written last as the completion marker.
-                echo "[prebuild] publishing tarball -> $PUB.tar.zst"
-                tar -C /home/dev -cf - pytorch | zstd -1 -T0 -q -o "$PUB.tar.zst.tmp" || { echo "[prebuild] publish FAILED"; exit 1; }
-                mv "$PUB.tar.zst.tmp" "$PUB.tar.zst"
+                # gzip (not zstd): zstd isn't reliably present in the gpu-dev image;
+                # /usr/bin/gzip is base. gzip -1 is fast enough and busybox tar -xz
+                # decompresses it on the DaemonSet side with no extra package.
+                echo "[prebuild] publishing tarball -> $PUB.tar.gz"
+                tar -C /home/dev -cf - pytorch | /usr/bin/gzip -1 > "$PUB.tar.gz.tmp" || { echo "[prebuild] publish FAILED"; exit 1; }
+                mv "$PUB.tar.gz.tmp" "$PUB.tar.gz"
                 echo "$TARGET" > "$PUB.sha"
-                echo "[prebuild] published $(du -sh "$PUB.tar.zst" | cut -f1) @ $TARGET"
+                echo "[prebuild] published $(du -sh "$PUB.tar.gz" | cut -f1) @ $TARGET"
                 ccache -s 2>/dev/null | grep -iE 'hits|misses' | head
                 echo "[prebuild] DONE $TARGET"
               EOT
