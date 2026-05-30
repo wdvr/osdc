@@ -466,11 +466,17 @@ resource "kubernetes_daemonset" "pytorch_snapshot" {
               if [ -f "$PREBUILT.sha" ]; then
                 BNEW=$(cat "$PREBUILT.sha" 2>/dev/null || echo none)
                 BOLD=$(cat "$BUILT/.sha" 2>/dev/null || echo never)
-                if [ "$BNEW" != "$BOLD" ] && [ -f "$PREBUILT.tar.gz" ]; then
+                if [ "$BNEW" != "$BOLD" ] && { [ -f "$PREBUILT.tar.zst" ] || [ -f "$PREBUILT.tar.gz" ]; }; then
                   echo "[nvme-pytorch] built tree $BOLD -> $BNEW"
                   rm -rf /mnt/nvme/pytorch-built.tmp
                   mkdir -p /mnt/nvme/pytorch-built.tmp
-                  if gzip -dc "$PREBUILT.tar.gz" | tar -x -C /mnt/nvme/pytorch-built.tmp --strip-components=1; then
+                  if [ -f "$PREBUILT.tar.zst" ]; then
+                    apk add --no-cache zstd >/dev/null 2>&1 || true
+                    DECOMP="zstd -dc $PREBUILT.tar.zst"
+                  else
+                    DECOMP="gzip -dc $PREBUILT.tar.gz"
+                  fi
+                  if $DECOMP | tar -x -C /mnt/nvme/pytorch-built.tmp --strip-components=1; then
                     echo "$BNEW" > /mnt/nvme/pytorch-built.tmp/.sha
                     rm -rf /mnt/nvme/pytorch-built.old
                     [ -d "$BUILT" ] && mv "$BUILT" /mnt/nvme/pytorch-built.old

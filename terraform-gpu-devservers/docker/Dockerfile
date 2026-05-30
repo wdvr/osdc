@@ -37,7 +37,9 @@ RUN for attempt in 1 2 3; do \
         ccache \
         htop \
         tree \
-        rsync
+        rsync \
+        zstd \
+        pigz
 # Install Node.js 20 from NodeSource (required for Claude CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs

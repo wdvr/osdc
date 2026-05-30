@@ -128,14 +128,24 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
                 # dies on per-file round-trips (0 files in 13min observed). tar|zstd reads
                 # the small files from LOCAL disk and writes ONE sequential stream to EFS.
                 # zstd -T0 uses all cores; .sha is written last as the completion marker.
-                # gzip (not zstd): zstd isn't reliably present in the gpu-dev image;
-                # /usr/bin/gzip is base. gzip -1 is fast enough and busybox tar -xz
-                # decompresses it on the DaemonSet side with no extra package.
-                echo "[prebuild] publishing tarball -> $PUB.tar.gz"
-                tar -C /home/dev -cf - pytorch | /usr/bin/gzip -1 > "$PUB.tar.gz.tmp" || { echo "[prebuild] publish FAILED"; exit 1; }
-                mv "$PUB.tar.gz.tmp" "$PUB.tar.gz"
+                # Prefer zstd (faster + smaller, esp. decompress on every node) when
+                # present in the image; fall back to gzip (/usr/bin/gzip is base).
+                # We rm the other format so exactly one artifact exists and the
+                # DaemonSet picks it unambiguously. .sha is written last (the gate).
+                ZBIN=$(command -v zstd 2>/dev/null || { [ -x /usr/local/bin/zstd ] && echo /usr/local/bin/zstd; } || true)
+                if [ -n "$ZBIN" ]; then
+                  echo "[prebuild] publishing tarball (zstd) -> $PUB.tar.zst"
+                  rm -f "$PUB.tar.gz"
+                  tar -C /home/dev -cf - pytorch | "$ZBIN" -3 -T0 -q -o "$PUB.tar.zst.tmp" || { echo "[prebuild] publish FAILED"; exit 1; }
+                  mv "$PUB.tar.zst.tmp" "$PUB.tar.zst"; PUBFILE="$PUB.tar.zst"
+                else
+                  echo "[prebuild] publishing tarball (gzip) -> $PUB.tar.gz"
+                  rm -f "$PUB.tar.zst"
+                  tar -C /home/dev -cf - pytorch | /usr/bin/gzip -1 > "$PUB.tar.gz.tmp" || { echo "[prebuild] publish FAILED"; exit 1; }
+                  mv "$PUB.tar.gz.tmp" "$PUB.tar.gz"; PUBFILE="$PUB.tar.gz"
+                fi
                 echo "$TARGET" > "$PUB.sha"
-                echo "[prebuild] published $(du -sh "$PUB.tar.gz" | cut -f1) @ $TARGET"
+                echo "[prebuild] published $(du -sh "$PUBFILE" | cut -f1) @ $TARGET"
                 ccache -s 2>/dev/null | grep -iE 'hits|misses' | head
                 echo "[prebuild] DONE $TARGET"
               EOT
