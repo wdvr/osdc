@@ -4,7 +4,7 @@ Reserve a **warm** GPU box in ~1s, run code on it, and auto-clean up — from Py
 or one CLI command. Backed by a pool of pre-booted pods with **PyTorch prebuilt**
 (viable/strict), so `import torch` works instantly with no build.
 
-> Requires `gpu-dev` / `gpu-dev-sdk` ≥ 0.7.0: `pip install --upgrade gpu-dev gpu-dev-sdk`
+> Requires `gpu-dev` ≥ 0.7.1 (CLI **and** SDK in one package): `pip install --upgrade gpu-dev`
 
 ## Python SDK
 
