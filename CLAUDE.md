@@ -72,6 +72,8 @@ Big push on warm pools + instant claims + prebuilt pytorch. Tracking state here 
 - [ ] SSH CA certs to drop the ~0.33s `kubectl exec` key injection on warm claim (auth-model change).
 - [ ] AMI baker re-bakes on every base-EKS-AMI roll (5 baked AMIs in 2 days): pin the base AMI version + clean up old `gpu-dev-baked-*`.
 - [ ] Warm pods: gate `warm-state=ready` on staging completion (currently static label; reflink copy is fast so low risk).
+- [ ] **Image-rebuild propagation gap:** pods use `imagePullPolicy=IfNotPresent` + `:latest`, so a rebuilt image does NOT reach pods until the node re-pulls. After every image rebuild you must `kubectl rollout restart daemonset gpu-dev-image-prepuller -n kube-system` (re-pull on all GPU nodes, ~5min) **and** recycle warm pods, else pods run the stale cached image (this is why claude/PATH looked unfixed). Automate later: reconciler recycles warm pods when the `:latest` digest changes (and/or trigger the prepuller restart from the image-build step).
+- [ ] **Prebuilt build archs:** the build must use `TORCH_CUDA_ARCH_LIST=9.0a;10.0a` (not plain `9.0;10.0`) — the `a` variants enable Hopper wgmma/TMA + Blackwell arch-specific kernels (cutlass/flash-attention) that CI/nightly ship. CUDA 12.8 supports both.
 
 ## Issues I found with the description above
 
