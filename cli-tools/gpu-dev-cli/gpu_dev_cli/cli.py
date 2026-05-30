@@ -636,6 +636,8 @@ def main(ctx: click.Context) -> None:
               help="Acknowledge spot instance (~1/3 cost, may be preempted with 2-min notice). Required for spot-only types.")
 @click.option("--fast-cache", is_flag=True, default=False, hidden=True,
               help="Use NVMe local cache for faster session restore (experimental).")
+@click.option("--no-connect", is_flag=True, default=False,
+              help="Don't auto-SSH into the pod once active. By default an interactive (TTY) reserve drops you straight in; scripts/non-TTY never auto-connect.")
 @click.pass_context
 def reserve(
     ctx: click.Context,
@@ -657,6 +659,7 @@ def reserve(
     disk: Optional[str],
     ref: Optional[str],
     node_label: tuple,
+    no_connect: bool = False,
     spot: bool = False,
     fast_cache: bool = False,
 ) -> None:
@@ -1392,6 +1395,7 @@ def reserve(
                     github_user=user_info["github_user"], ref=ref)
                 if direct_res:
                     _show_direct_success(direct_res, time.time() - _t0)
+                    _maybe_autoconnect(ctx, direct_res.get("reservation_id"), no_connect)
                     return
                 live.start()
                 live.update(Spinner("dots", text="📡 Submitting reservation request..."))
@@ -1492,9 +1496,10 @@ def reserve(
                     rprint(
                         f"[yellow]💡 Use 'gpu-dev show {reservation_ids[0][:8]}' to check connection details later[/yellow]"
                     )
-                elif trace:
-                    # Display timing trace
-                    reservation_mgr.display_reservation_trace(reservation_ids[0])
+                else:
+                    if trace:
+                        reservation_mgr.display_reservation_trace(reservation_ids[0])
+                    _maybe_autoconnect(ctx, reservation_ids[0], no_connect)
         else:
             rprint("[red]❌ Failed to create reservation[/red]")
 
@@ -2947,6 +2952,20 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
     except Exception as e:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
+
+
+def _maybe_autoconnect(ctx: click.Context, rid: Optional[str], no_connect: bool) -> None:
+    """Drop the user straight into the pod once it's active — but only for an
+    interactive (TTY) reserve. Scripts / non-TTY just get the reservation back so
+    pipelines aren't hijacked into an ssh session. --no-connect always opts out."""
+    import sys
+    if no_connect or not rid or not sys.stdout.isatty():
+        return
+    rprint("\n[dim]Connecting… (exit the shell to leave the reservation running; gpu-dev cancel to end it)[/dim]")
+    try:
+        ctx.invoke(connect, reservation_id=rid)
+    except Exception as e:
+        rprint(f"[yellow]Auto-connect failed ({e}). Connect manually: gpu-dev connect {str(rid)[:8]}[/yellow]")
 
 
 def _show_direct_success(res: dict, elapsed: float) -> None:
