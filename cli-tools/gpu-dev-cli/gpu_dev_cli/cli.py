@@ -2838,6 +2838,11 @@ def cancel(
             remove_ssh_config_for_reservation(reservation_id)
             rprint(
                 f"[green]✅ Reservation {reservation_id[:8]} cancelled[/green]")
+            # Cancelling from inside a gpu-dev pod kills the pod you're in — make the
+            # impending SSH drop expected instead of an abrupt "Broken pipe".
+            if os.environ.get("GPU_DEV_USER_ID"):
+                rprint(
+                    "[yellow]🛑 Shutting down this reservation — if you're connected to this pod, your session will close shortly.[/yellow]")
         else:
             rprint(
                 f"[red]❌ Failed to cancel reservation {reservation_id[:8]}[/red]")
