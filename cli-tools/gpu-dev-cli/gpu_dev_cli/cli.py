@@ -1383,7 +1383,7 @@ def reserve(
             # flag — direct is the only path). Single-node, ephemeral, default-image,
             # on-demand only; the server re-checks eligibility and we fall back to
             # SQS silently on any miss / no warm pod / no Function-URL access.
-            if gpu_count <= max_gpus and not disk and not dockerfile_s3_key and not dockerimage and not spot:
+            if gpu_count <= max_gpus and not disk and not ref and not dockerfile_s3_key and not dockerimage and not spot:
                 live.stop()
                 _t0 = time.time()
                 direct_res = reservation_mgr.claim_direct(

@@ -125,7 +125,7 @@ class GpuDev:
         # Fast path: synchronous warm-pool claim (default). Single-node, ephemeral,
         # default-image, on-demand only; the server re-checks and we fall back to
         # SQS on any miss. Returns an already-active Sandbox (no polling).
-        if direct and not disk_name and not docker_image and not spot and gpu_count <= max(1, max_gpus):
+        if direct and not disk_name and not ref and not docker_image and not spot and gpu_count <= max(1, max_gpus):
             res = self._backend.claim_direct({
                 "user_id": user_info["user_id"],
                 "github_user": user_info["github_user"],
