@@ -5302,6 +5302,13 @@ if [[ -n "\$MULTINODE_HOSTS" ]]; then
 fi
 EOF_ZSHRC_EXT
 
+                        # Ensure ~/.local/bin (Claude Code self-update, pip --user) is on PATH
+                        # even on persistent disks whose own rc may reset PATH — these managed
+                        # _ext files are sourced last by ~/.bashrc / ~/.zshrc. Single-quoted so
+                        # $HOME/$PATH expand at the user's shell time, not now.
+                        echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/dev/.bashrc_ext
+                        echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/dev/.zshrc_ext
+
                         chown 1081:1081 /home/dev/.bashrc_ext /home/dev/.zshrc_ext
                         echo "[STARTUP] ✓ Shell extension files written"
 
