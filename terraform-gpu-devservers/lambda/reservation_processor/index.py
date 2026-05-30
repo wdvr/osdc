@@ -5634,20 +5634,30 @@ GITCACHESCRIPT
                         # /home/dev/pytorch, then checks out the requested ref (PR/commit/branch).
                         cat > /usr/local/bin/stage-pytorch << 'STAGEPYTORCH'
 #!/bin/bash
-# stage-pytorch [ref] — drop pytorch into /home/dev/pytorch from the in-cluster
-# worktree snapshot, then optionally check out a PR / commit / branch.
+# stage-pytorch [ref] — drop pytorch into /home/dev/pytorch. Default (no ref):
+# the PREBUILT viable/strict tree (source + build/ + .so) so "import torch" works
+# instantly with no pod-side build. With a ref: same tree (build/ stays warm so a
+# rebuild is incremental), then checks out the PR/commit/branch.
 REF="$1"
 CACHE_URL="http://git-cache.management.svc.cluster.local:8080"
 DEST=/home/dev/pytorch
+BUILT=/nvme-pytorch-built
+SRC=/nvme-pytorch
 
 if ! command -v git >/dev/null 2>&1; then echo "[pytorch] git unavailable, skipping"; exit 0; fi
 
+PREBUILT_DROPPED=no
 if [ -d "$DEST/.git" ]; then
     echo "[pytorch] $DEST already present, skipping drop-in"
-elif [ -d /nvme-pytorch/.git ]; then
-    echo "[pytorch] Copying worktree from node-local NVMe..."
+elif [ -f "$BUILT/.sha" ]; then
+    echo "[pytorch] Dropping in prebuilt tree (viable/strict, build/ + .so included)..."
     mkdir -p "$DEST"
-    cp -a --reflink=auto /nvme-pytorch/. "$DEST/" 2>/dev/null || cp -a /nvme-pytorch/. "$DEST/"
+    cp -a --reflink=auto "$BUILT/." "$DEST/" 2>/dev/null || cp -a "$BUILT/." "$DEST/"
+    PREBUILT_DROPPED=yes
+elif [ -d "$SRC/.git" ]; then
+    echo "[pytorch] Copying source worktree from node-local NVMe..."
+    mkdir -p "$DEST"
+    cp -a --reflink=auto "$SRC/." "$DEST/" 2>/dev/null || cp -a "$SRC/." "$DEST/"
 else
     echo "[pytorch] Fetching worktree snapshot from cache..."
     mkdir -p "$DEST"
@@ -5663,9 +5673,10 @@ fi
 cd "$DEST" || exit 0
 git config --global --add safe.directory "$DEST" 2>/dev/null || true
 
+REF_APPLIED=no
 case "$REF" in
     ""|master|main|MASTER|MAIN)
-        echo "[pytorch] master snapshot, no ref override" ;;
+        echo "[pytorch] no ref override (prebuilt viable/strict)" ;;
     *)
         FETCH="$REF"
         case "$REF" in
@@ -5676,13 +5687,27 @@ case "$REF" in
         esac
         echo "[pytorch] Checking out $REF (fetch $FETCH)..."
         if git fetch origin "$FETCH" 2>/dev/null; then
-            git checkout -f FETCH_HEAD 2>/dev/null || true
+            git checkout -f FETCH_HEAD 2>/dev/null && REF_APPLIED=yes
         else
             git fetch origin 2>/dev/null || true
-            git checkout -f "$REF" 2>/dev/null || echo "[pytorch] WARNING: could not check out $REF"
+            git checkout -f "$REF" 2>/dev/null && REF_APPLIED=yes || echo "[pytorch] WARNING: could not check out $REF"
         fi
         git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 2>/dev/null || true ;;
 esac
+
+# import torch with no build: only when the dropped-in .so still matches the tree
+# (no ref checkout changed the source). With a ref the .so is stale, but build/ is
+# warm so `pip install -e . --no-build-isolation` rebuilds incrementally and the
+# editable install then puts torch on sys.path.
+if [ "$PREBUILT_DROPPED" = "yes" ] && [ "$REF_APPLIED" = "no" ]; then
+    printf 'export PYTHONPATH="/home/dev/pytorch:$PYTHONPATH"\n' > /etc/profile.d/zz-pytorch.sh 2>/dev/null || true
+    for ext in /home/dev/.bashrc_ext /home/dev/.zshrc_ext; do
+        grep -q 'home/dev/pytorch' "$ext" 2>/dev/null || printf 'export PYTHONPATH="/home/dev/pytorch:$PYTHONPATH"\n' >> "$ext"
+    done
+    echo "[pytorch] PYTHONPATH set -> import torch ready (no build needed)"
+elif [ "$REF_APPLIED" = "yes" ]; then
+    echo "[pytorch] ref checked out; build/ warm -> rebuild: pip install -e . --no-build-isolation"
+fi
 
 chown -R 1081:1081 "$DEST" 2>/dev/null || true
 git rev-parse HEAD 2>/dev/null > /home/dev/.pytorch-ready || echo unknown > /home/dev/.pytorch-ready
@@ -6139,7 +6164,8 @@ EOF
                     ] + ([client.V1VolumeMount(name="shared-efs", mount_path="/shared-personal")] if efs_filesystem_id else [])
                     + ([client.V1VolumeMount(name="hugepages-2mi", mount_path="/dev/hugepages")] if _pod_uses_efa(gpu_count, gpu_type, is_multinode) else [])
                     + ([client.V1VolumeMount(name="nvme-cache", mount_path="/nvme-cache")] if use_persistent_disk else [])
-                    + ([client.V1VolumeMount(name="nvme-pytorch", mount_path="/nvme-pytorch", read_only=True)] if should_stage_pytorch else []),
+                    + ([client.V1VolumeMount(name="nvme-pytorch", mount_path="/nvme-pytorch", read_only=True),
+                        client.V1VolumeMount(name="nvme-pytorch-built", mount_path="/nvme-pytorch-built", read_only=True)] if should_stage_pytorch else []),
                     security_context=client.V1SecurityContext(
                         capabilities=client.V1Capabilities(
                             add=["IPC_LOCK", "SYS_ADMIN", "SYS_RESOURCE"]
@@ -6295,6 +6321,13 @@ EOF
                     name="nvme-pytorch",
                     host_path=client.V1HostPathVolumeSource(
                         path="/mnt/nvme/pytorch-worktree",
+                        type="DirectoryOrCreate"
+                    )
+                ),
+                client.V1Volume(
+                    name="nvme-pytorch-built",
+                    host_path=client.V1HostPathVolumeSource(
+                        path="/mnt/nvme/pytorch-built",
                         type="DirectoryOrCreate"
                     )
                 )
