@@ -700,6 +700,14 @@ def reserve(
             explicit_no_disk_from_param = True
             disk = None
 
+        # --ref implies ephemeral: staging only happens when no persistent disk is
+        # attached (a default disk would silently skip the ref). So a bare --ref
+        # (no explicit --disk) means "no persistent disk" — otherwise the ref is a
+        # no-op. --disk still wins (ref ignored, as documented).
+        if ref and ref.strip().lower() not in ("", "none") and not disk and not no_persist:
+            no_persist = True
+            rprint("[dim]--ref → ephemeral pod (no persistent disk) so the ref can be staged[/dim]")
+
         # Determine if we should use interactive mode
         use_interactive = interactive
         if use_interactive is None:

@@ -163,6 +163,9 @@ class GpuDev:
             "docker_image": docker_image,
             "ref": ref,
             "spot": spot,
+            # --ref implies ephemeral: staging is skipped when a persistent disk is
+            # attached, so a ref with no explicit disk means no persistent disk.
+            "no_persistent_disk": bool(ref and str(ref).strip().lower() not in ("", "none") and not disk_name),
         })
 
         info = ReservationInfo(
