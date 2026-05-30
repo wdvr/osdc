@@ -20,16 +20,21 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
-      - name: Verify tag matches package version
+      - name: Verify tag matches package versions (CLI + SDK)
         run: |
-          PKG_VERSION=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match package version ($PKG_VERSION)"
-            exit 1
+          CLI_VERSION=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          SDK_VERSION=$(uv run python -c "import tomllib; print(tomllib.load(open('sdk/python/pyproject.toml', 'rb'))['project']['version'])")
+          if [ "$CLI_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag ($TAG_VERSION) != gpu-dev version ($CLI_VERSION)"; exit 1
           fi
-      - name: Build package
-        run: uv build
+          if [ "$SDK_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag ($TAG_VERSION) != gpu-dev-sdk version ($SDK_VERSION)"; exit 1
+          fi
+      - name: Build packages (CLI + SDK)
+        run: |
+          uv build                              # gpu-dev (CLI) -> dist/
+          uv build sdk/python --out-dir dist    # gpu-dev-sdk    -> dist/
       - name: Generate attestations
         uses: actions/attest-build-provenance@v2
         with:
