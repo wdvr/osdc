@@ -626,11 +626,6 @@ def main(ctx: click.Context) -> None:
     help="Pytorch ref to pre-stage in /home/dev/pytorch: a branch/tag, a PR (pr/123, #123, or bare 123), or a commit sha. Defaults to master; 'none' to skip. Ignored with --disk.",
 )
 @click.option(
-    "--direct/--no-direct",
-    default=True,
-    help="Use the synchronous warm-pool fast path (sub-second, via the Lambda Function URL) when eligible. On by default; falls back to SQS automatically if there's no warm pod / not eligible / no access. --no-direct forces SQS.",
-)
-@click.option(
     "--node-label",
     "-l",
     type=str,
@@ -661,7 +656,6 @@ def reserve(
     preserve_entrypoint: bool,
     disk: Optional[str],
     ref: Optional[str],
-    direct: bool,
     node_label: tuple,
     spot: bool = False,
     fast_cache: bool = False,
@@ -1385,10 +1379,11 @@ def reserve(
 
             max_gpus = gpu_configs[gpu_type]["max_gpus"]
 
-            # Fast path: synchronous warm-pool claim (default; --no-direct opts out).
-            # Single-node, ephemeral, default-image, on-demand only — the server
-            # re-checks eligibility and we fall back to SQS silently otherwise.
-            if direct and gpu_count <= max_gpus and not disk and not dockerfile_s3_key and not dockerimage and not spot:
+            # Fast path: synchronous warm-pool claim, always attempted (no opt-out
+            # flag — direct is the only path). Single-node, ephemeral, default-image,
+            # on-demand only; the server re-checks eligibility and we fall back to
+            # SQS silently on any miss / no warm pod / no Function-URL access.
+            if gpu_count <= max_gpus and not disk and not dockerfile_s3_key and not dockerimage and not spot:
                 live.stop()
                 _t0 = time.time()
                 direct_res = reservation_mgr.claim_direct(
@@ -2950,7 +2945,7 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
 
 
 def _show_direct_success(res: dict, elapsed: float) -> None:
-    """Print the success block for an instant (--direct) warm-pool claim,
+    """Print the success block for an instant warm-pool claim,
     matching the normal reserve output (SSH config + VS Code/Cursor remote)."""
     from gpu_dev_cli.reservations import (
         create_ssh_config_for_reservation, _generate_vscode_command, _generate_cursor_command)
