@@ -683,23 +683,21 @@ gpu-dev disk list-content <disk-name>
 ### Getting Help
 
 - Use `gpu-dev help` or `gpu-dev <command> --help`
-- Report issues: https://github.com/anthropics/claude-code/issues
+- Report issues: https://github.com/wdvr/osdc/issues
 
 ---
 
 ## Development
 
 ```bash
-# Install development dependencies
-poetry install --with dev
+# Editable install from the repo (CLI + SDK)
+pip install -e .
+pip install -e sdk/python
 
-# Run tests
-poetry run pytest
-
-# Format code
-poetry run black .
-poetry run isort .
-
-# Type checking
-poetry run mypy .
+# Build the distributions the way CI does (uv)
+uv build                            # gpu-dev (CLI)
+uv build sdk/python --out-dir dist  # gpu-dev-sdk
 ```
+
+Releases are tag-driven: pushing a `v*` tag runs `.github/workflows/publish.yml`,
+which builds and publishes both packages to PyPI.
