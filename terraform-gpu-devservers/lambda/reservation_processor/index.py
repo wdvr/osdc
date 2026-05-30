@@ -418,6 +418,14 @@ def _evict_warm_for_capacity(v1, gpu_type, gpus_requested, ready_nodes):
                 freed += held
             if evict and n["available_gpus"] + freed >= gpus_requested:
                 for p in evict:
+                    # Hard guard: NEVER delete anything that isn't an idle standby.
+                    # _list_warm_pods already filters by label, but re-check right
+                    # before delete to rule out any claim race (Lambda is serialized,
+                    # so this should never trip — but a reservation pod must never die).
+                    lbl = p.metadata.labels or {}
+                    if lbl.get("app") != "gpu-dev-warm" or lbl.get("warm-state") != "ready":
+                        logger.warning(f"eviction skipped {p.metadata.name}: not an idle warm pod ({lbl.get('warm-state')})")
+                        continue
                     try:
                         v1.delete_namespaced_pod(p.metadata.name, "gpu-dev")
                         try:
@@ -1438,7 +1446,11 @@ def _list_warm_pods(v1, gpu_type: str = None, state: str = None) -> list:
 
 
 def _create_warm_pod(gpu_type: str, gpu_count: int) -> str:
-    pod_name = f"gpu-dev-warm-{gpu_type}-{uuid.uuid4().hex[:6]}"
+    # Name carries no "warm" marker: a pod keeps its name after it's claimed, and a
+    # claimed pod is a normal reservation — "gpu-dev-warm-..." in the user's shell
+    # prompt is confusing. Standby status lives in the label (app=gpu-dev-warm), not
+    # the name. Result: gpu-dev-b200-1d95ba (claimed) instead of gpu-dev-warm-b200-...
+    pod_name = f"gpu-dev-{gpu_type}-{uuid.uuid4().hex[:6]}"
     k8s_client = get_k8s_client()
     create_pod(
         k8s_client, pod_name, gpu_count, gpu_type,
