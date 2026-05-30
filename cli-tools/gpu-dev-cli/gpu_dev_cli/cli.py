@@ -1507,6 +1507,108 @@ def reserve(
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
+@main.command(context_settings={"ignore_unknown_options": True})
+@click.argument("ref")
+@click.argument("test_args", nargs=-1, required=True)
+@click.option("--gpu-type", default="b200", show_default=True, help="GPU type for the repro box.")
+@click.option("--gpus", type=int, default=1, show_default=True)
+@click.option("--hours", type=float, default=3.0, show_default=True,
+              help="Lifetime ceiling; the box auto-cancels when the test exits unless --keep.")
+@click.option("--keep", is_flag=True, default=False,
+              help="Keep the reservation after the test exits (default: auto-cancel).")
+@click.pass_context
+def repro(ctx, ref, test_args, gpu_type, gpus, hours, keep):
+    """Reserve a GPU, check out a PR/commit, run a test, then auto-cancel.
+
+    REF: pr/<N>, #<N>, a bare PR number, a branch, or a commit sha. PRs use
+    pull/<N>/merge (what CI tests), falling back to /head.
+
+    TEST_ARGS are passed straight to `python` inside ~/pytorch, e.g.
+
+      gpu-dev repro pr/185264 test/inductor/test_flex_attention.py TestFlexAttentionCUDA.test_large_kv_int64_pointer_math_cuda
+    """
+    import shlex
+    import subprocess
+    config = load_config()
+    reservation_mgr = ReservationManager(config)
+    try:
+        user_info = authenticate_user(config)
+    except RuntimeError as e:
+        rprint(f"[red]❌ {str(e)}[/red]"); return
+
+    # ref -> in-pod fetch+checkout (PRs prefer /merge = CI's view, fall back to /head)
+    r = ref.strip(); prnum = None
+    if r.startswith("pr/"): prnum = r[3:]
+    elif r.startswith("#"): prnum = r[1:]
+    elif r.isdigit(): prnum = r
+    if prnum:
+        fetch = (f"git fetch origin pull/{prnum}/merge 2>/dev/null && git checkout -f FETCH_HEAD || "
+                 f"{{ echo '[repro] no /merge ref, using /head'; git fetch origin pull/{prnum}/head && git checkout -f FETCH_HEAD; }}")
+    else:
+        rq = shlex.quote(r)
+        fetch = f"git fetch origin {rq} 2>/dev/null && git checkout -f FETCH_HEAD || git checkout -f {rq}"
+
+    testcmd = " ".join(shlex.quote(a) for a in test_args)
+    remote = (
+        "set -e; cd /home/dev/pytorch; "
+        "git config --global --add safe.directory /home/dev/pytorch 2>/dev/null || true; "
+        f"echo '[repro] checkout {r}'; {fetch}; "
+        "echo \"[repro] HEAD $(git rev-parse --short HEAD)\"; "
+        "git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 >/dev/null 2>&1 || true; "
+        "if ! PYTHONPATH=/home/dev/pytorch python -c 'import torch' 2>/dev/null; then "
+        "echo '[repro] incremental rebuild on warm build/...'; pip install --break-system-packages -e . --no-build-isolation; fi; "
+        f"echo '[repro] running: python {testcmd}'; "
+        f"PYTHONPATH=/home/dev/pytorch python {testcmd}"
+    )
+
+    # Reserve — warm claim (instant) first, else cold ephemeral. Always no-persist
+    # (so the prebuilt tree is staged; a default disk would skip staging).
+    rprint(f"[cyan]🔬 repro: reserving {gpus}x {gpu_type} (warm if available)…[/cyan]")
+    rid = ssh_cmd = None
+    try:
+        res = reservation_mgr.claim_direct(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gpu_type,
+            duration_hours=hours, name="repro", github_user=user_info["github_user"], ref=None)
+    except Exception:
+        res = None
+    if res:
+        rid, ssh_cmd = res.get("reservation_id"), res.get("ssh_command")
+        rprint(f"[green]⚡ warm pod claimed: {str(rid)[:8]}[/green]")
+    else:
+        rprint("[cyan]   no warm pod — cold reserve (≈2 min)…[/cyan]")
+        rid = reservation_mgr.create_reservation(
+            user_id=user_info["user_id"], gpu_count=gpus, gpu_type=gpu_type,
+            duration_hours=hours, name="repro", github_user=user_info["github_user"],
+            no_persistent_disk=True)
+        if not rid:
+            rprint("[red]❌ reservation failed[/red]"); return
+        reservation_mgr.wait_for_reservation_completion(reservation_id=rid, timeout_minutes=None, verbose=True)
+        conn = reservation_mgr.get_connection_info(rid, user_info["user_id"]) or {}
+        ssh_cmd = conn.get("ssh_command")
+    if not ssh_cmd or ssh_cmd.startswith("ssh user@"):
+        rprint(f"[red]❌ no SSH connection for {str(rid)[:8]}[/red]"); return
+
+    # Ensure non-interactive host-key handling, then run the test, streaming output.
+    if "StrictHostKeyChecking" not in ssh_cmd:
+        ssh_cmd = ssh_cmd.replace("ssh ", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ", 1)
+    rprint(f"[dim]→ {ssh_cmd}[/dim]\n")
+    rc = 1
+    try:
+        rc = subprocess.run(f"{ssh_cmd} {shlex.quote(remote)}", shell=True).returncode
+    except KeyboardInterrupt:
+        rprint("\n[yellow]interrupted[/yellow]")
+    finally:
+        if keep:
+            rprint(f"[cyan]📌 kept {str(rid)[:8]} — gpu-dev connect {str(rid)[:8]} • gpu-dev cancel {str(rid)[:8]}[/cyan]")
+        else:
+            try:
+                reservation_mgr.cancel_reservation(rid, user_info["user_id"])
+                rprint(f"[green]🧹 cancelled repro box {str(rid)[:8]}[/green]")
+            except Exception as e:
+                rprint(f"[yellow]auto-cancel failed for {str(rid)[:8]}: {e}[/yellow]")
+    rprint(f"\n[bold]repro exit code: {rc}[/bold]")
+
+
 _SUBMIT_GPU_TYPES = ["b300", "b200", "b200-mig-1g", "b200-mig-2g", "b200-mig-3g", "h200", "h100",
                      "h100-mig-1g", "h100-mig-2g", "h100-mig-3g", "a100", "rtxpro6000",
                      "a10g", "t4", "l4", "t4-small", "cpu-arm", "cpu-x86", "cpu-spot"]
