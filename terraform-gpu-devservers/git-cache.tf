@@ -430,15 +430,20 @@ resource "kubernetes_daemonset" "pytorch_snapshot" {
           image   = "alpine:3.21"
           command = ["/bin/sh", "-c"]
           args = [<<-EOT
-            apk add --no-cache curl tar >/dev/null 2>&1 || true
+            apk add --no-cache curl tar rsync >/dev/null 2>&1 || true
             CACHE="http://git-cache.management.svc.cluster.local:8080"
             DEST=/mnt/nvme/pytorch-worktree
-            echo "[nvme-pytorch] snapshot maintainer started"
+            ARCH=$(uname -m)
+            PREBUILT="/ccache_shared/prebuilt/pytorch-$ARCH"
+            BUILT=/mnt/nvme/pytorch-built
+            echo "[nvme-pytorch] snapshot maintainer started (arch=$ARCH)"
             while true; do
+              # 1. source-only worktree snapshot (master) from git-cache HTTP —
+              #    used for --ref / build-from-scratch staging.
               NEW=$(curl -sf "$CACHE/pytorch-worktree-master.sha" 2>/dev/null || echo none)
               OLD=$(cat "$DEST/.sha" 2>/dev/null || echo never)
               if [ "$NEW" != "none" ] && [ "$NEW" != "$OLD" ]; then
-                echo "[nvme-pytorch] updating $OLD -> $NEW"
+                echo "[nvme-pytorch] worktree $OLD -> $NEW"
                 rm -rf /mnt/nvme/pytorch-worktree.tmp
                 mkdir -p /mnt/nvme/pytorch-worktree.tmp
                 if curl -sf "$CACHE/pytorch-worktree-master.tar.gz" | tar -xz -C /mnt/nvme/pytorch-worktree.tmp --strip-components=1; then
@@ -447,12 +452,31 @@ resource "kubernetes_daemonset" "pytorch_snapshot" {
                   [ -d "$DEST" ] && mv "$DEST" /mnt/nvme/pytorch-worktree.old
                   mv /mnt/nvme/pytorch-worktree.tmp "$DEST"
                   rm -rf /mnt/nvme/pytorch-worktree.old
-                  echo "[nvme-pytorch] ready at $NEW"
+                  echo "[nvme-pytorch] worktree ready at $NEW"
                 else
-                  echo "[nvme-pytorch] download failed, will retry"
+                  echo "[nvme-pytorch] worktree download failed, will retry"
                   rm -rf /mnt/nvme/pytorch-worktree.tmp
                 fi
               fi
+
+              # 2. prebuilt viable/strict tree (source + build/ + .so, importable)
+              #    from the shared EFS. rsync moves only changed objects each hour.
+              #    .sha is excluded then copied last as the atomic completion marker.
+              if [ -f "$PREBUILT/.sha" ]; then
+                BNEW=$(cat "$PREBUILT/.sha" 2>/dev/null || echo none)
+                BOLD=$(cat "$BUILT/.sha" 2>/dev/null || echo never)
+                if [ "$BNEW" != "$BOLD" ]; then
+                  echo "[nvme-pytorch] built tree $BOLD -> $BNEW"
+                  mkdir -p "$BUILT"
+                  if rsync -a --delete --exclude='.sha' "$PREBUILT/" "$BUILT/"; then
+                    cp "$PREBUILT/.sha" "$BUILT/.sha"
+                    echo "[nvme-pytorch] built tree ready at $BNEW"
+                  else
+                    echo "[nvme-pytorch] built tree rsync failed, will retry"
+                  fi
+                fi
+              fi
+
               sleep 900
             done
           EOT
@@ -461,6 +485,11 @@ resource "kubernetes_daemonset" "pytorch_snapshot" {
           volume_mount {
             name       = "nvme-root"
             mount_path = "/mnt/nvme"
+          }
+          volume_mount {
+            name       = "ccache-shared"
+            mount_path = "/ccache_shared"
+            read_only  = true
           }
 
           resources {
@@ -480,6 +509,15 @@ resource "kubernetes_daemonset" "pytorch_snapshot" {
           host_path {
             path = "/mnt/nvme"
             type = "DirectoryOrCreate"
+          }
+        }
+        # Shared ccache EFS — source of the prebuilt viable/strict tree (/prebuilt).
+        volume {
+          name = "ccache-shared"
+          nfs {
+            server    = local.ccache_efs_dns
+            path      = "/"
+            read_only = true
           }
         }
       }
