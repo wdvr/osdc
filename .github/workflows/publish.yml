@@ -41,3 +41,8 @@ jobs:
           subject-path: dist/*
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Multi-package + re-run safety: skip any file already on PyPI (e.g. a
+          # gpu-dev version that published before a sibling failed) instead of
+          # erroring on the duplicate.
+          skip-existing: true
