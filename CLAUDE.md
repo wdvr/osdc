@@ -61,19 +61,22 @@ Big push on warm pools + instant claims + prebuilt pytorch. Tracking state here 
 - Rebuild **gpu-dev image**: Claude Code cache-bust (latest), `~/.local/bin` on PATH (bash+zsh, all disks).
 - **Meta/fbcode**: grant the user IAM role `lambda:InvokeFunctionUrl` + `lambda:GetFunctionUrlConfig` (scoped to reservation-processor) so `--direct` works; otherwise it falls back to SQS silently.
 
-**In progress — prebuilt viable/strict + warm ccache (importable torch + marginal C++ build):**
-- [ ] Dedicated `m7i.48xlarge` build node group (always-on; cost approved).
-- [ ] Hourly **stateful incremental** build CronJob: venv, CUDA 12.8, `TORCH_CUDA_ARCH_LIST=9.0;10.0`, build at **`/home/dev/pytorch`** (path-match for relocatable incremental), only when viable/strict SHA bumps.
-- [ ] Per-arch snapshot tarball (x86=CUDA, arm=CPU) published via git-cache, pulled to NVMe by `pytorch-snapshot` DaemonSet (arch-aware).
-- [ ] `stage-pytorch` reflink-copies the built tree + sets PYTHONPATH so `import torch` works with no pod-side build.
-- [ ] Empirical build test running on pod `gpu-dev-buildtest` (gpu-dev ns) — **delete it when done**. Measuring cold + incremental on cpu-x86 (28-core). Note: PEP668 → build needs venv/`--break-system-packages`.
+**Prebuilt viable/strict + warm ccache (importable torch + marginal C++ build) — COMMITTED on `instant-sandboxes`, needs `tf apply`:**
+- [x] Dedicated `m7i.48xlarge` build node group (always-on). `build-node.tf`, node `ip-10-0-26-237` up.
+- [x] Hourly **stateful incremental** build CronJob (`pytorch-prebuild.tf`): `concurrencyPolicy=Forbid` + flock (the "build queue"), **CUDA 13.2** (matches the cu13 nvshmem ABI in the image — 12.8 fails at nvlink), `TORCH_CUDA_ARCH_LIST=9.0;10.0` (see arch note below), `BUILD_TEST=0`, builds at **`/home/dev/pytorch`** on a hostPath (path-match for relocatable incremental), `CCACHE_DIR=/ccache_shared/build-node`, only when viable/strict SHA bumps. Publishes via rsync to `/ccache_shared/prebuilt/pytorch-<arch>`.
+- [x] `pytorch-snapshot` DaemonSet (in `git-cache.tf`) arch-aware: rsyncs the built tree from the shared EFS to each node's `/mnt/nvme/pytorch-built` (arch via `uname -m`; arm skips gracefully). Existing master worktree HTTP pull unchanged.
+- [x] `stage-pytorch` (lambda) reflink-copies the built tree into `/home/dev/pytorch` + sets `PYTHONPATH` (`/etc/profile.d/zz-pytorch.sh` + `*_ext`) so `import torch` works with no pod-side build. With `--ref`: same tree (warm `build/`), checkout the ref, rebuild is incremental. Applies to warm pods too.
+- **Publish/cache decision:** reuse the existing `ccache_shared` EFS (everyone already mounts it) under `/prebuilt`; no new EFS/S3. EFS here = plain NFS volume mounts, not CSI. ccache is shared by build node + ALL dev pods (incl persistent-disk) so a user's own build benefits from the build node's compiles.
+- **Validated build numbers** (m7i, 128 jobs, CUDA 13.2, `9.0;10.0`, BUILD_TEST=0): cold (build/ gone, ccache 86% warm = node-replacement case) **~21m**; incremental (1 cutlass kernel + 386MB relink) **~42s**; ninja no-op **~22s**; ccache **86.5%** hit. Result: `torch 2.13.0a0`, imports, `get_arch_list()=['sm_90','sm_100']`.
+- [ ] **Cleanup:** delete the manual test pod `gpu-dev-buildtest` (gpu-dev ns) — done with empirical measurement (kept for now in case more measurements needed). It holds a warm `/root/pt` build tree.
+- [ ] **Reflink caveat:** stage-pytorch uses `cp -a --reflink=auto || cp -a`. For the drop-in to be *instant* (not a 20-40GB copy), the pod's `/home/dev` (dev-home emptyDir) and the node's `/mnt/nvme` must be the **same filesystem**. Verify node bootstrap puts kubelet emptyDir on `/mnt/nvme`; else it falls back to a full copy (correct, slower).
 
 **To fix / todo:**
 - [ ] SSH CA certs to drop the ~0.33s `kubectl exec` key injection on warm claim (auth-model change).
 - [ ] AMI baker re-bakes on every base-EKS-AMI roll (5 baked AMIs in 2 days): pin the base AMI version + clean up old `gpu-dev-baked-*`.
 - [ ] Warm pods: gate `warm-state=ready` on staging completion (currently static label; reflink copy is fast so low risk).
 - [ ] **Image-rebuild propagation gap:** pods use `imagePullPolicy=IfNotPresent` + `:latest`, so a rebuilt image does NOT reach pods until the node re-pulls. After every image rebuild you must `kubectl rollout restart daemonset gpu-dev-image-prepuller -n kube-system` (re-pull on all GPU nodes, ~5min) **and** recycle warm pods, else pods run the stale cached image (this is why claude/PATH looked unfixed). Automate later: reconciler recycles warm pods when the `:latest` digest changes (and/or trigger the prepuller restart from the image-build step).
-- [ ] **Prebuilt build archs:** the build must use `TORCH_CUDA_ARCH_LIST=9.0a;10.0a` (not plain `9.0;10.0`) — the `a` variants enable Hopper wgmma/TMA + Blackwell arch-specific kernels (cutlass/flash-attention) that CI/nightly ship. CUDA 12.8 supports both.
+- [x] **Prebuilt build archs (CORRECTED):** use plain `TORCH_CUDA_ARCH_LIST=9.0;10.0` — **NOT** `9.0a;10.0a`. You never put the `a` in the list yourself. PyTorch's `cmake/Codegen.cmake` (`_BUILD_FOR_ADDITIONAL_ARCHS`, gated on `compute_90`/`compute_100` being present) auto-adds `sm_90a`/`sm_100a` to exactly the cutlass kernels that need Hopper wgmma/TMA (`RowwiseScaledMM.cu`, `ScaledGroupMM.cu`, `GroupMM.cu`). Verified in `compile_commands.json`: the RowwiseScaledMM line shows all four (sm_90, sm_90a, sm_100, sm_100a). Forcing `9.0a` for the whole build is non-CI and would drop the plain SASS / other archs. Per-commit **trunk** CI builds narrow per-runner arch (`9.0` alone for H100 jobs, `10.0` for B200) — nightly builds the fat `7.5;8.0;8.6;9.0;10.0;12.0+PTX`; we match trunk + "9+" for our H100/B200 fleet. To add A100/T4/L4 later, widen to `8.0;8.9;9.0;10.0` (still one build). CUDA 13.2 (image default), not 12.8.
 
 ## Issues I found with the description above
 
