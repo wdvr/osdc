@@ -3641,17 +3641,34 @@ def connect(ctx: click.Context, reservation_id: Optional[str]) -> None:
         rprint(f"[dim]Executing: {ssh_command}[/dim]\n")
         result = subprocess.run(ssh_command, shell=True)
 
-        # Check for auth failure (SSH exits with code 255 for connection/auth errors)
+        # SSH exits 255 for ANY connection/auth error — that includes a reservation
+        # that expired/was cancelled (pod gone) or a dropped connection, not just
+        # auth. Re-check the reservation's real state before blaming auth, so the
+        # primary user doesn't get told to ask themselves for access.
         if result.returncode == 255:
-            # Try to extract primary username from connection info
             primary_user = connection_info.get("user_id", "the-primary-user")
             current_user = user_info.get("user_id", "your-github-username")
+            status = ""
+            try:
+                fresh = reservation_mgr.get_connection_info(reservation_id, current_user) or {}
+                status = str(fresh.get("status", "")).lower()
+            except Exception:
+                pass
 
-            rprint("\n[red]❌ Authentication failed. You don't have SSH access to this reservation.[/red]\n")
-            rprint(f"[cyan]Ask the primary user ([yellow]{primary_user}[/yellow]) to add you:[/cyan]")
-            rprint(f"[dim]   gpu-dev edit {reservation_id[:8]} --add-user {current_user}[/dim]\n")
-            rprint(f"[cyan]Then download your SSH config:[/cyan]")
-            rprint(f"[dim]   gpu-dev get-ssh-config {reservation_id[:8]}[/dim]\n")
+            if status in ("expired", "completed", "cancelled", "canceled", "ended", "failed"):
+                rprint(f"\n[yellow]⏰ Reservation {reservation_id[:8]} has {status} — the pod is gone.[/yellow]")
+                rprint("[dim]   Start a new one: gpu-dev reserve --gpu-type <type> --gpus <n>[/dim]\n")
+            elif current_user == primary_user or status == "active":
+                # Owner (or still-active): this was a closed/dropped connection, not auth.
+                rprint(f"\n[yellow]🔌 Connection to reservation {reservation_id[:8]} closed.[/yellow]")
+                rprint(f"[dim]   If it's still active, reconnect: gpu-dev connect {reservation_id[:8]}   (gpu-dev list to check status)[/dim]\n")
+            else:
+                # Genuinely not your reservation and you're not on it → auth.
+                rprint("\n[red]❌ Authentication failed. You don't have SSH access to this reservation.[/red]\n")
+                rprint(f"[cyan]Ask the primary user ([yellow]{primary_user}[/yellow]) to add you:[/cyan]")
+                rprint(f"[dim]   gpu-dev edit {reservation_id[:8]} --add-user {current_user}[/dim]\n")
+                rprint(f"[cyan]Then download your SSH config:[/cyan]")
+                rprint(f"[dim]   gpu-dev get-ssh-config {reservation_id[:8]}[/dim]\n")
 
     except KeyboardInterrupt:
         rprint("\n[yellow]Connection cancelled by user[/yellow]")
