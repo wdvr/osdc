@@ -151,13 +151,6 @@ def select_gpu_type_interactive(
         else:
             full_gpus[gt] = info
 
-    # MIG slices for the info table. visible_info strips `-mig-`, so pull them
-    # straight from availability_info — shown for visibility, but selected via the
-    # parent h100/b200 count submenu (cleaner slice labels), not as direct choices.
-    mig_display = {
-        gt: info for gt, info in (availability_info or {}).items() if "-mig-" in gt
-    }
-
     # Spot types from cross-region (prod-east1) — only non-MIG, non-CPU spot types
     spot_gpus = {k: v for k, v in spot_region_info.items() if k in _spot_types}
 
@@ -178,7 +171,19 @@ def select_gpu_type_interactive(
             return f"[red]MAINTENANCE[/red]"
         return f"[green]{available}[/green]" if available > 0 else f"[red]{available}[/red]"
 
-    def _build_table(title, items, is_spot=False):
+    def _mig_breakdown(parent):
+        """Compact per-slice availability for a parent, e.g. (['12×1G','4×2G'], 16, 32)."""
+        parts, tot_a, tot_c = [], 0, 0
+        for cgt, ci in sorted((availability_info or {}).items()):
+            if not cgt.startswith(f"{parent}-mig-"):
+                continue
+            a, c = int(ci.get("available", 0)), int(ci.get("total", 0))
+            tot_a += a
+            tot_c += c
+            parts.append(f"{a}×{cgt.rsplit('-', 1)[-1].upper()}")
+        return parts, tot_a, tot_c
+
+    def _build_table(title, items, is_spot=False, with_mig=False):
         console.print(f"\n[cyan]{title}[/cyan]")
         table = Table()
         table.add_column("GPU Type", style="cyan")
@@ -201,17 +206,18 @@ def select_gpu_type_interactive(
                 str(info.get("total", 0)),
                 wait_display,
             )
+            # Compact MIG slice sub-row beneath the parent (h100/b200 today).
+            if with_mig:
+                parts, mig_a, mig_c = _mig_breakdown(gt)
+                if parts:
+                    av = f"[green]{mig_a}[/green]" if mig_a > 0 else f"[red]{mig_a}[/red]"
+                    table.add_row(
+                        f"[dim] └─ MIG {' '.join(parts)}[/dim]",
+                        av, "-", str(mig_c), "[dim]pick parent ↑[/dim]")
         console.print(table)
 
-    # Section 1: Full GPUs & CPUs
-    _build_table("━━━ Full GPUs & CPUs ━━━", full_gpus)
-
-    # Section 2: MIG Slices (info only — choose by picking the parent GPU below)
-    if mig_display:
-        console.print("[dim]  Sliced GPUs — isolated fractions of a physical GPU. Perfect for smaller jobs[/dim]")
-        console.print("[dim]  that don\'t need full performance or VRAM.[/dim]")
-        _build_table("━━━ 🔬 MIG Slices ━━━", mig_display)
-        console.print("[dim]  ↑ Pick the parent GPU (e.g. H100 / B200) below to choose a slice size.[/dim]")
+    # Section 1: Full GPUs & CPUs (MIG slices shown as a compact sub-row per parent)
+    _build_table("━━━ Full GPUs & CPUs ━━━", full_gpus, with_mig=True)
 
     # Section 3: Spot Instances (cross-region) — custom table with per-node + price
     if spot_gpus:
