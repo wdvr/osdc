@@ -105,7 +105,7 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
                 git remote set-url origin https://github.com/pytorch/pytorch.git
                 git fetch --force origin viable/strict || { echo "[prebuild] fetch failed"; exit 1; }
                 TARGET=$(git rev-parse FETCH_HEAD)
-                OLD=$(cat "$PUB/.sha" 2>/dev/null || echo none)
+                OLD=$(cat "$PUB.sha" 2>/dev/null || echo none)
                 if [ "$TARGET" = "$OLD" ]; then
                   echo "[prebuild] viable/strict unchanged at $TARGET — nothing to do"
                   exit 0
@@ -123,11 +123,16 @@ resource "kubernetes_cron_job_v1" "pytorch_prebuild" {
                 # --- verify importable + correct archs ---
                 python -c "import torch; print('[prebuild] torch', torch.__version__, torch.cuda.get_arch_list())" || { echo "[prebuild] import verify FAILED"; exit 1; }
 
-                # --- publish: rsync full tree to shared EFS (only changed files move) ---
-                echo "[prebuild] publishing -> $PUB"
-                mkdir -p "$PUB"
-                rsync -a --delete --exclude='.git/objects/pack/tmp_*' "$SRC/" "$PUB/" || { echo "[prebuild] publish FAILED"; exit 1; }
-                echo "$TARGET" > "$PUB/.sha"
+                # --- publish: single tarball to shared EFS ---
+                # rsync of the raw tree (.git + build/ = 100k+ small files) over EFS/NFS
+                # dies on per-file round-trips (0 files in 13min observed). tar|zstd reads
+                # the small files from LOCAL disk and writes ONE sequential stream to EFS.
+                # zstd -T0 uses all cores; .sha is written last as the completion marker.
+                echo "[prebuild] publishing tarball -> $PUB.tar.zst"
+                tar -C /home/dev -cf - pytorch | zstd -1 -T0 -q -o "$PUB.tar.zst.tmp" || { echo "[prebuild] publish FAILED"; exit 1; }
+                mv "$PUB.tar.zst.tmp" "$PUB.tar.zst"
+                echo "$TARGET" > "$PUB.sha"
+                echo "[prebuild] published $(du -sh "$PUB.tar.zst" | cut -f1) @ $TARGET"
                 ccache -s 2>/dev/null | grep -iE 'hits|misses' | head
                 echo "[prebuild] DONE $TARGET"
               EOT

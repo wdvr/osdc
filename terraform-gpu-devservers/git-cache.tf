@@ -430,7 +430,7 @@ resource "kubernetes_daemonset" "pytorch_snapshot" {
           image   = "alpine:3.21"
           command = ["/bin/sh", "-c"]
           args = [<<-EOT
-            apk add --no-cache curl tar rsync >/dev/null 2>&1 || true
+            apk add --no-cache curl tar zstd >/dev/null 2>&1 || true
             CACHE="http://git-cache.management.svc.cluster.local:8080"
             DEST=/mnt/nvme/pytorch-worktree
             ARCH=$(uname -m)
@@ -460,19 +460,26 @@ resource "kubernetes_daemonset" "pytorch_snapshot" {
               fi
 
               # 2. prebuilt viable/strict tree (source + build/ + .so, importable)
-              #    from the shared EFS. rsync moves only changed objects each hour.
-              #    .sha is excluded then copied last as the atomic completion marker.
-              if [ -f "$PREBUILT/.sha" ]; then
-                BNEW=$(cat "$PREBUILT/.sha" 2>/dev/null || echo none)
+              #    from the shared EFS, published as a single zstd tarball (rsync of
+              #    the raw tree over EFS/NFS dies on per-file round-trips). Download
+              #    the tarball (sequential read) + extract to node-local NVMe.
+              if [ -f "$PREBUILT.sha" ]; then
+                BNEW=$(cat "$PREBUILT.sha" 2>/dev/null || echo none)
                 BOLD=$(cat "$BUILT/.sha" 2>/dev/null || echo never)
-                if [ "$BNEW" != "$BOLD" ]; then
+                if [ "$BNEW" != "$BOLD" ] && [ -f "$PREBUILT.tar.zst" ]; then
                   echo "[nvme-pytorch] built tree $BOLD -> $BNEW"
-                  mkdir -p "$BUILT"
-                  if rsync -a --delete --exclude='.sha' "$PREBUILT/" "$BUILT/"; then
-                    cp "$PREBUILT/.sha" "$BUILT/.sha"
+                  rm -rf /mnt/nvme/pytorch-built.tmp
+                  mkdir -p /mnt/nvme/pytorch-built.tmp
+                  if zstd -dc "$PREBUILT.tar.zst" | tar -x -C /mnt/nvme/pytorch-built.tmp --strip-components=1; then
+                    echo "$BNEW" > /mnt/nvme/pytorch-built.tmp/.sha
+                    rm -rf /mnt/nvme/pytorch-built.old
+                    [ -d "$BUILT" ] && mv "$BUILT" /mnt/nvme/pytorch-built.old
+                    mv /mnt/nvme/pytorch-built.tmp "$BUILT"
+                    rm -rf /mnt/nvme/pytorch-built.old
                     echo "[nvme-pytorch] built tree ready at $BNEW"
                   else
-                    echo "[nvme-pytorch] built tree rsync failed, will retry"
+                    echo "[nvme-pytorch] built tree extract failed, will retry"
+                    rm -rf /mnt/nvme/pytorch-built.tmp
                   fi
                 fi
               fi
