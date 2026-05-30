@@ -103,12 +103,6 @@ def select_gpu_type_interactive(
         )
         return avail, cap
 
-    h100_mig_avail, h100_mig_capacity = _mig_aggregates("h100")
-    b200_mig_avail, b200_mig_capacity = _mig_aggregates("b200")
-    # Backwards-compat aliases for the existing h100 row code below.
-    mig_total_available = h100_mig_avail
-    mig_total_capacity = h100_mig_capacity
-
     # Detect spot types and fetch cross-region spot availability
     from .config import Config, load_config
     _cfg = load_config()
@@ -156,6 +150,13 @@ def select_gpu_type_interactive(
             mig_gpus[gt] = info
         else:
             full_gpus[gt] = info
+
+    # MIG slices for the info table. visible_info strips `-mig-`, so pull them
+    # straight from availability_info — shown for visibility, but selected via the
+    # parent h100/b200 count submenu (cleaner slice labels), not as direct choices.
+    mig_display = {
+        gt: info for gt, info in (availability_info or {}).items() if "-mig-" in gt
+    }
 
     # Spot types from cross-region (prod-east1) — only non-MIG, non-CPU spot types
     spot_gpus = {k: v for k, v in spot_region_info.items() if k in _spot_types}
@@ -205,11 +206,12 @@ def select_gpu_type_interactive(
     # Section 1: Full GPUs & CPUs
     _build_table("━━━ Full GPUs & CPUs ━━━", full_gpus)
 
-    # Section 2: MIG Slices
-    if mig_gpus:
+    # Section 2: MIG Slices (info only — choose by picking the parent GPU below)
+    if mig_display:
         console.print("[dim]  Sliced GPUs — isolated fractions of a physical GPU. Perfect for smaller jobs[/dim]")
         console.print("[dim]  that don\'t need full performance or VRAM.[/dim]")
-        _build_table("━━━ 🔬 MIG Slices ━━━", mig_gpus)
+        _build_table("━━━ 🔬 MIG Slices ━━━", mig_display)
+        console.print("[dim]  ↑ Pick the parent GPU (e.g. H100 / B200) below to choose a slice size.[/dim]")
 
     # Section 3: Spot Instances (cross-region) — custom table with per-node + price
     if spot_gpus:
@@ -267,10 +269,10 @@ def select_gpu_type_interactive(
             label = f"{status_indicator} {gt.upper()} ({avail}/{total} available)"
             if ql > 0:
                 label += f" - {ql} in queue"
-            if gt == "h100" and mig_total_capacity > 0:
-                label += f" — also {mig_total_available}/{mig_total_capacity} MIG slices"
-            elif gt == "b200" and b200_mig_capacity > 0:
-                label += f" — also {b200_mig_avail}/{b200_mig_capacity} MIG slices"
+            # Any parent with MIG children gets a slice hint (h100/b200 today).
+            mig_avail, mig_cap = _mig_aggregates(gt)
+            if mig_cap > 0:
+                label += f" — also {mig_avail}/{mig_cap} MIG slices"
             choices.append(questionary.Choice(title=label, value=gt))
 
     if mig_gpus:
