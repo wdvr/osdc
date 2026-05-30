@@ -50,11 +50,22 @@ def check_interactive_support() -> bool:
     return True
 
 
+def _is_spot_type(gt: str) -> bool:
+    """Spot SKUs hidden from default views: the cpu-spot type + any `*-spot` type."""
+    return gt == "cpu-spot" or gt.endswith("-spot")
+
+
 def select_gpu_type_interactive(
     availability_info: Dict[str, Dict[str, Any]],
     _refresh: bool = False,
+    show_spot: bool = False,
 ) -> Optional[str]:
-    """Interactive GPU type selection with availability table"""
+    """Interactive GPU type selection with availability table.
+
+    Spot SKUs (cpu-spot + the cross-region us-east-1 spot cluster) are hidden by
+    default — pass show_spot=True (CLI `--spot`) or pick the "Show spot options"
+    entry to reveal them.
+    """
     if not check_interactive_support():
         return None
 
@@ -65,11 +76,17 @@ def select_gpu_type_interactive(
         _mgr = ReservationManager(_cfg)
         availability_info = _mgr.get_gpu_availability_by_type() or availability_info
 
+    # Don't hide spot when the whole environment is spot-only (nothing left to show).
+    _non_spot_exists = any(
+        not _is_spot_type(gt) for gt in availability_info if "-mig-" not in gt
+    )
+    _hide_spot = (not show_spot) and _non_spot_exists
+
     # Hide MIG slice SKUs from the top-level selector — reached via the h100 submenu.
     # Direct `--gpu-type h100-mig-1g` still works for non-interactive scripts.
     visible_info = {
         gt: info for gt, info in availability_info.items()
-        if "-mig-" not in gt
+        if "-mig-" not in gt and not (_hide_spot and _is_spot_type(gt))
     }
 
     # Aggregate MIG slice availability per parent type, hinted on the h100/b200 rows.
@@ -102,9 +119,10 @@ def select_gpu_type_interactive(
     has_spot_types = len(_spot_types) > 0
 
     # Cross-region: if we're on prod, also fetch prod-east1 spot availability
+    # (skipped entirely when spot is hidden — saves a DynamoDB scan).
     spot_region_info = {}
     spot_region_name = None
-    if _env_name == "prod":
+    if _env_name == "prod" and not _hide_spot:
         east1_env = Config.ENVIRONMENTS.get("prod-east1", {})
         if east1_env:
             spot_region_name = "prod-east1"
@@ -296,11 +314,15 @@ def select_gpu_type_interactive(
             choices.append(questionary.Choice(title=label, value=f"spot:{gt}"))
 
     choices.append(questionary.Separator("───"))
+    if _hide_spot:
+        choices.append(questionary.Choice(
+            title="⚡ Show spot options (us-east-1, ~70% cheaper, may be preempted)",
+            value="_show_spot"))
     choices.append(questionary.Choice(title="🔄 Refresh availability", value="_refresh"))
 
     console.print()
 
-    # Interactive selection — loop on refresh
+    # Interactive selection — loop on refresh / spot toggle
     while True:
         try:
             answer = questionary.select(
@@ -309,7 +331,10 @@ def select_gpu_type_interactive(
 
             if answer == "_refresh":
                 console.print("[dim]Refreshing...[/dim]")
-                return select_gpu_type_interactive(availability_info, _refresh=True)
+                return select_gpu_type_interactive(
+                    availability_info, _refresh=True, show_spot=show_spot)
+            if answer == "_show_spot":
+                return select_gpu_type_interactive(availability_info, show_spot=True)
             return answer
         except (KeyboardInterrupt, EOFError):
             console.print("\n[yellow]Selection cancelled.[/yellow]")

@@ -829,9 +829,9 @@ def reserve(
                 rprint("[red]❌ Could not get GPU availability information[/red]")
                 return
 
-            # Interactive GPU type selection
+            # Interactive GPU type selection (spot hidden unless --spot)
             if gpu_type is None:
-                gpu_type = select_gpu_type_interactive(availability_info)
+                gpu_type = select_gpu_type_interactive(availability_info, show_spot=spot)
                 if gpu_type is None:
                     rprint("[yellow]Reservation cancelled.[/yellow]")
                     return
@@ -3163,8 +3163,11 @@ def _format_gpu_display(gpu_count, gpu_type):
     return f"{gpu_count}x {str(gpu_type).upper()}"
 
 
-def _show_availability() -> None:
-    """Shared function to show GPU availability"""
+def _show_availability(show_spot: bool = False) -> None:
+    """Shared function to show GPU availability.
+
+    Spot SKUs (cpu-spot + the us-east-1 spot cluster) are hidden unless show_spot.
+    """
     try:
         with Live(
             Spinner("dots", text="📡 Checking GPU availability..."), console=console
@@ -3181,7 +3184,7 @@ def _show_availability() -> None:
                 _east1_spot_types = frozenset(Config.ENVIRONMENTS.get("prod-east1", {}).get("spot_types", []))
 
                 def _fetch_east1_spot():
-                    if _env_name != "prod" or not _east1_spot_types:
+                    if not show_spot or _env_name != "prod" or not _east1_spot_types:
                         return {}
                     east1_r = Config.ENVIRONMENTS["prod-east1"]["region"]
                     east1_table = config.session.resource("dynamodb", region_name=east1_r).Table("pytorch-gpu-dev-gpu-availability")
@@ -3247,8 +3250,16 @@ def _show_availability() -> None:
                 "CPU (arm64)": 6,
             }
 
-            # Split into categories
-            full_types = {k: v for k, v in availability_info.items() if "mig" not in k}
+            # Split into categories. Hide spot SKUs (e.g. cpu-spot) unless --spot,
+            # but never hide everything if the env is spot-only.
+            def _is_spot(k):
+                return k == "cpu-spot" or k.endswith("-spot")
+            _non_spot_exists = any(not _is_spot(k) for k in availability_info if "mig" not in k)
+            _hide_spot = (not show_spot) and _non_spot_exists
+            full_types = {
+                k: v for k, v in availability_info.items()
+                if "mig" not in k and not (_hide_spot and _is_spot(k))
+            }
             mig_types = {k: v for k, v in availability_info.items() if "mig" in k}
 
             def _sort_by_arch(items):
@@ -3344,8 +3355,12 @@ def _show_availability() -> None:
             rprint("  [green]●[/green]: 1+ full node available - [yellow]●[/yellow]: GPUs available, but no full node - [red]●[/red]: No GPUs available")
 
             # Show usage tip
+            if _hide_spot:
+                rprint(
+                    "\n[dim]💡 Spot instances hidden — pass '--spot' to show (us-east-1, ~70% cheaper, may be preempted)[/dim]"
+                )
             rprint(
-                "\n[dim]💡 Use 'gpu-dev reserve' (interactive) to see all options including MIG slices and spot instances[/dim]"
+                "\n[dim]💡 Use 'gpu-dev reserve' (interactive) to see all options including MIG slices[/dim]"
             )
 
         else:
@@ -3355,9 +3370,12 @@ def _show_availability() -> None:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
 
-def _show_availability_watch(interval: int) -> None:
+def _show_availability_watch(interval: int, show_spot: bool = False) -> None:
     _env_name = load_config().user_config.get("environment", "prod")
     _spot_types = frozenset(Config.ENVIRONMENTS.get(_env_name, {}).get("spot_types", []))
+
+    def _is_spot(k):
+        return k == "cpu-spot" or k.endswith("-spot")
 
     """Watch mode for GPU availability with auto-refresh"""
     import time
@@ -3384,6 +3402,13 @@ def _show_availability_watch(interval: int) -> None:
 
                     # Get availability data
                     availability_info = reservation_mgr.get_gpu_availability_by_type()
+
+                    # Hide spot SKUs (e.g. cpu-spot) unless --spot, never hide everything.
+                    if availability_info and not show_spot:
+                        if any(not _is_spot(k) for k in availability_info if "mig" not in k):
+                            availability_info = {
+                                k: v for k, v in availability_info.items() if not _is_spot(k)
+                            }
 
                     if availability_info:
                         # GPU architecture mapping (for display)
@@ -4024,8 +4049,14 @@ def help(ctx: click.Context) -> None:
     default=5,
     help="Refresh interval in seconds for watch mode (default: 5)",
 )
+@click.option(
+    "--spot",
+    is_flag=True,
+    default=False,
+    help="Also show spot instances (us-east-1, ~70% cheaper, may be preempted). Hidden by default.",
+)
 @click.pass_context
-def avail(ctx: click.Context, watch: bool, interval: int) -> None:
+def avail(ctx: click.Context, watch: bool, interval: int, spot: bool) -> None:
     """Show GPU availability by type and queue estimates
 
     Displays real-time information about GPU availability for each GPU type.
@@ -4045,9 +4076,9 @@ def avail(ctx: click.Context, watch: bool, interval: int) -> None:
     This helps you choose the right GPU type and understand wait times before reserving.
     """
     if watch:
-        _show_availability_watch(interval)
+        _show_availability_watch(interval, show_spot=spot)
     else:
-        _show_availability()
+        _show_availability(show_spot=spot)
 
 
 @main.command()
