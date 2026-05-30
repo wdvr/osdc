@@ -5752,19 +5752,34 @@ case "$REF" in
     ""|master|main|MASTER|MAIN)
         echo "[pytorch] no ref override (prebuilt viable/strict)" ;;
     *)
-        FETCH="$REF"
+        PRNUM=""
         case "$REF" in
-            pr/*) FETCH="pull/$(echo "$REF" | sed 's|^pr/||')/head" ;;
-            '#'*) FETCH="pull/$(echo "$REF" | sed 's|^#||')/head" ;;
+            pr/*) PRNUM=$(echo "$REF" | sed 's|^pr/||') ;;
+            '#'*) PRNUM=$(echo "$REF" | sed 's|^#||') ;;
             *[!0-9]*) : ;;
-            *) FETCH="pull/$REF/head" ;;
+            *) PRNUM="$REF" ;;
         esac
-        echo "[pytorch] Checking out $REF (fetch $FETCH)..."
-        if git fetch origin "$FETCH" 2>/dev/null; then
-            git checkout -f FETCH_HEAD 2>/dev/null && REF_APPLIED=yes
+        if [ -n "$PRNUM" ]; then
+            # Prefer pull/N/merge (PR merged onto current trunk = exactly what CI
+            # tests, incl. trunk-added tests); fall back to /head (raw PR branch)
+            # when no merge ref exists (closed/unmergeable PR).
+            echo "[pytorch] Checking out PR #$PRNUM (prefer /merge = CI's view)..."
+            if git fetch origin "pull/$PRNUM/merge" 2>/dev/null; then
+                git checkout -f FETCH_HEAD 2>/dev/null && REF_APPLIED=yes
+            elif git fetch origin "pull/$PRNUM/head" 2>/dev/null; then
+                echo "[pytorch] no /merge ref, using /head"
+                git checkout -f FETCH_HEAD 2>/dev/null && REF_APPLIED=yes
+            else
+                echo "[pytorch] WARNING: could not fetch PR #$PRNUM"
+            fi
         else
-            git fetch origin 2>/dev/null || true
-            git checkout -f "$REF" 2>/dev/null && REF_APPLIED=yes || echo "[pytorch] WARNING: could not check out $REF"
+            echo "[pytorch] Checking out $REF..."
+            if git fetch origin "$REF" 2>/dev/null; then
+                git checkout -f FETCH_HEAD 2>/dev/null && REF_APPLIED=yes
+            else
+                git fetch origin 2>/dev/null || true
+                git checkout -f "$REF" 2>/dev/null && REF_APPLIED=yes || echo "[pytorch] WARNING: could not check out $REF"
+            fi
         fi
         git -c protocol.file.allow=always submodule update --init --recursive --jobs 8 2>/dev/null || true ;;
 esac
