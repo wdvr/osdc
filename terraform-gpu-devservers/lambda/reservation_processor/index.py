@@ -4666,6 +4666,10 @@ def get_cpu_thread_env_vars(gpu_count: int, gpu_type: str) -> list:
         client.V1EnvVar(name="GPU_DEV_THREAD_COUNT", value=thread_str),
         # ccache configuration for faster C++ compilation
         client.V1EnvVar(name="CCACHE_DIR", value="/ccache_shared"),
+        # Pod Python is the system (PEP 668 externally-managed) interpreter and
+        # venv is unavailable (no ensurepip), so `pip install -e . --no-build-isolation`
+        # — the canonical pytorch dev build — otherwise errors. This lets it just work.
+        client.V1EnvVar(name="PIP_BREAK_SYSTEM_PACKAGES", value="1"),
     ]
 
 
