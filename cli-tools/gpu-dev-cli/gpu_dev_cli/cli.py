@@ -1295,7 +1295,10 @@ def reserve(
             )
 
             persistent_reservations = []
-            if not ignore_no_persist:
+            # Only warn about a same-disk conflict when the user actually wants a
+            # disk. If they explicitly asked for none (--no-persist / --disk none),
+            # the "you'll start empty" warning is redundant noise — skip it.
+            if not ignore_no_persist and not no_persist and not explicit_no_disk_from_param:
                 existing_reservations = reservation_mgr.list_reservations(
                     user_filter=user_info["user_id"],
                     statuses_to_include=[
