@@ -4882,6 +4882,15 @@ def create_pod(
 
                         # Write CPU thread limits for SSH sessions
                         # Container env vars are not inherited by SSH login shells
+                        # Ensure ~/.local/bin is on PATH for ALL pods, every disk
+                        # state — Claude Code's self-updater installs there, and we
+                        # intentionally keep that opt-in newer claude. /etc is
+                        # container-level so this is fresh on every pod start.
+                        echo 'export PATH="$HOME/.local/bin:$PATH"' > /etc/profile.d/zz-local-bin.sh
+                        chmod 644 /etc/profile.d/zz-local-bin.sh
+                        mkdir -p /etc/zsh
+                        grep -q '/.local/bin' /etc/zsh/zshenv 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> /etc/zsh/zshenv
+
                         # Use /etc/profile.d/ for bash and /etc/zsh/zshenv for zsh
                         if [ -n "$GPU_DEV_THREAD_COUNT" ]; then
                             echo "[STARTUP] Writing CPU thread limits for SSH sessions..."

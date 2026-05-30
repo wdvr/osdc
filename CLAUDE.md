@@ -51,6 +51,28 @@ Currently we're working on a developer servers with GPUs in AWS. This means we'l
 
 # AGENT SECTION
 
+## Instant-sandboxes branch — WIP & things to fix (2026-05-29)
+
+Big push on warm pools + instant claims + prebuilt pytorch. Tracking state here so it's not lost.
+
+**Committed, needs deploy/activation:**
+- `tf apply` (branch `instant-sandboxes`): warm-pool reconciler + fail-open claim hook, async hot-refill on claim, async per-user EFS mount, processor self-invoke IAM, Bedrock marketplace perms on pod IRSA, pytorch `ref` staging, availability counts warm-ready as available, git-cache worktree snapshot + `pytorch-snapshot` DaemonSet, processor Function URL.
+- Reinstall **CLI + SDK**: `--direct` (default on) synchronous claim, `--ref` (pr/commit/branch), `--no-persist`+`--disk` conflict guard, Function-URL cache (`~/.config/gpu-dev/direct-url.json`).
+- Rebuild **gpu-dev image**: Claude Code cache-bust (latest), `~/.local/bin` on PATH (bash+zsh, all disks).
+- **Meta/fbcode**: grant the user IAM role `lambda:InvokeFunctionUrl` + `lambda:GetFunctionUrlConfig` (scoped to reservation-processor) so `--direct` works; otherwise it falls back to SQS silently.
+
+**In progress — prebuilt viable/strict + warm ccache (importable torch + marginal C++ build):**
+- [ ] Dedicated `m7i.48xlarge` build node group (always-on; cost approved).
+- [ ] Hourly **stateful incremental** build CronJob: venv, CUDA 12.8, `TORCH_CUDA_ARCH_LIST=9.0;10.0`, build at **`/home/dev/pytorch`** (path-match for relocatable incremental), only when viable/strict SHA bumps.
+- [ ] Per-arch snapshot tarball (x86=CUDA, arm=CPU) published via git-cache, pulled to NVMe by `pytorch-snapshot` DaemonSet (arch-aware).
+- [ ] `stage-pytorch` reflink-copies the built tree + sets PYTHONPATH so `import torch` works with no pod-side build.
+- [ ] Empirical build test running on pod `gpu-dev-buildtest` (gpu-dev ns) — **delete it when done**. Measuring cold + incremental on cpu-x86 (28-core). Note: PEP668 → build needs venv/`--break-system-packages`.
+
+**To fix / todo:**
+- [ ] SSH CA certs to drop the ~0.33s `kubectl exec` key injection on warm claim (auth-model change).
+- [ ] AMI baker re-bakes on every base-EKS-AMI roll (5 baked AMIs in 2 days): pin the base AMI version + clean up old `gpu-dev-baked-*`.
+- [ ] Warm pods: gate `warm-state=ready` on staging completion (currently static label; reflink copy is fast so low risk).
+
 ## Issues I found with the description above
 
 - I am not sure terraform-aws-github-runner is correctly described. Next time I go over this code for maintenance or adding something, I'll inform the user of what I think should change. This is not an active goal though, just a sidequest.
