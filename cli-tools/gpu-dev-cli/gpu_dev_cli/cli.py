@@ -1403,6 +1403,7 @@ def reserve(
                     github_user=user_info["github_user"], ref=ref)
                 if direct_res:
                     _show_direct_success(direct_res, time.time() - _t0)
+                    _maybe_show_sdk_tip()
                     _maybe_autoconnect(ctx, direct_res.get("reservation_id"), no_connect)
                     return
                 live.start()
@@ -1507,6 +1508,7 @@ def reserve(
                 else:
                     if trace:
                         reservation_mgr.display_reservation_trace(reservation_ids[0])
+                    _maybe_show_sdk_tip()
                     _maybe_autoconnect(ctx, reservation_ids[0], no_connect)
         else:
             rprint("[red]❌ Failed to create reservation[/red]")
@@ -3062,6 +3064,28 @@ def show(ctx: click.Context, reservation_id: Optional[str]) -> None:
     except Exception as e:
         rprint(f"[red]❌ Error: {str(e)}[/red]")
 
+
+
+def _maybe_show_sdk_tip() -> None:
+    """For a user's first few reservations, nudge them toward the Python SDK +
+    `gpu-dev repro` for sub-second, scriptable workflows. Counted locally."""
+    try:
+        import json
+        path = os.path.expanduser("~/.config/gpu-dev/reserve-count.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            n = int(json.load(open(path)).get("count", 0))
+        except Exception:
+            n = 0
+        n += 1
+        json.dump({"count": n}, open(path, "w"))
+        if n <= 5:
+            rprint(
+                "\n[bold cyan]✨ NEW:[/bold cyan] use the [bold]gpu_dev[/bold] Python SDK for "
+                "sub-second reservations + repro GitHub issues →\n"
+                "   [underline]https://github.com/wdvr/osdc/blob/main/docs/SDK_REPRO.md[/underline]")
+    except Exception:
+        pass
 
 
 def _maybe_autoconnect(ctx: click.Context, rid: Optional[str], no_connect: bool) -> None:
