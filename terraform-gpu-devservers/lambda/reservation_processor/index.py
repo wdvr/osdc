@@ -1615,9 +1615,15 @@ def try_claim_warm_pod(body: dict) -> bool:
 
         pod_name = candidate.metadata.name
         # Lambda runs serialized (reserved concurrency 1) so no claim race.
+        # Graduate the pod OUT of the warm pool: flip app to gpu-dev-pod (so it
+        # matches normal reservations) and clear the warm-* labels. After this it's
+        # invisible to _list_warm_pods (app=gpu-dev-warm), so neither the reconciler
+        # nor eviction can ever count or delete it — it's just a reservation. The
+        # SSH service selects by `reservation`, not `app`, so connectivity is intact.
         v1.patch_namespaced_pod(
             pod_name, "gpu-dev",
-            {"metadata": {"labels": {"warm-state": "claimed"},
+            {"metadata": {"labels": {"app": "gpu-dev-pod", "warm-state": None,
+                                     "warm-gpu-type": None, "warm-gpu-count": None},
                           "annotations": {"gpu-dev-user-id": user_id or ""}}},
         )
         record_trace_event(trace_data, "warm_pod_labeled")
