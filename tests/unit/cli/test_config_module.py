@@ -107,12 +107,12 @@ def test_environments_have_expected_regions():
     assert Config.ENVIRONMENTS["staging"]["region"] == "us-west-1"
 
 
-def test_staging_uses_standard_prefix_and_test_workspace():
+def test_staging_uses_standard_prefix_and_default_workspace():
     # Staging carries the SAME standard prefix as prod (no custom prefix), and
-    # maps to tf workspace "test". Validated against live staging in cbaef6d.
+    # maps to the tf "default" workspace (us-west-1, environment=test).
     staging = Config.ENVIRONMENTS["staging"]
     assert "prefix" not in staging
-    assert staging["workspace"] == "test"
+    assert staging["workspace"] == "default"
     # prod has no custom prefix override either
     assert "prefix" not in Config.ENVIRONMENTS["prod"]
 
@@ -340,7 +340,7 @@ def test_set_environment_to_staging_sets_west1(make_config):
     cfg = make_config()
     cfg.set_environment("staging")
     assert cfg.aws_region == "us-west-1"
-    assert cfg.user_config["workspace"] == "test"
+    assert cfg.user_config["workspace"] == "default"
 
 
 # --------------------------------------------------------------------------
