@@ -14,7 +14,9 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv
       - name: Install package + test deps
-        run: uv pip install --system -e ".[test]"
+        run: uv pip install -e ".[test]"
       - name: Run unit + mock tests (integration excluded)
-        run: pytest -m "not integration"
+        run: uv run pytest -m "not integration"
