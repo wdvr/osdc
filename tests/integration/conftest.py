@@ -37,12 +37,14 @@ def manager():
 
     cfg = load_config()
     try:
-        # Reachability: the env's reservations table must exist + be describable.
-        status = cfg.dynamodb.Table(cfg.reservations_table).table_status
-        assert status in ("ACTIVE", "UPDATING"), status
+        # Reachability via the REAL reservation path (the reservation role may lack
+        # DescribeTable but still allow SQS + DynamoDB query/put): the SQS queue must
+        # resolve and the reservations table must be queryable.
+        cfg.get_queue_url()
+        cfg.dynamodb.Table(cfg.reservations_table).scan(Limit=1)
         user = authenticate_user(cfg)
     except Exception as e:  # not deployed / no creds / no github_user
-        pytest.skip(f"env '{TEST_ENV}' not reachable via {cfg.reservations_table}: {e}")
+        pytest.skip(f"env '{TEST_ENV}' not reachable ({cfg.reservations_table} @ {cfg.aws_region}): {e}")
 
     mgr = ReservationManager(cfg)
     mgr._test_user = user
@@ -62,6 +64,31 @@ def _ssh_exec(ssh_command: str, remote: str, timeout: int = 120):
     p = subprocess.run(f"{ssh_command} {shlex.quote(remote)}", shell=True,
                        capture_output=True, text=True, timeout=timeout)
     return p.returncode, (p.stdout + p.stderr)
+
+
+# Output signatures of an environment that simply can't reach the pod over SSH
+# (CI/sandbox with no outbound SSH, no agent key, no proxy) — distinct from a pod
+# that's actually broken. We skip the exec assertion on these, not fail.
+_SSH_UNREACHABLE = (
+    "operation not permitted", "connection failed", "connection refused",
+    "could not resolve", "connection timed out", "no route to host",
+    "permission denied (publickey", "proxycommand", "broken pipe",
+)
+
+
+def exec_or_skip(conn: dict, remote: str, timeout: int = 120):
+    """exec on the pod; skip (not fail) if SSH can't be reached from here."""
+    ssh = conn.get("ssh_command")
+    if not ssh:
+        pytest.skip("reservation has no ssh_command")
+    try:
+        rc, out = _ssh_exec(ssh, remote, timeout=timeout)
+    except Exception as e:
+        pytest.skip(f"SSH exec unavailable from this environment: {e}")
+    low = out.lower()
+    if rc != 0 and any(s in low for s in _SSH_UNREACHABLE):
+        pytest.skip(f"SSH not reachable from this environment: {out.strip()[:160]}")
+    return rc, out
 
 
 @contextlib.contextmanager

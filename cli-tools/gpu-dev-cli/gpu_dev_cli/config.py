@@ -29,15 +29,14 @@ class Config:
             "description": "Spot-only us-east-1 environment (T4/L4/CPU)",
             "spot_types": ["b300", "b200", "h200", "h100", "a100", "t4", "l4", "rtxpro6000"],
         },
-        # Staging (us-west-2). Resources carry the staging-west2 prefix, so the CLI
-        # must override the default name prefix to reach them. Used for integration
-        # tests (cpu + t4). Select via `GPU_DEV_ENVIRONMENT=staging` or config.
+        # Staging (us-west-1, tf workspace "test"). Same standard resource prefix
+        # as prod, just a different region — so only the region changes. Live
+        # capacity: cpu-x86/arm + t4. Used for integration tests. Select via
+        # `GPU_DEV_ENVIRONMENT=staging` (or the legacy "test" env, same target).
         "staging": {
-            "region": "us-west-2",
-            "workspace": "staging",
-            "description": "Staging (us-west-2, spot t4/l4/cpu)",
-            "prefix": "pytorch-gpu-dev-staging-west2",
-            "spot_types": ["t4", "l4", "a10g", "cpu-spot"],
+            "region": "us-west-1",
+            "workspace": "test",
+            "description": "Staging (us-west-1, cpu + t4)",
         },
     }
     DEFAULT_ENVIRONMENT = "prod"
