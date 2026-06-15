@@ -84,6 +84,8 @@ resource "aws_iam_role_policy" "eks_node_bedrock_policy" {
         Action = [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
+          # bedrock-runtime OpenAI-compatible endpoint (codex/gpt-oss); mirrors pod IRSA.
+          "bedrock:CallWithBearerToken",
           "bedrock:ListInferenceProfiles",
           "bedrock:GetInferenceProfile",
           "bedrock:ListFoundationModels",

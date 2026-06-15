@@ -163,21 +163,30 @@ WORKDIR /home/dev
 RUN mkdir -p ~/.npm-global && \
     npm config set prefix ~/.npm-global
 
-# OpenAI Codex CLI on GPT-5.5 via AWS Bedrock (GA 2026-06-01). Installed system-wide
-# (parallels Claude above), then /usr/local/bin/codex is replaced with a thin wrapper that
-# auths via the pod IRSA — it mints a short-lived Bedrock bearer token (no per-user OpenAI
-# key) and pins the bedrock-mantle provider + GPT-5.5 metadata. Reasoning effort is set with
-# the CODEX_EFFORT env var (default high); the wrapper rewrites ~/.codex/config.toml each
-# launch (home is ephemeral) so a /model picker mishap self-heals on restart. IAM is already
-# in place (pod IRSA: bedrock-mantle:* + aws-marketplace:Subscribe).
+# OpenAI Codex CLI on gpt-oss-120b via AWS Bedrock. Installed system-wide (parallels
+# Claude above), then /usr/local/bin/codex is replaced with a thin wrapper that auths
+# via the pod IRSA — it mints a short-lived Bedrock bearer token (no per-user OpenAI key)
+# and pins the bedrock provider + gpt-oss-120b metadata. Reasoning effort via the
+# CODEX_EFFORT env var (default medium); the wrapper rewrites ~/.codex/config.toml each
+# launch (home is ephemeral) so a /model picker mishap self-heals on restart.
+#
+# WHY gpt-oss-120b + pinned codex 0.94: AWS retired openai.gpt-5.5 from Bedrock (2026-06)
+# — it's gone from list-foundation-models and Converse rejects it. The only OpenAI models
+# left (gpt-oss-120b/20b) are chat/completions-only; NO Bedrock model currently supports
+# the OpenAI `responses` API. codex >= 0.95 dropped `wire_api = "chat"` (requires
+# responses), so we pin to 0.94 — the last chat-capable release — and talk to gpt-oss over
+# the bedrock-runtime OpenAI endpoint. Revert to gpt-5.5 + responses + latest codex if a
+# responses-capable model returns to Bedrock. IAM: pod IRSA needs bedrock:CallWithBearerToken
+# (the bedrock-runtime OpenAI endpoint requires it) + aws-marketplace:Subscribe.
 USER root
-RUN npm install -g --prefix /usr/local @openai/codex || echo "Codex CLI install failed (non-fatal at build time)"
+# Pin: 0.94 is the last codex release supporting wire_api="chat" (see note above).
+RUN npm install -g --prefix /usr/local @openai/codex@0.94.0 || echo "Codex CLI install failed (non-fatal at build time)"
 # Bedrock wrapper, base64-embedded to avoid heredoc/quoting fragility. It execs the real
 # launcher at /usr/local/lib/node_modules/@openai/codex/bin/codex.js. CRITICAL: `npm install`
 # leaves /usr/local/bin/codex as a SYMLINK to that codex.js, so we must `rm -f` it first —
 # writing through the symlink would clobber codex.js itself, making the wrapper exec itself
 # (infinite recursion -> codex hangs on launch).
-RUN rm -f /usr/local/bin/codex && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaAojIENvZGV4IHdpcmVkIHRvIEdQVC01LjUgb24gQVdTIEJlZHJvY2sgKHVzLWVhc3QtMiBtYW50bGUgZW5kcG9pbnQpLgojIEF1dGggdmlhIHRoZSBwb2QgSVJTQSAtPiBzaG9ydC1saXZlZCAofjEyaCkgQmVkcm9jayBiZWFyZXIgdG9rZW47IG5vIHBlci11c2VyIGtleS4KIyBSZWFzb25pbmcgZWZmb3J0IHZpYSBDT0RFWF9FRkZPUlQgZW52IChkZWZhdWx0IGhpZ2gpLiBUaGUgY29uZmlnIGlzIChyZSl3cml0dGVuIG9uCiMgZXZlcnkgbGF1bmNoOiAvaG9tZS9kZXYgaXMgZXBoZW1lcmFsLCBhbmQgdGhpcyBhbHNvIHNlbGYtaGVhbHMgYSAvbW9kZWwgbWlzaGFwCiMgKHRoZSBwaWNrZXIgY2FuIGNvcnJ1cHQgdGhlIG1vZGVsIGlkOyByZXN0YXJ0aW5nIGNvZGV4IHJlc2V0cyBpdCkuCnNldCArZQpSRUFMPS91c3IvbG9jYWwvbGliL25vZGVfbW9kdWxlcy9Ab3BlbmFpL2NvZGV4L2Jpbi9jb2RleC5qcwpFRkZPUlQ9IiR7Q09ERVhfRUZGT1JUOi1oaWdofSIKbWtkaXIgLXAgIiRIT01FLy5jb2RleCIgMj4vZGV2L251bGwKY2F0ID4gIiRIT01FLy5jb2RleC9jb25maWcudG9tbCIgPDxDRkcKbW9kZWwgPSAib3BlbmFpLmdwdC01LjUiCm1vZGVsX3Byb3ZpZGVyID0gImJlZHJvY2siCndlYl9zZWFyY2ggPSAiZGlzYWJsZWQiCm1vZGVsX2NvbnRleHRfd2luZG93ID0gMjcyMDAwCm1vZGVsX21heF9vdXRwdXRfdG9rZW5zID0gMTI4MDAwCm1vZGVsX3JlYXNvbmluZ19lZmZvcnQgPSAiJEVGRk9SVCIKClttb2RlbF9wcm92aWRlcnMuYmVkcm9ja10KbmFtZSA9ICJBV1MgQmVkcm9jayAoR1BULTUuNSkiCmJhc2VfdXJsID0gImh0dHBzOi8vYmVkcm9jay1tYW50bGUudXMtZWFzdC0yLmFwaS5hd3Mvb3BlbmFpL3YxIgplbnZfa2V5ID0gIk9QRU5BSV9BUElfS0VZIgp3aXJlX2FwaSA9ICJyZXNwb25zZXMiCkNGRwpUT0s9IiQoL3Vzci9iaW4vcHl0aG9uMyAtYyAnZnJvbSBhd3NfYmVkcm9ja190b2tlbl9nZW5lcmF0b3IgaW1wb3J0IHByb3ZpZGVfdG9rZW47IHByaW50KHByb3ZpZGVfdG9rZW4ocmVnaW9uPSJ1cy1lYXN0LTIiKSknIDI+L2Rldi9udWxsKSIKWyAtbiAiJFRPSyIgXSAmJiBleHBvcnQgT1BFTkFJX0FQSV9LRVk9IiRUT0siCmV4ZWMgIiRSRUFMIiAiJEAiCg==' | base64 -d > /usr/local/bin/codex && chmod 0755 /usr/local/bin/codex
+RUN rm -f /usr/local/bin/codex && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaAojIENvZGV4IHdpcmVkIHRvIGdwdC1vc3MtMTIwYiBvbiBBV1MgQmVkcm9jayAodXMtZWFzdC0yIE9wZW5BSS1jb21wYXRpYmxlIGVuZHBvaW50KS4KIyBBdXRoIHZpYSB0aGUgcG9kIElSU0EgLT4gc2hvcnQtbGl2ZWQgKH4xMmgpIEJlZHJvY2sgYmVhcmVyIHRva2VuOyBubyBwZXItdXNlciBrZXkuCiMgTk9URTogZ3B0LTUuNSB3YXMgcmV0aXJlZCBmcm9tIEJlZHJvY2sgKDIwMjYtMDYpIGFuZCBjb2RleCA+PTAuOTUgZHJvcHBlZAojIHdpcmVfYXBpPSJjaGF0Iiwgc28gY29kZXggaXMgcGlubmVkIHRvIDAuOTQgKGxhc3QgY2hhdC1jYXBhYmxlIHJlbGVhc2UpIGFuZCB1c2VzCiMgZ3B0LW9zcy0xMjBiIChjaGF0L2NvbXBsZXRpb25zIG9ubHkpLiBSZXZlcnQgdG8gZ3B0LTUuNSArIHdpcmVfYXBpPXJlc3BvbnNlcyBpZiBhCiMgcmVzcG9uc2VzLWNhcGFibGUgbW9kZWwgcmV0dXJucyB0byBCZWRyb2NrLiBSZWFzb25pbmcgZWZmb3J0IHZpYSBDT0RFWF9FRkZPUlQKIyAoZGVmYXVsdCBtZWRpdW0pLiBDb25maWcgaXMgcmV3cml0dGVuIGVhY2ggbGF1bmNoICgvaG9tZS9kZXYgaXMgZXBoZW1lcmFsKS4Kc2V0ICtlClJFQUw9L3Vzci9sb2NhbC9saWIvbm9kZV9tb2R1bGVzL0BvcGVuYWkvY29kZXgvYmluL2NvZGV4LmpzCkVGRk9SVD0iJHtDT0RFWF9FRkZPUlQ6LW1lZGl1bX0iCm1rZGlyIC1wICIkSE9NRS8uY29kZXgiIDI+L2Rldi9udWxsCmNhdCA+ICIkSE9NRS8uY29kZXgvY29uZmlnLnRvbWwiIDw8Q0ZHCm1vZGVsID0gIm9wZW5haS5ncHQtb3NzLTEyMGItMTowIgptb2RlbF9wcm92aWRlciA9ICJiZWRyb2NrIgp3ZWJfc2VhcmNoID0gImRpc2FibGVkIgptb2RlbF9jb250ZXh0X3dpbmRvdyA9IDEzMTA3Mgptb2RlbF9yZWFzb25pbmdfZWZmb3J0ID0gIiRFRkZPUlQiCgpbbW9kZWxfcHJvdmlkZXJzLmJlZHJvY2tdCm5hbWUgPSAiQVdTIEJlZHJvY2sgKGdwdC1vc3MtMTIwYikiCmJhc2VfdXJsID0gImh0dHBzOi8vYmVkcm9jay1ydW50aW1lLnVzLWVhc3QtMi5hbWF6b25hd3MuY29tL29wZW5haS92MSIKZW52X2tleSA9ICJPUEVOQUlfQVBJX0tFWSIKd2lyZV9hcGkgPSAiY2hhdCIKQ0ZHClRPSz0iJCgvdXNyL2Jpbi9weXRob24zIC1jICdmcm9tIGF3c19iZWRyb2NrX3Rva2VuX2dlbmVyYXRvciBpbXBvcnQgcHJvdmlkZV90b2tlbjsgcHJpbnQocHJvdmlkZV90b2tlbihyZWdpb249InVzLWVhc3QtMiIpKScgMj4vZGV2L251bGwpIgpbIC1uICIkVE9LIiBdICYmIGV4cG9ydCBPUEVOQUlfQVBJX0tFWT0iJFRPSyIKZXhlYyAiJFJFQUwiICIkQCIK' | base64 -d > /usr/local/bin/codex && chmod 0755 /usr/local/bin/codex
 
 USER dev
 

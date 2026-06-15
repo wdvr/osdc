@@ -90,6 +90,10 @@ resource "aws_iam_role_policy" "gpu_dev_pod_policy" {
         Action = [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
+          # Required by the bedrock-runtime OpenAI-compatible endpoint
+          # (https://bedrock-runtime.<region>.amazonaws.com/openai/v1) that codex
+          # uses for gpt-oss-120b. Without it the endpoint 401s.
+          "bedrock:CallWithBearerToken",
           "bedrock:ListInferenceProfiles",
           "bedrock:GetInferenceProfile",
           "bedrock:ListFoundationModels",
