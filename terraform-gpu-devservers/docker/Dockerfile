@@ -175,9 +175,9 @@ RUN mkdir -p ~/.npm-global && \
 # launch (home is ephemeral). IAM already in place (pod IRSA: bedrock-mantle:* — the native
 # Mantle path does NOT need bedrock:CallWithBearerToken).
 USER root
-# Pin to a validated codex version (the native amazon-bedrock provider is stable across
-# these; pinning avoids a surprise rebuild pulling a regressed release). Bump when validated.
-RUN npm install -g --prefix /usr/local @openai/codex@0.140.0 || echo "Codex CLI install failed (non-fatal at build time)"
+# Always install the latest codex (the native amazon-bedrock provider is stable across
+# releases, so no need to pin — each image rebuild tracks latest). Validated on 0.140.0.
+RUN npm install -g --prefix /usr/local @openai/codex || echo "Codex CLI install failed (non-fatal at build time)"
 # Bedrock wrapper, base64-embedded to avoid heredoc/quoting fragility. It execs the real
 # launcher at /usr/local/lib/node_modules/@openai/codex/bin/codex.js. CRITICAL: `npm install`
 # leaves /usr/local/bin/codex as a SYMLINK to that codex.js, so we must `rm -f` it first —
