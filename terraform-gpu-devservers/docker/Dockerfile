@@ -169,11 +169,16 @@ RUN mkdir -p ~/.npm-global && \
 # per-user key. The wrapper uses codex's NATIVE `amazon-bedrock` model provider (the Bedrock
 # Mantle path serves the OpenAI Responses API for supported OpenAI models — per the official
 # Codex/Bedrock docs), so NO custom endpoint/wire_api config is needed. Model via CODEX_MODEL
-# (default openai.gpt-5.5), effort via CODEX_EFFORT (default high). The wrapper forces
-# AWS_REGION=us-east-1 — gpt-5.5 is provisioned there (us-east-2 returns 404 "Engine not
-# found" for 5.5; gpt-5.4 works in both). Escape hatch: CODEX_MODEL=openai.gpt-5.4. The
-# wrapper rewrites ~/.codex/config.toml each launch (home is ephemeral). IAM already in place
-# (pod IRSA: bedrock-mantle:* — the native Mantle path does NOT need bedrock:CallWithBearerToken).
+# (default openai.gpt-5.4), effort via CODEX_EFFORT (default high). The wrapper forces
+# AWS_REGION=us-east-1.
+#
+# Why gpt-5.4 default (2026-06-16): gpt-5.5 is mid-rollout on Bedrock us-east-1 — it works
+# intermittently but ~30% of calls still 404 "Engine not found" (us-east-2 fails outright).
+# gpt-5.4 is rock-solid in us-east-1. To switch to 5.5 once AWS's rollout stabilizes, change
+# the default above to openai.gpt-5.5 (one line) — region is already us-east-1. Users can opt
+# in early with CODEX_MODEL=openai.gpt-5.5. The wrapper rewrites ~/.codex/config.toml each
+# launch. IAM already in place (pod IRSA: bedrock-mantle:* — native Mantle path does NOT need
+# bedrock:CallWithBearerToken).
 USER root
 # Always install the latest codex (the native amazon-bedrock provider is stable across
 # releases, so no need to pin — each image rebuild tracks latest). Validated on 0.140.0.
@@ -183,7 +188,7 @@ RUN npm install -g --prefix /usr/local @openai/codex || echo "Codex CLI install 
 # leaves /usr/local/bin/codex as a SYMLINK to that codex.js, so we must `rm -f` it first —
 # writing through the symlink would clobber codex.js itself, making the wrapper exec itself
 # (infinite recursion -> codex hangs on launch).
-RUN rm -f /usr/local/bin/codex && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaAojIENvZGV4IG9uIE9wZW5BSSBncHQtNS54IHZpYSBBV1MgQmVkcm9jayB1c2luZyBjb2RleCdzIE5BVElWRSBgYW1hem9uLWJlZHJvY2tgCiMgcHJvdmlkZXIuIFJlZ2lvbiB1cy1lYXN0LTEgKHdoZXJlIGdwdC01LjUgaXMgcHJvdmlzaW9uZWQgcGVyIEFXUyBzdXBwb3J0KS4gQXV0aDoKIyBhIHNob3J0LWxpdmVkIEJlZHJvY2sgYmVhcmVyIHRva2VuIG1pbnRlZCBmcm9tIHRoZSBwb2QgSVJTQSAobm8gcGVyLXVzZXIga2V5KS4KIyBNb2RlbCB2aWEgQ09ERVhfTU9ERUwgKGRlZmF1bHQgb3BlbmFpLmdwdC01LjUpLCBlZmZvcnQgdmlhIENPREVYX0VGRk9SVCAoaGlnaCkuCiMKIyBOT1RFICgyMDI2LTA2LTE2KTogZ3B0LTUuNSBzZXJ2ZXMgb24gdGhlIHJhdyAvb3BlbmFpL3YxL3Jlc3BvbnNlcyBBUEkgaW4gdXMtZWFzdC0xLAojIGJ1dCB0aGUgQ29kZXggYW1hem9uLWJlZHJvY2sgcHJvdmlkZXIncyBlbmdpbmUvam9iIHBhdGggcmV0dXJucyA0MDQgIkVuZ2luZSBub3QKIyBmb3VuZCIgdW50aWwgQVdTIHByb3Zpc2lvbnMgdGhlIGdwdC01LjUgZW5naW5lLiBVbnRpbCB0aGF0J3MgY29uZmlybWVkLCBzZXQKIyBDT0RFWF9NT0RFTD1vcGVuYWkuZ3B0LTUuNCAod29ya3MgdG9kYXkgb24gdGhlIHNhbWUgcGF0aC9yZWdpb24pLiBGbGlwIHRoZSBkZWZhdWx0CiMgYmFjayB0byBncHQtNS40IGhlcmUgaWYgeW91IG5lZWQgdG8gZGVwbG95IGJlZm9yZSBBV1MgZmluaXNoZXMuCnNldCArZQpNT0RFTD0iJHtDT0RFWF9NT0RFTDotb3BlbmFpLmdwdC01LjV9IgpFRkZPUlQ9IiR7Q09ERVhfRUZGT1JUOi1oaWdofSIKZXhwb3J0IEFXU19SRUdJT049dXMtZWFzdC0xIEFXU19ERUZBVUxUX1JFR0lPTj11cy1lYXN0LTEKbWtkaXIgLXAgIiRIT01FLy5jb2RleCIKY2F0ID4gIiRIT01FLy5jb2RleC9jb25maWcudG9tbCIgPDxDRkcKbW9kZWxfcHJvdmlkZXIgPSAiYW1hem9uLWJlZHJvY2siCm1vZGVsID0gIiRNT0RFTCIKbW9kZWxfcmVhc29uaW5nX2VmZm9ydCA9ICIkRUZGT1JUIgp3ZWJfc2VhcmNoID0gImRpc2FibGVkIgpDRkcKVE9LPSIkKC91c3IvYmluL3B5dGhvbjMgLWMgJ2Zyb20gYXdzX2JlZHJvY2tfdG9rZW5fZ2VuZXJhdG9yIGltcG9ydCBwcm92aWRlX3Rva2VuOyBwcmludChwcm92aWRlX3Rva2VuKHJlZ2lvbj0idXMtZWFzdC0xIikpJyAyPi9kZXYvbnVsbCkiClsgLW4gIiRUT0siIF0gJiYgZXhwb3J0IEFXU19CRUFSRVJfVE9LRU5fQkVEUk9DSz0iJFRPSyIKZXhlYyAvdXNyL2xvY2FsL2xpYi9ub2RlX21vZHVsZXMvQG9wZW5haS9jb2RleC9iaW4vY29kZXguanMgIiRAIgo=' | base64 -d > /usr/local/bin/codex && chmod 0755 /usr/local/bin/codex
+RUN rm -f /usr/local/bin/codex && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaAojIENvZGV4IG9uIE9wZW5BSSBncHQtNS54IHZpYSBBV1MgQmVkcm9jayB1c2luZyBjb2RleCdzIE5BVElWRSBgYW1hem9uLWJlZHJvY2tgCiMgcHJvdmlkZXIuIFJlZ2lvbiB1cy1lYXN0LTEgKHdoZXJlIGdwdC01LjUgaXMgcHJvdmlzaW9uZWQgcGVyIEFXUyBzdXBwb3J0KS4gQXV0aDoKIyBhIHNob3J0LWxpdmVkIEJlZHJvY2sgYmVhcmVyIHRva2VuIG1pbnRlZCBmcm9tIHRoZSBwb2QgSVJTQSAobm8gcGVyLXVzZXIga2V5KS4KIyBNb2RlbCB2aWEgQ09ERVhfTU9ERUwgKGRlZmF1bHQgb3BlbmFpLmdwdC01LjUpLCBlZmZvcnQgdmlhIENPREVYX0VGRk9SVCAoaGlnaCkuCiMKIyBOT1RFICgyMDI2LTA2LTE2KTogZ3B0LTUuNSBzZXJ2ZXMgb24gdGhlIHJhdyAvb3BlbmFpL3YxL3Jlc3BvbnNlcyBBUEkgaW4gdXMtZWFzdC0xLAojIGJ1dCB0aGUgQ29kZXggYW1hem9uLWJlZHJvY2sgcHJvdmlkZXIncyBlbmdpbmUvam9iIHBhdGggcmV0dXJucyA0MDQgIkVuZ2luZSBub3QKIyBmb3VuZCIgdW50aWwgQVdTIHByb3Zpc2lvbnMgdGhlIGdwdC01LjUgZW5naW5lLiBVbnRpbCB0aGF0J3MgY29uZmlybWVkLCBzZXQKIyBDT0RFWF9NT0RFTD1vcGVuYWkuZ3B0LTUuNCAod29ya3MgdG9kYXkgb24gdGhlIHNhbWUgcGF0aC9yZWdpb24pLiBGbGlwIHRoZSBkZWZhdWx0CiMgYmFjayB0byBncHQtNS40IGhlcmUgaWYgeW91IG5lZWQgdG8gZGVwbG95IGJlZm9yZSBBV1MgZmluaXNoZXMuCnNldCArZQpNT0RFTD0iJHtDT0RFWF9NT0RFTDotb3BlbmFpLmdwdC01LjR9IgpFRkZPUlQ9IiR7Q09ERVhfRUZGT1JUOi1oaWdofSIKZXhwb3J0IEFXU19SRUdJT049dXMtZWFzdC0xIEFXU19ERUZBVUxUX1JFR0lPTj11cy1lYXN0LTEKbWtkaXIgLXAgIiRIT01FLy5jb2RleCIKY2F0ID4gIiRIT01FLy5jb2RleC9jb25maWcudG9tbCIgPDxDRkcKbW9kZWxfcHJvdmlkZXIgPSAiYW1hem9uLWJlZHJvY2siCm1vZGVsID0gIiRNT0RFTCIKbW9kZWxfcmVhc29uaW5nX2VmZm9ydCA9ICIkRUZGT1JUIgp3ZWJfc2VhcmNoID0gImRpc2FibGVkIgpDRkcKVE9LPSIkKC91c3IvYmluL3B5dGhvbjMgLWMgJ2Zyb20gYXdzX2JlZHJvY2tfdG9rZW5fZ2VuZXJhdG9yIGltcG9ydCBwcm92aWRlX3Rva2VuOyBwcmludChwcm92aWRlX3Rva2VuKHJlZ2lvbj0idXMtZWFzdC0xIikpJyAyPi9kZXYvbnVsbCkiClsgLW4gIiRUT0siIF0gJiYgZXhwb3J0IEFXU19CRUFSRVJfVE9LRU5fQkVEUk9DSz0iJFRPSyIKZXhlYyAvdXNyL2xvY2FsL2xpYi9ub2RlX21vZHVsZXMvQG9wZW5haS9jb2RleC9iaW4vY29kZXguanMgIiRAIgo=' | base64 -d > /usr/local/bin/codex && chmod 0755 /usr/local/bin/codex
 
 USER dev
 
