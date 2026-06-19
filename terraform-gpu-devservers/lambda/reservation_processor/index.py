@@ -5351,6 +5351,9 @@ EFAEOF
                             echo "[STARTUP] PyTorch ARM64 installation complete"
                         fi
 
+                        # Install Claude Code for ARM64 CPU instances (runs after dev user setup below)
+                        INSTALL_CLAUDE_CODE_ARM="{gpu_type}"
+
                         echo "[STARTUP] Setting up dev user..."
                         # Create dev user with UID 1081 to avoid conflicts with common base image users (e.g., ubuntu=1000)
                         # Use zsh as default shell, fallback to bash if not available
@@ -6498,6 +6501,19 @@ EOF
                         else
                             echo "[STARTUP] No shared storage - skipping backup setup"
                             trap 'kill $SSHD_PID 2>/dev/null; exit 0' TERM INT
+                        fi
+
+                        # Install Claude Code for ARM64 CPU instances (not in base image)
+                        if [ "$INSTALL_CLAUDE_CODE_ARM" = "cpu-arm" ]; then
+                            echo "[STARTUP] Installing Claude Code for ARM64..."
+                            # Install as dev user so it goes to ~/.local/bin
+                            su - dev -c 'curl -fsSL https://claude.ai/install.sh | bash' || echo "[STARTUP] Warning: Claude Code installation failed"
+                            # Add PATH and Bedrock config to shell RC files
+                            echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/dev/.zshrc
+                            echo 'export CLAUDE_CODE_USE_BEDROCK=1' >> /home/dev/.zshrc
+                            echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/dev/.bashrc
+                            echo 'export CLAUDE_CODE_USE_BEDROCK=1' >> /home/dev/.bashrc
+                            echo "[STARTUP] ✓ Claude Code installed for ARM64"
                         fi
 
                         # Run user's custom startup script if it exists
