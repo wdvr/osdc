@@ -316,6 +316,13 @@ class Config:
         """Get a config value."""
         return self.user_config.get(key)
 
+    def get_default_node_labels(self) -> Dict[str, str]:
+        """Get node labels applied to reservations unless explicitly overridden."""
+        value = self.user_config.get("default_node_labels", {})
+        if not isinstance(value, dict):
+            return {}
+        return {str(key): str(label_value) for key, label_value in value.items()}
+
     def get_github_username(self) -> Optional[str]:
         """Get GitHub username, falling back to GPU_DEV_GITHUB_USER env var.
 

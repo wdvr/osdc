@@ -20,12 +20,15 @@ from unittest.mock import MagicMock
 # Tiny k8s object factories (only the fields the source actually reads)
 # --------------------------------------------------------------------------- #
 def make_node(name, allocatable, az="us-east-2a", ready=True,
-              schedulable=True, gpu_type_label=None, zone_label=True):
+              schedulable=True, gpu_type_label=None, zone_label=True,
+              profiling_dedicated=False):
     labels = {}
     if zone_label and az is not None:
         labels["topology.kubernetes.io/zone"] = az
     if gpu_type_label is not None:
         labels["GpuType"] = gpu_type_label
+    if profiling_dedicated:
+        labels["gpu.monitoring/profiling-dedicated"] = "true"
     conditions = [SimpleNamespace(type="Ready", status="True" if ready else "False")]
     return SimpleNamespace(
         metadata=SimpleNamespace(name=name, labels=labels),
@@ -277,6 +280,52 @@ class TestGetTargetAzForReservation:
         assert target_node == "node-a"
         assert az == "az-a"
 
+    def test_nsight_request_only_considers_profiling_nodes(self, monkeypatch, lambda_index):
+        regular = make_node(
+            "regular", allocatable={"nvidia.com/gpu": "8"},
+            az="az-regular", gpu_type_label="b200",
+        )
+        profiling = make_node(
+            "profiling", allocatable={"nvidia.com/gpu": "8"},
+            az="az-profiling", gpu_type_label="b200", profiling_dedicated=True,
+        )
+        v1 = self._patch_k8s(monkeypatch, lambda_index, [regular, profiling])
+        free = {"regular": 0, "profiling": 8}
+        monkeypatch.setattr(
+            lambda_index,
+            "get_available_gpus_on_node",
+            lambda _v1, node, _gpu_type: free[node.metadata.name],
+        )
+
+        assert lambda_index.get_target_az_for_reservation(
+            "b200", 1, {"nsight": "true"}
+        ) == ("az-profiling", "profiling")
+        assert v1.list_node.call_args.kwargs["label_selector"] == (
+            "GpuType=b200,gpu.monitoring/profiling-dedicated=true"
+        )
+
+    def test_regular_request_excludes_profiling_nodes(self, monkeypatch, lambda_index):
+        regular = make_node(
+            "regular", allocatable={"nvidia.com/gpu": "8"},
+            az="az-regular", gpu_type_label="b200",
+        )
+        profiling = make_node(
+            "profiling", allocatable={"nvidia.com/gpu": "8"},
+            az="az-profiling", gpu_type_label="b200", profiling_dedicated=True,
+        )
+        v1 = self._patch_k8s(monkeypatch, lambda_index, [regular, profiling])
+        free = {"regular": 8, "profiling": 0}
+        monkeypatch.setattr(
+            lambda_index,
+            "get_available_gpus_on_node",
+            lambda _v1, node, _gpu_type: free[node.metadata.name],
+        )
+
+        lambda_index.get_target_az_for_reservation("b200", 1)
+        assert v1.list_node.call_args.kwargs["label_selector"] == (
+            "GpuType=b200,!gpu.monitoring/profiling-dedicated"
+        )
+
     def test_skips_not_ready_nodes(self, monkeypatch, lambda_index):
         bad = make_node("bad", allocatable={"nvidia.com/gpu": "8"},
                         az="az-bad", ready=False, gpu_type_label="h100")
@@ -380,7 +429,9 @@ class TestGetTargetAzForReservation:
         lambda_index.get_target_az_for_reservation("h100-mig-1g", 1)
         _, kwargs = v1.list_node.call_args
         # MIG SKU selects the underlying physical node label (h100)
-        assert kwargs["label_selector"] == "GpuType=h100"
+        assert kwargs["label_selector"] == (
+            "GpuType=h100,!gpu.monitoring/profiling-dedicated"
+        )
 
 
 # --------------------------------------------------------------------------- #

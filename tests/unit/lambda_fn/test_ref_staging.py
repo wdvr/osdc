@@ -158,6 +158,11 @@ def test_warm_eligible_disqualifying_flags_false(lambda_index, field):
     assert lambda_index.warm_pool_eligible(_eligible_body(**{field: True})) is False
 
 
+def test_warm_eligible_node_labels_take_cold_path(lambda_index):
+    body = _eligible_body(node_labels={"nsight": "true"})
+    assert lambda_index.warm_pool_eligible(body) is False
+
+
 # ── should_stage_pytorch / stage_flag decision logic ─────────────────────────
 # create_pod computes:  should_stage = (not use_persistent_disk) and ref != "none"
 # We replicate the exact branch logic from index.py and assert each combination.

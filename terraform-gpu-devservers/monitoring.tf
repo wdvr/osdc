@@ -5,12 +5,10 @@
 # - DCGM Exporter: Enabled in GPU Operator (kubernetes.tf), excluded from profiling nodes
 # - NVIDIA DCGM Dashboard: Pre-loaded in Grafana
 #
-# Node Labeling for Profiling:
-# - Label one H100 and one B200 node with: gpu.monitoring/profiling-dedicated=true
-# - These nodes will NOT have DCGM running (avoids conflict with Nsight profiling)
-# - Commands:
-#   kubectl label node <h100-node-name> gpu.monitoring/profiling-dedicated=true
-#   kubectl label node <b200-node-name> gpu.monitoring/profiling-dedicated=true
+# Profiling nodes:
+# - Production H200/B200 nodes are dedicated per capacity reservation and labeled at bootstrap
+# - Staging labels one T4 node through the profiling-node-labeler CronJob
+# - Profiling nodes do not run DCGM exporter
 
 # gp3 StorageClass for Prometheus persistent storage
 resource "kubernetes_storage_class" "gp3" {

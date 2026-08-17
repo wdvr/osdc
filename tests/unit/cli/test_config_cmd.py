@@ -4,8 +4,8 @@ Source under test: cli-tools/gpu-dev-cli/gpu_dev_cli/cli.py
 
 The `config` group has:
   - show: renders a Rich panel of AWS identity + user settings (read-only).
-  - set KEY VALUE: validates KEY against a whitelist (`github_user`) and calls
-    Config.save_config; unknown keys are rejected without saving.
+  - set KEY VALUE: validates KEY against a whitelist and calls Config.save_config;
+    unknown keys are rejected without saving.
 
 `load_config` is imported into the cli module namespace (`from .config import
 ... load_config`), so we patch it at `gpu_dev_cli.cli.load_config`. A MagicMock
@@ -27,6 +27,7 @@ def _config_mock(github_user="bobthebuilder", identity=None, user_cfg=None):
         "account": "123456789012",
     }
     cfg.get_github_username.return_value = github_user
+    cfg.get_default_node_labels.return_value = {}
     _uc = user_cfg or {"environment": "prod", "region": "us-east-2"}
     cfg.get.side_effect = lambda k: _uc.get(k)
     cfg.aws_region = "us-east-2"
@@ -129,6 +130,32 @@ def test_set_github_user_with_dots_is_accepted(cli_runner):
     assert "jane.doe" in r.output
 
 
+def test_set_default_node_labels_saves_mapping(cli_runner):
+    cfg = _config_mock()
+    with patch("gpu_dev_cli.cli.load_config", return_value=cfg):
+        result = cli_runner.invoke(
+            main,
+            ["config", "set", "default_node_labels", "nsight=true,pool=profiling"],
+        )
+
+    assert result.exit_code == 0
+    cfg.save_config.assert_called_once_with(
+        "default_node_labels", {"nsight": "true", "pool": "profiling"}
+    )
+
+
+def test_set_invalid_default_node_label_rejected(cli_runner):
+    cfg = _config_mock()
+    with patch("gpu_dev_cli.cli.load_config", return_value=cfg):
+        result = cli_runner.invoke(
+            main, ["config", "set", "default_node_labels", "nsight"]
+        )
+
+    assert result.exit_code == 0
+    cfg.save_config.assert_not_called()
+    assert "Expected key=value" in result.output
+
+
 def test_set_unknown_key_rejected_without_saving(cli_runner):
     cfg = _config_mock()
     with patch("gpu_dev_cli.cli.load_config", return_value=cfg):
@@ -138,7 +165,8 @@ def test_set_unknown_key_rejected_without_saving(cli_runner):
     cfg.save_config.assert_not_called()
     assert "Unknown config key" in r.output
     assert "totally_bogus" in r.output
-    assert "github_user" in r.output  # listed as the valid key
+    assert "github_user" in r.output  # listed as a valid key
+    assert "default_node_labels" in r.output
 
 
 def test_set_unknown_key_is_case_sensitive(cli_runner):

@@ -452,11 +452,8 @@ def _evict_warm_for_capacity(v1, gpu_type, gpus_requested, ready_nodes):
     return None, None
 
 
-def get_target_az_for_reservation(gpu_type, gpus_requested):
-    """
-    Dynamically determine which AZ the pod will land in based on available capacity.
-    Returns the AZ where the pod will actually be scheduled.
-    """
+def get_target_az_for_reservation(gpu_type, gpus_requested, node_labels=None):
+    """Select a fitting node and AZ that satisfy reservation placement labels."""
     try:
         k8s_client = get_k8s_client()
 
@@ -466,7 +463,15 @@ def get_target_az_for_reservation(gpu_type, gpus_requested):
         logger.info(
             f"Querying nodes for GPU type {gpu_type} with {gpus_requested} GPUs needed")
         node_label_value = get_node_gpu_type(gpu_type)
-        nodes = v1.list_node(label_selector=f"GpuType={node_label_value}")
+        profiling_requested = bool(node_labels and node_labels.get("nsight") == "true")
+        profiling_selector = (
+            ",gpu.monitoring/profiling-dedicated=true"
+            if profiling_requested
+            else ",!gpu.monitoring/profiling-dedicated"
+        )
+        nodes = v1.list_node(
+            label_selector=f"GpuType={node_label_value}{profiling_selector}"
+        )
 
         candidate_nodes = []
         all_ready_nodes = []
@@ -1676,6 +1681,8 @@ def warm_pool_eligible(body: dict) -> bool:
         return False
     if body.get("spot") or body.get("is_multinode") or body.get("disk_name"):
         return False
+    if body.get("node_labels"):
+        return False
     # Warm pods carry master; an explicit ref must take the cold path that
     # stages it. (Default/no ref resolves to master -> claimable.)
     if sanitize_pytorch_ref(body.get("ref")) != "master":
@@ -2178,6 +2185,8 @@ def process_multinode_reservation_request(reservation_request: dict[str, Any]) -
                     initial_record["github_user"] = reservation_request["github_user"]
                 if reservation_request.get("version"):
                     initial_record["cli_version"] = reservation_request["version"]
+                if reservation_request.get("node_labels"):
+                    initial_record["node_labels"] = reservation_request["node_labels"]
                 if reservation_request.get("source_command"):
                     initial_record["source_command"] = reservation_request["source_command"]
                 # Store Lambda version
@@ -2900,6 +2909,8 @@ def process_reservation_request(record: dict[str, Any]) -> bool:
                 # Add github_user if provided
                 if reservation_request.get("github_user"):
                     initial_record["github_user"] = reservation_request["github_user"]
+                if reservation_request.get("node_labels"):
+                    initial_record["node_labels"] = reservation_request["node_labels"]
 
                 # Add Docker options if provided
                 if reservation_request.get("dockerfile"):
@@ -3407,6 +3418,9 @@ def create_reservation(request: dict[str, Any]) -> str:
             # ssh_command will be set when NodePort service is created with real external access
         }
 
+        if request.get("node_labels"):
+            reservation["node_labels"] = request["node_labels"]
+
         # Add multinode fields
         if request.get("is_multinode"):
             reservation["is_multinode"] = True
@@ -3710,7 +3724,9 @@ def allocate_gpu_resources(reservation_id: str, request: dict[str, Any], trace_d
             update_reservation_status(
                 reservation_id, "preparing",
                 detailed_status="Setting up persistent disk" + (f" '{disk_name}'" if disk_name else ""))
-            _target_az, _target_node = get_target_az_for_reservation(gpu_type, gpu_count)
+            _target_az, _target_node = get_target_az_for_reservation(
+                gpu_type, gpu_count, node_labels
+            )
             if not _target_az:
                 raise ValueError(f"No {gpu_type} nodes found in cluster")
 
@@ -5009,6 +5025,9 @@ def create_pod(
     """Create Kubernetes pod with GPU resources and SSH setup"""
     try:
         v1 = client.CoreV1Api(k8s_client)
+        profiling_requested = bool(
+            node_labels and node_labels.get("nsight") == "true"
+        )
 
         # Determine container image to use based on architecture
         if gpu_type.startswith("cpu-arm"):
@@ -6789,26 +6808,27 @@ EOF
                 # next invocation include this pod. If the node is unavailable, the pod
                 # stays Pending and surfaces the error rather than spreading.
                 **({} if target_node is None else {"kubernetes.io/hostname": target_node}),
+                **(
+                    {"gpu.monitoring/profiling-dedicated": "true"}
+                    if profiling_requested
+                    else {}
+                ),
             },
-            # Node affinity for profiling-dedicated preference
-            # If user requests nsight=true, prefer profiling-dedicated nodes
-            # Otherwise, prefer non-profiling-dedicated nodes (DCGM nodes)
             affinity=client.V1Affinity(
                 node_affinity=client.V1NodeAffinity(
-                    preferred_during_scheduling_ignored_during_execution=[
-                        client.V1PreferredSchedulingTerm(
-                            weight=100,
-                            preference=client.V1NodeSelectorTerm(
+                    required_during_scheduling_ignored_during_execution=client.V1NodeSelector(
+                        node_selector_terms=[
+                            client.V1NodeSelectorTerm(
                                 match_expressions=[
                                     client.V1NodeSelectorRequirement(
                                         key="gpu.monitoring/profiling-dedicated",
-                                        operator="In" if (node_labels and node_labels.get("nsight") == "true") else "NotIn",
-                                        values=["true"]
+                                        operator="In" if profiling_requested else "NotIn",
+                                        values=["true"],
                                     )
                                 ]
                             )
-                        )
-                    ]
+                        ]
+                    )
                 )
             ) if not gpu_type.startswith("cpu-") else None,
             tolerations=[
