@@ -5,6 +5,8 @@
 
 set -o xtrace
 
+PROFILING_LABELS=""
+
 # Disable the default nodeadm services that try to parse user-data as config
 systemctl disable nodeadm-config.service || true
 systemctl disable nodeadm-run.service || true
@@ -108,6 +110,27 @@ fi
 # Load NVIDIA modules (profiling config already set above before driver install)
 modprobe nvidia
 modprobe nvidia_uvm
+
+# Nsight Compute cannot profile a B200 while Confidential Computing is enabled.
+# Configure the dedicated profiling node before kubelet makes it schedulable.
+if [[ "${profiling_dedicated}" == "true" ]]; then
+    PROFILING_READY=true
+    if [[ "${gpu_type}" == "b200" ]]; then
+        GPU_ADMIN_TOOLS_REF="v2026.08.14"
+        GPU_ADMIN_TOOLS_DIR="/opt/nvidia-gpu-admin-tools"
+        rm -rf "$GPU_ADMIN_TOOLS_DIR"
+        if ! git clone --depth 1 --branch "$GPU_ADMIN_TOOLS_REF" https://github.com/NVIDIA/gpu-admin-tools.git "$GPU_ADMIN_TOOLS_DIR" || \
+           ! python3 "$GPU_ADMIN_TOOLS_DIR/nvidia_gpu_tools.py" --devices gpus --set-cc-mode=off --reset-after-cc-mode-switch; then
+            echo "Failed to disable Confidential Computing; leaving node out of the profiling pool"
+            PROFILING_READY=false
+        fi
+    fi
+
+    if [[ "$PROFILING_READY" == "true" ]]; then
+        PROFILING_LABELS=",gpu.monitoring/profiling-dedicated=true,nvidia.com/gpu.deploy.dcgm-exporter=false"
+    fi
+fi
+
 # Enable GPU Direct RDMA for EFA - allows NCCL to transfer GPU memory directly over EFA
 # Try efa-nv-peermem first (built from amzn-drivers, for EFA), fallback to nvidia-peermem (for IB)
 modprobe efa-nv-peermem 2>/dev/null || insmod /lib/modules/$(uname -r)/extra/efa_nv_peermem.ko 2>/dev/null || modprobe nvidia-peermem 2>/dev/null || echo "No peermem module available (GDR disabled)"
@@ -201,7 +224,7 @@ spec:
         cpu: "2"
         memory: "4Gi"
     flags:
-      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false${profiling_dedicated ? ",gpu.monitoring/profiling-dedicated=true,nvidia.com/gpu.deploy.dcgm-exporter=false" : ""}${mig_profile != "" ? ",nvidia.com/mig.config=${mig_profile}" : ""}$NVME_LABEL
+      - --node-labels=NodeType=gpu,GpuType=${gpu_type},nvidia.com/gpu.deploy.driver=false$PROFILING_LABELS${mig_profile != "" ? ",nvidia.com/mig.config=${mig_profile}" : ""}$NVME_LABEL
 EOF
 
 # Configure EFA if hardware present (BEFORE nodeadm so kubelet sees hugepages)

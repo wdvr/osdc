@@ -483,8 +483,8 @@ resource "kubernetes_daemonset" "image_prepuller" {
 # GPU types that should have one node labeled for Nsight profiling (no DCGM)
 locals {
   profiling_gpu_types = {
-    default = ["t4"]           # Test: one T4 node for profiling
-    prod    = ["h200", "b200"] # Prod: one H200 and one B200 node for profiling
+    default = ["t4"] # Staging has no dedicated profiling ASG
+    prod    = []     # Prod profiling nodes are labeled during bootstrap
   }
 }
 

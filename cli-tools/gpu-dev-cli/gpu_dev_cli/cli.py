@@ -1382,8 +1382,8 @@ def reserve(
             # --no-persist explicitly disables persistent disk
             no_persistent_disk = no_persist or bool(persistent_reservations) or explicit_no_disk or explicit_no_disk_from_param
 
-            # Parse node labels from --node-label options (format: key=value)
-            node_labels = {}
+            # Explicit labels override per-user defaults.
+            node_labels = config.get_default_node_labels()
             for label in node_label:
                 if "=" in label:
                     key, value = label.split("=", 1)
@@ -1397,7 +1397,7 @@ def reserve(
             # flag — direct is the only path). Single-node, ephemeral, default-image,
             # on-demand only; the server re-checks eligibility and we fall back to
             # SQS silently on any miss / no warm pod / no Function-URL access.
-            if gpu_count <= max_gpus and not disk and not ref and not dockerfile_s3_key and not dockerimage and not spot:
+            if gpu_count <= max_gpus and not disk and not ref and not dockerfile_s3_key and not dockerimage and not spot and not node_labels:
                 live.stop()
                 _t0 = time.time()
                 direct_res = reservation_mgr.claim_direct(
@@ -4620,6 +4620,7 @@ def show() -> None:
         config = load_config()
         identity = config.get_user_identity()
         github_user = config.get_github_username()
+        default_node_labels = config.get_default_node_labels()
 
         # Get current environment info
         current_env = config.get("environment") or "Not set"
@@ -4634,7 +4635,9 @@ def show() -> None:
             f"[blue]User:[/blue] {identity['arn']}\n"
             f"[blue]Account:[/blue] {identity['account']}\n\n"
             f"[green]User Settings ({config.CONFIG_FILE})[/green]\n"
-            f"[blue]GitHub User:[/blue] {github_user or '[red]Not set - run: gpu-dev config set github_user <username>[/red]'}"
+            f"[blue]GitHub User:[/blue] {github_user or '[red]Not set - run: gpu-dev config set github_user <username>[/red]'}\n"
+            f"[blue]Default Node Labels:[/blue] "
+            f"{','.join(f'{key}={value}' for key, value in default_node_labels.items()) or 'None'}"
         )
 
         panel = Panel.fit(config_text, title="⚙️  Configuration")
@@ -4650,20 +4653,21 @@ def show() -> None:
 def set(key: str, value: str) -> None:
     """Set a configuration value
 
-    Configure user-specific settings. Currently only GitHub username is configurable.
-    Your GitHub username is used to fetch SSH public keys for server access.
+    Configure user-specific settings such as GitHub identity and default node labels.
 
     Arguments:
-        KEY: Configuration key to set (currently: github_user)
+        KEY: Configuration key to set
         VALUE: Value to set for the configuration key
 
     \b
     Examples:
         gpu-dev config set github_user johndoe   # Set GitHub username to 'johndoe'
         gpu-dev config set github_user jane.doe  # GitHub usernames with dots work too
+        gpu-dev config set default_node_labels nsight=true
 
     Valid keys:
         github_user: Your GitHub username (used to fetch SSH public keys)
+        default_node_labels: Comma-separated key=value labels for reservations
 
     Note: SSH keys must be public on your GitHub profile (github.com/username.keys)
     Note: SSH config files are automatically created in ~/.devgpu/ for each reservation
@@ -4672,14 +4676,31 @@ def set(key: str, value: str) -> None:
         config = load_config()
 
         # Validate known keys
-        valid_keys = ["github_user"]
+        valid_keys = ["github_user", "default_node_labels"]
         if key not in valid_keys:
             rprint(
                 f"[red]❌ Unknown config key '{key}'. Valid keys: {', '.join(valid_keys)}[/red]"
             )
             return
 
-        config.save_config(key, value)
+        saved_value = value
+        if key == "default_node_labels":
+            saved_value = {}
+            for label in filter(None, (part.strip() for part in value.split(","))):
+                if "=" not in label:
+                    rprint(
+                        f"[red]❌ Invalid node label '{label}'. Expected key=value.[/red]"
+                    )
+                    return
+                label_key, label_value = label.split("=", 1)
+                if not label_key.strip() or not label_value.strip():
+                    rprint(
+                        f"[red]❌ Invalid node label '{label}'. Expected key=value.[/red]"
+                    )
+                    return
+                saved_value[label_key.strip()] = label_value.strip()
+
+        config.save_config(key, saved_value)
         rprint(f"[green]✅ Set {key} = {value}[/green]")
         rprint(f"[dim]Saved to {config.CONFIG_FILE}[/dim]")
 

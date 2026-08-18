@@ -28,17 +28,19 @@ def plain(output: str) -> str:
     return _ANSI.sub("", output)
 
 
-def _make_config(environment="prod"):
+def _make_config(environment="prod", default_node_labels=None):
     cfg = MagicMock(name="config")
     cfg.user_config = {"environment": environment}
     cfg.aws_region = "us-east-2"
     cfg.get_github_username.return_value = "alice-gh"
+    cfg.get_default_node_labels.return_value = default_node_labels or {}
     return cfg
 
 
 @contextmanager
 def reserve_env(*, claim_direct=None, create_reservation="resv-1234567890abcdef",
-                multinode=None, environment="prod", list_reservations=None):
+                multinode=None, environment="prod", list_reservations=None,
+                default_node_labels=None):
     """Patch every collaborator the reserve command looks up in non-interactive
     mode. Yields the ReservationManager instance MagicMock so tests can assert
     which methods were called and with what kwargs.
@@ -58,7 +60,7 @@ def reserve_env(*, claim_direct=None, create_reservation="resv-1234567890abcdef"
     mgr.wait_for_multinode_reservation_completion.return_value = None
 
     with patch("gpu_dev_cli.cli.ReservationManager", return_value=mgr) as mgr_cls, \
-            patch("gpu_dev_cli.cli.load_config", return_value=_make_config(environment)), \
+            patch("gpu_dev_cli.cli.load_config", return_value=_make_config(environment, default_node_labels)), \
             patch("gpu_dev_cli.cli.authenticate_user", return_value=USER_INFO), \
             patch("gpu_dev_cli.cli._validate_ssh_key_or_exit", return_value=True), \
             patch("gpu_dev_cli.cli.check_interactive_support", return_value=False), \
@@ -327,6 +329,48 @@ def test_fast_path_skipped_when_spot(cli_runner):
     mgr.claim_direct.assert_not_called()
     mgr.create_reservation.assert_called_once()
     assert mgr.create_reservation.call_args.kwargs["spot"] is True
+
+
+def test_default_node_labels_are_applied(cli_runner):
+    with reserve_env(default_node_labels={"nsight": "true"}) as mgr:
+        result = cli_runner.invoke(main, [
+            "reserve", "--no-interactive", "-t", "b200", "-g", "1", "-h", "2",
+        ])
+
+    assert result.exit_code == 0
+    mgr.claim_direct.assert_not_called()
+    assert mgr.create_reservation.call_args.kwargs["node_labels"] == {
+        "nsight": "true"
+    }
+
+
+def test_explicit_node_label_overrides_default(cli_runner):
+    with reserve_env(default_node_labels={"nsight": "true"}) as mgr:
+        result = cli_runner.invoke(main, [
+            "reserve", "--no-interactive", "-t", "b200", "-g", "1", "-h", "2",
+            "--node-label", "nsight=false",
+        ])
+
+    assert result.exit_code == 0
+    mgr.claim_direct.assert_not_called()
+    assert mgr.create_reservation.call_args.kwargs["node_labels"] == {
+        "nsight": "false"
+    }
+
+
+def test_fast_path_skipped_when_node_label_requested(cli_runner):
+    with reserve_env() as mgr:
+        result = cli_runner.invoke(main, [
+            "reserve", "--no-interactive", "-t", "b200", "-g", "1", "-h", "2",
+            "--node-label", "nsight=true",
+        ])
+
+    assert result.exit_code == 0
+    mgr.claim_direct.assert_not_called()
+    mgr.create_reservation.assert_called_once()
+    assert mgr.create_reservation.call_args.kwargs["node_labels"] == {
+        "nsight": "true"
+    }
 
 
 def test_fast_path_skipped_when_multi_gpu_still_single_node(cli_runner):

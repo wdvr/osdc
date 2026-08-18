@@ -960,13 +960,14 @@ For detailed GPU performance analysis using NVIDIA Nsight tools.
 ### Request a Profiling Node
 
 ```bash
-gpu-dev reserve -t h100 -g 8 --node-label nsight=true -h 8
+gpu-dev reserve -t b200 -g 1 --node-label nsight=true -h 8
 ```
 
 **Why dedicated nodes?**
 - NVIDIA DCGM (monitoring) conflicts with Nsight profiling
 - Profiling-dedicated nodes have DCGM disabled
-- One node per GPU type is reserved for profiling
+- Production has one H200 and one B200 profiling node; staging has one T4
+- B200 profiling nodes boot with Confidential Computing disabled
 
 ### Available Profiling Tools
 
@@ -999,7 +1000,7 @@ When using `--node-label nsight=true`:
 
 ```bash
 # 1. Reserve a profiling node
-gpu-dev reserve -t h100 -g 8 --node-label nsight=true -h 4
+gpu-dev reserve -t b200 -g 1 --node-label nsight=true -h 4
 
 # 2. Connect
 gpu-dev connect

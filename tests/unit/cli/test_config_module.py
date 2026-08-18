@@ -308,6 +308,23 @@ def test_get_returns_value_and_none_for_missing(make_config):
     assert cfg.get("nonexistent_key") is None
 
 
+def test_default_node_labels_returns_string_mapping(make_config):
+    cfg = make_config()
+    cfg.save_config(
+        "default_node_labels", {"nsight": "true", "pool": "profiling"}
+    )
+    assert cfg.get_default_node_labels() == {
+        "nsight": "true",
+        "pool": "profiling",
+    }
+
+
+def test_default_node_labels_ignores_legacy_non_mapping_value(make_config):
+    cfg = make_config()
+    cfg.save_config("default_node_labels", "nsight=true")
+    assert cfg.get_default_node_labels() == {}
+
+
 # --------------------------------------------------------------------------
 # set_environment
 # --------------------------------------------------------------------------

@@ -19,9 +19,8 @@ groups.
 - **Persistent disk** that survives between reservations (opt-in), backed by
   EBS snapshots. Or run with `--no-persist` for a clean `EmptyDir` workspace.
 - **20 TB shared EFS** mounted at `/shared` with per-user folders.
-- **NVIDIA profiling** ready out of the box (`ncu` / `nsys` work without
-  manual driver tweaks), with one node per GPU type reserved as
-  profiling-dedicated.
+- **NVIDIA profiling** on dedicated H200/B200 production nodes and a T4
+  staging node (`--node-label nsight=true`), isolated from DCGM monitoring.
 - **Grafana** dashboard at `<node-ip>:30080` with NVIDIA DCGM exporter
   metrics — utilization, memory, temp, power.
 - **Multi-node NCCL** working over EFA with `OFI_NCCL_PROTOCOL=SENDRECV`.
@@ -120,13 +119,9 @@ Important variables to set in your `*.tfvars`:
 - `grafana_admin_password`
 - the GitHub org/team that's allowed to reserve
 
-Once nodes are up, label one per GPU type as profiling-dedicated so DCGM
-doesn't fight Nsight for the device:
-
-```bash
-kubectl label node <h100-node> gpu.monitoring/profiling-dedicated=true
-kubectl label node <b200-node> gpu.monitoring/profiling-dedicated=true
-```
+Production profiling nodes are declared per capacity reservation and labeled
+during bootstrap. B200 profiling nodes also disable Confidential Computing
+before joining the profiling pool. Staging labels one T4 node automatically.
 
 Grafana lands at `http://<node-ip>:30080` (admin / your configured password).
 Pre-loaded dashboards: NVIDIA DCGM (community ID 12239) and a custom GPU

@@ -440,7 +440,7 @@ def test_target_az_selects_by_node_gpu_label(lambda_index):
     with p1, p2, p3:
         idx.get_target_az_for_reservation("h100-mig-1g", 1)
     sel = v1.list_node.call_args.kwargs["label_selector"]
-    assert sel == "GpuType=h100"
+    assert sel == "GpuType=h100,!gpu.monitoring/profiling-dedicated"
 
 
 def test_target_az_no_fit_returns_best_az_no_node(lambda_index):

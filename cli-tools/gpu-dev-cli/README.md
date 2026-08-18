@@ -60,6 +60,9 @@ pip install -e .
 # Set your GitHub username (required for SSH key authentication)
 gpu-dev config set github_user your-github-username
 
+# Optional: request profiling nodes by default
+gpu-dev config set default_node_labels nsight=true
+
 # View current configuration
 gpu-dev config show
 ```
@@ -167,7 +170,7 @@ gpu-dev reserve -t h100 -g 16 -h 12 --distributed
 gpu-dev reserve -t h100 -g 4 --dockerimage pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
 
 # Request Nsight profiling node
-gpu-dev reserve -t h100 -g 8 --node-label nsight=true
+gpu-dev reserve -t b200 -g 1 --node-label nsight=true
 ```
 
 ### `gpu-dev list`
@@ -475,13 +478,14 @@ For GPU profiling with NVIDIA Nsight Compute (ncu) and Nsight Systems (nsys):
 
 ```bash
 # Request a profiling-dedicated node
-gpu-dev reserve -t h100 -g 8 --node-label nsight=true
+gpu-dev reserve -t b200 -g 1 --node-label nsight=true
 ```
 
 **Why dedicated nodes?**
 - DCGM (GPU monitoring) conflicts with Nsight profiling
 - Profiling-dedicated nodes have DCGM disabled
-- One H100, one B200, and one T4 node are reserved for profiling
+- Production has one H200 and one B200 profiling node; staging has one T4
+- B200 profiling nodes boot with Confidential Computing disabled
 
 **Profiling capabilities enabled**:
 - `CAP_SYS_ADMIN` Linux capability on pods
