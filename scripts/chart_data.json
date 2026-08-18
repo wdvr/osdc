@@ -1,0 +1,818 @@
+{
+ "generated_at": "2026-08-08T02:13:29.789933Z",
+ "months": [
+  {
+   "m": "2026-01",
+   "partial": false,
+   "hours": 744.0,
+   "gpuh": {
+    "h100": 58.2,
+    "b200": 7651.7,
+    "h200": 2985.8,
+    "a100": 371.0,
+    "l4": 306.6,
+    "other": 26.9
+   },
+   "hwm": {
+    "h100": 9.0,
+    "b200": 48.49,
+    "h200": 31.75,
+    "a100": 8.72,
+    "l4": 20.43,
+    "other": 28.1
+   },
+   "util": {
+    "h100": 0.9,
+    "b200": 21.2,
+    "h200": 12.6,
+    "a100": 5.7,
+    "l4": 2.0
+   },
+   "users": 31,
+   "resv": 277,
+   "cpu_nodeh": 63.1,
+   "total_gpuh": 11400.2,
+   "hwm_total": 146.5,
+   "util_total": 10.5,
+   "cost": {
+    "od": 65141,
+    "h100": 4891,
+    "b200": 98479,
+    "h200": 42758,
+    "low": 211269,
+    "high": 784173,
+    "od_by": {
+     "l4": 17118,
+     "a100": 16336,
+     "t4": 14553,
+     "cpu": 8694,
+     "a10g": 8440
+    }
+   },
+   "nodeh": {
+    "cpu": 7568.6,
+    "a100": 811.3,
+    "a10g": 1490.3,
+    "b200": 4509.1,
+    "h100": 334.1,
+    "h200": 2952.9,
+    "l4": 3800.8,
+    "t4": 3731.0
+   }
+  },
+  {
+   "m": "2026-02",
+   "partial": false,
+   "hours": 672.0,
+   "gpuh": {
+    "h100": 1421.1,
+    "b200": 10208.0,
+    "h200": 3772.2,
+    "a100": 613.7,
+    "l4": 257.1,
+    "other": 145.8
+   },
+   "hwm": {
+    "h100": 29.0,
+    "b200": 79.51,
+    "h200": 48.16,
+    "a100": 8.78,
+    "l4": 20.33,
+    "other": 28.3
+   },
+   "util": {
+    "h100": 7.3,
+    "b200": 19.1,
+    "h200": 11.7,
+    "a100": 10.4,
+    "l4": 1.9
+   },
+   "users": 30,
+   "resv": 303,
+   "cpu_nodeh": 46.8,
+   "total_gpuh": 16417.9,
+   "hwm_total": 214.0,
+   "util_total": 11.4,
+   "cost": {
+    "od": 58778,
+    "h100": 24884,
+    "b200": 145868,
+    "h200": 58583,
+    "low": 288113,
+    "high": 1169364,
+    "od_by": {
+     "l4": 15461,
+     "a100": 14702,
+     "t4": 13144,
+     "cpu": 7848,
+     "a10g": 7623
+    }
+   },
+   "nodeh": {
+    "cpu": 6749.2,
+    "a100": 737.5,
+    "a10g": 1379.7,
+    "b200": 6679.0,
+    "h100": 1699.7,
+    "h200": 4045.8,
+    "l4": 3416.0,
+    "t4": 3368.9
+   }
+  },
+  {
+   "m": "2026-03",
+   "partial": false,
+   "hours": 744.0,
+   "gpuh": {
+    "h100": 14064.6,
+    "b200": 11146.1,
+    "h200": 5989.5,
+    "a100": 751.2,
+    "l4": 1112.8,
+    "other": 534.7
+   },
+   "hwm": {
+    "h100": 99.0,
+    "b200": 86.16,
+    "h200": 58.32,
+    "a100": 9.43,
+    "l4": 20.61,
+    "other": 28.2
+   },
+   "util": {
+    "h100": 19.1,
+    "b200": 17.4,
+    "h200": 13.8,
+    "a100": 10.7,
+    "l4": 7.3
+   },
+   "users": 38,
+   "resv": 487,
+   "cpu_nodeh": 530.2,
+   "total_gpuh": 33598.9,
+   "hwm_total": 301.7,
+   "util_total": 15.0,
+   "cost": {
+    "od": 110315,
+    "h100": 40869,
+    "b200": 175004,
+    "h200": 78534,
+    "low": 404722,
+    "high": 1520202,
+    "od_by": {
+     "cpu": 53867,
+     "l4": 17118,
+     "a100": 16337,
+     "t4": 14553,
+     "a10g": 8440
+    }
+   },
+   "nodeh": {
+    "cpu": 42430.1,
+    "a100": 877.1,
+    "a10g": 1505.5,
+    "b200": 8013.0,
+    "h100": 2791.6,
+    "h200": 5423.6,
+    "l4": 3834.3,
+    "t4": 3739.9
+   }
+  },
+  {
+   "m": "2026-04",
+   "partial": false,
+   "hours": 720.0,
+   "gpuh": {
+    "h100": 6626.1,
+    "b200": 5768.0,
+    "h200": 506.6,
+    "a100": 747.7,
+    "l4": 1993.1,
+    "other": 144.6
+   },
+   "hwm": {
+    "h100": 41.8,
+    "b200": 20.36,
+    "h200": 12.0,
+    "a100": 8.96,
+    "l4": 16.05,
+    "other": 26.7
+   },
+   "util": {
+    "h100": 22.0,
+    "b200": 39.3,
+    "h200": 5.9,
+    "a100": 11.6,
+    "l4": 17.2
+   },
+   "users": 36,
+   "resv": 350,
+   "cpu_nodeh": 79.5,
+   "total_gpuh": 15786.1,
+   "hwm_total": 125.9,
+   "util_total": 17.4,
+   "cost": {
+    "od": 85827,
+    "h100": 55072,
+    "b200": 40026,
+    "h200": 8962,
+    "low": 189887,
+    "high": 540850,
+    "od_by": {
+     "cpu": 39789,
+     "a100": 15810,
+     "l4": 12033,
+     "t4": 10230,
+     "a10g": 6306,
+     "rtxpro6000": 1659
+    }
+   },
+   "nodeh": {
+    "cpu": 31498.7,
+    "a100": 806.0,
+    "a10g": 1116.5,
+    "b200": 1832.7,
+    "rtxpro6000": 100.1,
+    "h100": 3761.7,
+    "h200": 618.9,
+    "l4": 2888.1,
+    "t4": 2615.5
+   }
+  },
+  {
+   "m": "2026-05",
+   "partial": false,
+   "hours": 744.0,
+   "gpuh": {
+    "h100": 7989.4,
+    "b200": 3860.8,
+    "h200": 173.1,
+    "a100": 107.6,
+    "l4": 178.7,
+    "other": 59.3
+   },
+   "hwm": {
+    "h100": 34.68,
+    "b200": 16.0,
+    "h200": 8.0,
+    "a100": 8.1,
+    "l4": 8.35,
+    "other": 22.2
+   },
+   "util": {
+    "h100": 31.0,
+    "b200": 32.4,
+    "h200": 2.9,
+    "a100": 1.8,
+    "l4": 2.9
+   },
+   "users": 32,
+   "resv": 903,
+   "cpu_nodeh": 678.2,
+   "total_gpuh": 12368.9,
+   "hwm_total": 97.4,
+   "util_total": 17.1,
+   "cost": {
+    "od": 78555,
+    "h100": 47224,
+    "b200": 32481,
+    "h200": 2939,
+    "low": 161199,
+    "high": 438388,
+    "od_by": {
+     "rtxpro6000": 24658,
+     "cpu": 20211,
+     "a100": 16336,
+     "l4": 6847,
+     "t4": 5821,
+     "a10g": 4220,
+     "build": 462
+    }
+   },
+   "nodeh": {
+    "build": 54.5,
+    "cpu": 16524.3,
+    "a100": 753.5,
+    "a10g": 763.5,
+    "b200": 1487.2,
+    "h100": 3225.7,
+    "h200": 203.0,
+    "l4": 1553.0,
+    "rtxpro6000": 1487.9,
+    "t4": 1513.6
+   }
+  },
+  {
+   "m": "2026-06",
+   "partial": false,
+   "hours": 720.0,
+   "gpuh": {
+    "h100": 8784.4,
+    "b200": 5067.2,
+    "h200": 0,
+    "a100": 0,
+    "l4": 120.2,
+    "other": 24.1
+   },
+   "hwm": {
+    "h100": 32.0,
+    "b200": 16.0,
+    "h200": 0,
+    "a100": 8.0,
+    "l4": 8.15,
+    "other": 20.2
+   },
+   "util": {
+    "h100": 38.1,
+    "b200": 44.0,
+    "h200": null,
+    "a100": 0.0,
+    "l4": 2.0
+   },
+   "users": 28,
+   "resv": 658,
+   "cpu_nodeh": 681.8,
+   "total_gpuh": 13995.9,
+   "hwm_total": 84.3,
+   "util_total": 23.1,
+   "cost": {
+    "od": 82551,
+    "h100": 42163,
+    "b200": 31450,
+    "h200": 0,
+    "low": 156164,
+    "high": 405129,
+    "od_by": {
+     "rtxpro6000": 23864,
+     "cpu": 19567,
+     "a100": 15810,
+     "build": 6967,
+     "l4": 6626,
+     "t4": 5633,
+     "a10g": 4084
+    }
+   },
+   "nodeh": {
+    "build": 731.2,
+    "cpu": 35215.6,
+    "a100": 720.0,
+    "a10g": 727.2,
+    "b200": 1440.0,
+    "h100": 2880.0,
+    "l4": 1467.4,
+    "rtxpro6000": 1440.0,
+    "t4": 1460.8
+   }
+  },
+  {
+   "m": "2026-07",
+   "partial": false,
+   "hours": 744.0,
+   "gpuh": {
+    "h100": 9971.2,
+    "b200": 5888.2,
+    "h200": 0,
+    "a100": 0.5,
+    "l4": 24.2,
+    "other": 24.7
+   },
+   "hwm": {
+    "h100": 32.0,
+    "b200": 16.0,
+    "h200": 0,
+    "a100": 8.0,
+    "l4": 8.01,
+    "other": 20.0
+   },
+   "util": {
+    "h100": 41.9,
+    "b200": 49.5,
+    "h200": null,
+    "a100": 0.0,
+    "l4": 0.4
+   },
+   "users": 26,
+   "resv": 577,
+   "cpu_nodeh": 762.0,
+   "total_gpuh": 15908.8,
+   "hwm_total": 84.0,
+   "util_total": 25.4,
+   "cost": {
+    "od": 85302,
+    "h100": 43569,
+    "b200": 32498,
+    "h200": 0,
+    "low": 161369,
+    "high": 418633,
+    "od_by": {
+     "rtxpro6000": 24659,
+     "cpu": 20219,
+     "a100": 16336,
+     "build": 7200,
+     "l4": 6847,
+     "t4": 5821,
+     "a10g": 4220
+    }
+   },
+   "nodeh": {
+    "build": 745.0,
+    "cpu": 37296.6,
+    "a100": 744.0,
+    "a10g": 747.1,
+    "b200": 1488.0,
+    "h100": 2976.0,
+    "l4": 1489.4,
+    "rtxpro6000": 1488.0,
+    "t4": 1489.7
+   }
+  },
+  {
+   "m": "2026-08",
+   "partial": true,
+   "hours": 170.2,
+   "gpuh": {
+    "h100": 1900.3,
+    "b200": 1332.2,
+    "h200": 0,
+    "a100": 0,
+    "l4": 0,
+    "other": 0
+   },
+   "hwm": {
+    "h100": 29.18,
+    "b200": 14.59,
+    "h200": 0,
+    "a100": 7.29,
+    "l4": 7.29,
+    "other": 18.2
+   },
+   "util": {
+    "h100": 38.3,
+    "b200": 53.6,
+    "h200": null,
+    "a100": 0.0,
+    "l4": 0.0
+   },
+   "users": 17,
+   "resv": 57,
+   "cpu_nodeh": 170.2,
+   "total_gpuh": 3232.5,
+   "hwm_total": 76.6,
+   "util_total": 24.8,
+   "cost": {
+    "od": 17791,
+    "h100": 9091,
+    "b200": 6781,
+    "h200": 0,
+    "low": 33663,
+    "high": 87345,
+    "od_by": {
+     "rtxpro6000": 5139,
+     "cpu": 4224,
+     "a100": 3405,
+     "build": 1502,
+     "l4": 1427,
+     "t4": 1213,
+     "a10g": 881
+    }
+   },
+   "nodeh": {
+    "build": 155.5,
+    "cpu": 7837.6,
+    "a100": 155.1,
+    "a10g": 155.3,
+    "b200": 310.5,
+    "h100": 620.9,
+    "l4": 310.1,
+    "rtxpro6000": 310.1,
+    "t4": 310.1
+   }
+  }
+ ],
+ "capacity_now": [
+  {
+   "pool": "h100",
+   "delivered": 30.0,
+   "valid": 48.0,
+   "dead": 32.0,
+   "nodes_running": 4.0,
+   "available": 10.0
+  },
+  {
+   "pool": "b200",
+   "delivered": 14.0,
+   "valid": 32.0,
+   "dead": 24.0,
+   "nodes_running": 2.0,
+   "available": 4.0
+  },
+  {
+   "pool": "h200",
+   "delivered": 0.0,
+   "valid": 16.0,
+   "dead": 48.0,
+   "nodes_running": 0.0,
+   "available": 0.0
+  },
+  {
+   "pool": "a100",
+   "delivered": 8.0,
+   "valid": 8.0,
+   "dead": 8.0,
+   "nodes_running": 1.0,
+   "available": 8.0
+  },
+  {
+   "pool": "l4",
+   "delivered": 8.0,
+   "valid": 8.0,
+   "dead": 0.0,
+   "nodes_running": 2.0,
+   "available": 8.0
+  },
+  {
+   "pool": "rtxpro6000",
+   "delivered": 8.0,
+   "valid": 8.0,
+   "dead": 0.0,
+   "nodes_running": 2.0,
+   "available": 8.0
+  },
+  {
+   "pool": "t4",
+   "delivered": 8.0,
+   "valid": 8.0,
+   "dead": 0.0,
+   "nodes_running": 2.0,
+   "available": 8.0
+  },
+  {
+   "pool": "a10g",
+   "delivered": 4.0,
+   "valid": 4.0,
+   "dead": 0.0,
+   "nodes_running": 1.0,
+   "available": 4.0
+  }
+ ],
+ "cr_entries": [
+  {
+   "pool": "a100",
+   "key": "cr0",
+   "cr_id": "cr-01cc0f00f28b095af",
+   "nodes": 1,
+   "gpus": 8,
+   "kind": "dead-capacity-reservation",
+   "cr_state": "not-found",
+   "cr_end": null
+  },
+  {
+   "pool": "a100",
+   "key": "cr1",
+   "cr_id": null,
+   "nodes": 1,
+   "gpus": 8,
+   "kind": "on-demand",
+   "cr_state": null,
+   "cr_end": null
+  },
+  {
+   "pool": "a10g",
+   "key": "-",
+   "cr_id": null,
+   "nodes": 1,
+   "gpus": 4,
+   "kind": "on-demand",
+   "cr_state": null,
+   "cr_end": null
+  },
+  {
+   "pool": "b200",
+   "key": "cr0",
+   "cr_id": "cr-0c366fb8339a10f69",
+   "nodes": 0,
+   "gpus": 0,
+   "kind": "dead-capacity-reservation",
+   "cr_state": "not-found",
+   "cr_end": null
+  },
+  {
+   "pool": "b200",
+   "key": "cr1",
+   "cr_id": "cr-08e7fee0b8dc3de5e",
+   "nodes": 3,
+   "gpus": 24,
+   "kind": "dead-capacity-reservation",
+   "cr_state": "not-found",
+   "cr_end": null
+  },
+  {
+   "pool": "b200",
+   "key": "cr2",
+   "cr_id": null,
+   "nodes": 2,
+   "gpus": 16,
+   "kind": "on-demand",
+   "cr_state": null,
+   "cr_end": null
+  },
+  {
+   "pool": "b200",
+   "key": "cr3",
+   "cr_id": "cr-0f5f6bb30a8fe3c68",
+   "nodes": 1,
+   "gpus": 8,
+   "kind": "capacity-reservation",
+   "cr_state": "active",
+   "cr_end": "2026-09-01 11:30:00+00:00"
+  },
+  {
+   "pool": "b200",
+   "key": "cr4",
+   "cr_id": "cr-0f5f6bb30a8fe3c68",
+   "nodes": 1,
+   "gpus": 8,
+   "kind": "capacity-reservation",
+   "cr_state": "active",
+   "cr_end": "2026-09-01 11:30:00+00:00"
+  },
+  {
+   "pool": "h100",
+   "key": "cr0",
+   "cr_id": "cr-0a3f49b96fe03ca04",
+   "nodes": 4,
+   "gpus": 32,
+   "kind": "dead-capacity-reservation",
+   "cr_state": "not-found",
+   "cr_end": null
+  },
+  {
+   "pool": "h100",
+   "key": "cr1",
+   "cr_id": null,
+   "nodes": 2,
+   "gpus": 16,
+   "kind": "on-demand",
+   "cr_state": null,
+   "cr_end": null
+  },
+  {
+   "pool": "h100",
+   "key": "cr2",
+   "cr_id": "cr-044bc72b0a6b56062",
+   "nodes": 3,
+   "gpus": 24,
+   "kind": "capacity-reservation",
+   "cr_state": "active",
+   "cr_end": "2026-10-08 11:30:00+00:00"
+  },
+  {
+   "pool": "h100",
+   "key": "cr3",
+   "cr_id": "cr-0211ea1e8d3a3c79e",
+   "nodes": 0,
+   "gpus": 0,
+   "kind": "dead-capacity-reservation",
+   "cr_state": "not-found",
+   "cr_end": null
+  },
+  {
+   "pool": "h100",
+   "key": "cr4",
+   "cr_id": "cr-044bc72b0a6b56062",
+   "nodes": 1,
+   "gpus": 8,
+   "kind": "capacity-reservation",
+   "cr_state": "active",
+   "cr_end": "2026-10-08 11:30:00+00:00"
+  },
+  {
+   "pool": "h200",
+   "key": "cr0",
+   "cr_id": "cr-0f6d0766f5d3339e6",
+   "nodes": 2,
+   "gpus": 16,
+   "kind": "dead-capacity-reservation",
+   "cr_state": "not-found",
+   "cr_end": null
+  },
+  {
+   "pool": "h200",
+   "key": "cr1",
+   "cr_id": "cr-06c9c978dea756a26",
+   "nodes": 3,
+   "gpus": 24,
+   "kind": "dead-capacity-reservation",
+   "cr_state": "not-found",
+   "cr_end": null
+  },
+  {
+   "pool": "h200",
+   "key": "cr2",
+   "cr_id": null,
+   "nodes": 2,
+   "gpus": 16,
+   "kind": "on-demand",
+   "cr_state": null,
+   "cr_end": null
+  },
+  {
+   "pool": "h200",
+   "key": "cr3",
+   "cr_id": "cr-02949f61f1a761b54",
+   "nodes": 1,
+   "gpus": 8,
+   "kind": "dead-capacity-reservation",
+   "cr_state": "not-found",
+   "cr_end": null
+  },
+  {
+   "pool": "l4",
+   "key": "-",
+   "cr_id": null,
+   "nodes": 2,
+   "gpus": 8,
+   "kind": "on-demand",
+   "cr_state": null,
+   "cr_end": null
+  },
+  {
+   "pool": "rtxpro6000",
+   "key": "-",
+   "cr_id": null,
+   "nodes": 2,
+   "gpus": 8,
+   "kind": "on-demand",
+   "cr_state": null,
+   "cr_end": null
+  },
+  {
+   "pool": "t4",
+   "key": "-",
+   "cr_id": null,
+   "nodes": 2,
+   "gpus": 8,
+   "kind": "on-demand",
+   "cr_state": null,
+   "cr_end": null
+  }
+ ],
+ "mig_now": {
+  "b200-mig-1g": 4.0,
+  "b200-mig-2g": 2.0,
+  "b200-mig-3g": 2.0,
+  "h100-mig-1g": 4.0,
+  "h100-mig-2g": 2.0,
+  "h100-mig-3g": 2.0
+ },
+ "cpu_now": {
+  "cpu-arm": {
+   "nodes": 10.0
+  },
+  "cpu-x86": {
+   "nodes": 10.0
+  }
+ },
+ "rates": {
+  "list": {
+   "p5.48xlarge": 55.04,
+   "p6-b200.48xlarge": 113.9328,
+   "p5en.48xlarge": 63.296,
+   "p4d.24xlarge": 21.95764,
+   "g7e.24xlarge": 16.57216,
+   "c7i.8xlarge": 1.428,
+   "c7g.8xlarge": 1.1562,
+   "m7i.48xlarge": 9.6768,
+   "g6.12xlarge": 4.6016,
+   "g4dn.12xlarge": 3.912,
+   "g5.12xlarge": 5.672
+  },
+  "blended": {
+   "p5.48xlarge": 14.64,
+   "p6-b200.48xlarge": 21.84,
+   "p5en.48xlarge": 14.48
+  },
+  "pool_instance": {
+   "h100": "p5.48xlarge",
+   "b200": "p6-b200.48xlarge",
+   "h200": "p5en.48xlarge",
+   "a100": "p4d.24xlarge",
+   "rtxpro6000": "g7e.24xlarge",
+   "l4": "g6.12xlarge",
+   "t4": "g4dn.12xlarge",
+   "a10g": "g5.12xlarge"
+  }
+ },
+ "totals": {
+  "gpu_hours": 122709.2,
+  "distinct_users": 72,
+  "reservations": 3612,
+  "delivered_now": 80.0,
+  "valid_now": 132.0,
+  "dead_now": 112.0,
+  "cost_low": 1606386,
+  "cost_high": 5364084,
+  "per_gpuh_low": 13.09,
+  "per_gpuh_high": 43.71
+ }
+}

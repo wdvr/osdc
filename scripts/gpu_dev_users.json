@@ -1,0 +1,743 @@
+{
+  "generated_at": "2026-08-11T18:41:54.916449Z",
+  "window": {
+    "start": "2026-05-13T18:41:54.916449",
+    "end": "2026-08-11T18:41:54.916449",
+    "days": 90
+  },
+  "regions": {
+    "us-east-2": "prod",
+    "us-east-1": "prod-spot",
+    "us-west-1": "staging"
+  },
+  "skipped": {
+    "us-east-2:no_interval": 1080,
+    "us-east-1:no_interval": 80,
+    "us-west-1:no_interval": 8
+  },
+  "distinct_users": 43,
+  "total_gpu_hours": 41918.2,
+  "total_cpu_node_hours": 2165.4,
+  "users": [
+    {
+      "user": "tarinduj",
+      "meta_user": "tarindu",
+      "meta_user_alts": [],
+      "gpu_hours": 8833.7,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 1618.2,
+      "reservations": 48,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "h100": 7510.9,
+        "b200": 1298.8,
+        "a100": 24.0
+      },
+      "envs": {
+        "prod": 1618.2
+      }
+    },
+    {
+      "user": "bobrenjc93",
+      "meta_user": "bobren",
+      "meta_user_alts": [],
+      "gpu_hours": 8472.3,
+      "cpu_node_hours": 17.9,
+      "wall_hours": 1257.7,
+      "reservations": 970,
+      "last_active": "2026-07-30",
+      "top_types": {
+        "h100": 8454.9,
+        "l4": 10.3,
+        "a100": 7.1
+      },
+      "envs": {
+        "prod": 1257.7
+      }
+    },
+    {
+      "user": "eellison",
+      "meta_user": "eellison",
+      "meta_user_alts": [],
+      "gpu_hours": 4150.6,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 1328.0,
+      "reservations": 34,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "b200": 4150.6
+      },
+      "envs": {
+        "prod": 1328.0
+      }
+    },
+    {
+      "user": "iamzainhuda",
+      "meta_user": "zainhuda",
+      "meta_user_alts": [],
+      "gpu_hours": 2895.1,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 723.8,
+      "reservations": 24,
+      "last_active": "2026-08-07",
+      "top_types": {
+        "h100": 2894.1,
+        "h100-mig-1g": 1.0
+      },
+      "envs": {
+        "prod": 723.8
+      }
+    },
+    {
+      "user": "calebmkim",
+      "meta_user": "calebkim",
+      "meta_user_alts": [],
+      "gpu_hours": 2847.9,
+      "cpu_node_hours": 25.2,
+      "wall_hours": 2345.2,
+      "reservations": 82,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "b200": 2010.0,
+        "h100": 830.9,
+        "b200-mig-1g": 7.0
+      },
+      "envs": {
+        "prod": 2345.2
+      }
+    },
+    {
+      "user": "yushangdi",
+      "meta_user": "shangdiy",
+      "meta_user_alts": [],
+      "gpu_hours": 2128.2,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 1932.0,
+      "reservations": 55,
+      "last_active": "2026-08-07",
+      "top_types": {
+        "h100": 1106.7,
+        "b200": 1013.4,
+        "a10g": 8.0
+      },
+      "envs": {
+        "prod": 1932.0
+      }
+    },
+    {
+      "user": "amesingflank",
+      "meta_user": "dunfanlu",
+      "meta_user_alts": [],
+      "gpu_hours": 2113.8,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 1474.6,
+      "reservations": 35,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "b200": 1432.5,
+        "h100": 681.3
+      },
+      "envs": {
+        "prod": 1474.6
+      }
+    },
+    {
+      "user": "vkuzo",
+      "meta_user": "vasiliy",
+      "meta_user_alts": [],
+      "gpu_hours": 1977.5,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 1785.9,
+      "reservations": 66,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "b200": 1186.4,
+        "h100": 791.1
+      },
+      "envs": {
+        "prod": 1785.9
+      }
+    },
+    {
+      "user": "drisspg",
+      "meta_user": "drisspg",
+      "meta_user_alts": [],
+      "gpu_hours": 1536.1,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 1464.2,
+      "reservations": 114,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "b200": 1535.5,
+        "h100": 0.5,
+        "b200-mig-1g": 0.1,
+        "h100-mig-1g": 0.0
+      },
+      "envs": {
+        "prod": 1464.2
+      }
+    },
+    {
+      "user": "d4l3k",
+      "meta_user": "tristanr",
+      "meta_user_alts": [],
+      "gpu_hours": 1240.8,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 302.5,
+      "reservations": 23,
+      "last_active": "2026-07-31",
+      "top_types": {
+        "h100": 1240.3,
+        "a100": 0.5
+      },
+      "envs": {
+        "prod": 302.5
+      }
+    },
+    {
+      "user": "felipemello1",
+      "meta_user": "felipemello",
+      "meta_user_alts": [],
+      "gpu_hours": 872.7,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 436.3,
+      "reservations": 12,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "h100": 872.7
+      },
+      "envs": {
+        "prod": 436.3
+      }
+    },
+    {
+      "user": "slayton58",
+      "meta_user": "simonlayton",
+      "meta_user_alts": [],
+      "gpu_hours": 834.8,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 497.8,
+      "reservations": 64,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "b200": 821.7,
+        "b200-mig-1g": 9.0,
+        "a100": 4.0
+      },
+      "envs": {
+        "prod": 497.8
+      }
+    },
+    {
+      "user": "gmagogsfm",
+      "meta_user": "ycao",
+      "meta_user_alts": [],
+      "gpu_hours": 792.7,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 552.5,
+      "reservations": 12,
+      "last_active": "2026-06-07",
+      "top_types": {
+        "h100": 744.7,
+        "b200": 48.0
+      },
+      "envs": {
+        "prod": 552.5
+      }
+    },
+    {
+      "user": "xmfan",
+      "meta_user": "xmfan",
+      "meta_user_alts": [],
+      "gpu_hours": 660.1,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 172.1,
+      "reservations": 23,
+      "last_active": "2026-08-05",
+      "top_types": {
+        "h100": 507.1,
+        "b200": 152.9
+      },
+      "envs": {
+        "prod": 172.1
+      }
+    },
+    {
+      "user": "ezyang",
+      "meta_user": "ezyang",
+      "meta_user_alts": [],
+      "gpu_hours": 430.4,
+      "cpu_node_hours": 55.7,
+      "wall_hours": 486.1,
+      "reservations": 41,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "h100": 430.4
+      },
+      "envs": {
+        "prod": 486.1
+      }
+    },
+    {
+      "user": "karthickai",
+      "meta_user": "karthickps",
+      "meta_user_alts": [],
+      "gpu_hours": 291.9,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 291.9,
+      "reservations": 36,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "b200": 291.9
+      },
+      "envs": {
+        "prod": 291.9
+      }
+    },
+    {
+      "user": "danielvegamyhre",
+      "meta_user": "danvm",
+      "meta_user_alts": [],
+      "gpu_hours": 194.4,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 122.3,
+      "reservations": 5,
+      "last_active": "2026-05-29",
+      "top_types": {
+        "b200": 146.3,
+        "b200-mig-1g": 48.1
+      },
+      "envs": {
+        "prod": 122.3
+      }
+    },
+    {
+      "user": "angelayi",
+      "meta_user": "angelayi",
+      "meta_user_alts": [],
+      "gpu_hours": 192.3,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 192.3,
+      "reservations": 7,
+      "last_active": "2026-07-02",
+      "top_types": {
+        "l4": 192.3
+      },
+      "envs": {
+        "prod": 192.3
+      }
+    },
+    {
+      "user": "wdvr",
+      "meta_user": "wouterdevriendt",
+      "meta_user_alts": [],
+      "gpu_hours": 165.5,
+      "cpu_node_hours": 1540.8,
+      "wall_hours": 1684.1,
+      "reservations": 255,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "b200": 50.1,
+        "t4": 49.9,
+        "l4": 33.1,
+        "h100": 23.4
+      },
+      "envs": {
+        "prod": 1610.1,
+        "prod-spot": 73.5,
+        "staging": 0.6
+      }
+    },
+    {
+      "user": "atalman",
+      "meta_user": "atalman",
+      "meta_user_alts": [],
+      "gpu_hours": 164.0,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 164.0,
+      "reservations": 21,
+      "last_active": "2026-07-14",
+      "top_types": {
+        "h100": 95.5,
+        "b200": 48.5,
+        "b200-mig-1g": 20.1
+      },
+      "envs": {
+        "prod": 164.0
+      }
+    },
+    {
+      "user": "choijon5",
+      "meta_user": "jongsokchoi",
+      "meta_user_alts": [],
+      "gpu_hours": 149.0,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 76.6,
+      "reservations": 8,
+      "last_active": "2026-06-11",
+      "top_types": {
+        "b200": 120.6,
+        "h100": 28.4
+      },
+      "envs": {
+        "prod": 76.6
+      }
+    },
+    {
+      "user": "gchanan",
+      "meta_user": "gchanan",
+      "meta_user_alts": [],
+      "gpu_hours": 144.3,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 72.1,
+      "reservations": 3,
+      "last_active": "2026-06-12",
+      "top_types": {
+        "b200": 144.3
+      },
+      "envs": {
+        "prod": 72.1
+      }
+    },
+    {
+      "user": "aditvenk",
+      "meta_user": "avenkataraman",
+      "meta_user_alts": [],
+      "gpu_hours": 144.2,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 48.1,
+      "reservations": 2,
+      "last_active": "2026-07-22",
+      "top_types": {
+        "b200": 144.2
+      },
+      "envs": {
+        "prod": 48.1
+      }
+    },
+    {
+      "user": "xuzhao9",
+      "meta_user": "xzhao9",
+      "meta_user_alts": [],
+      "gpu_hours": 81.1,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 38.0,
+      "reservations": 4,
+      "last_active": "2026-07-23",
+      "top_types": {
+        "b200": 69.5,
+        "h100": 11.6
+      },
+      "envs": {
+        "prod": 38.0
+      }
+    },
+    {
+      "user": "alirezashamsoshoara",
+      "meta_user": "alisol",
+      "meta_user_alts": [],
+      "gpu_hours": 73.2,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 9.1,
+      "reservations": 3,
+      "last_active": "2026-08-09",
+      "top_types": {
+        "h100": 73.2
+      },
+      "envs": {
+        "prod": 9.1
+      }
+    },
+    {
+      "user": "zou3519",
+      "meta_user": "rzou",
+      "meta_user_alts": [],
+      "gpu_hours": 72.2,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 40.1,
+      "reservations": 3,
+      "last_active": "2026-06-26",
+      "top_types": {
+        "l4": 48.1,
+        "b200": 24.1
+      },
+      "envs": {
+        "prod": 40.1
+      }
+    },
+    {
+      "user": "larryliu0820",
+      "meta_user": "larryliu",
+      "meta_user_alts": [],
+      "gpu_hours": 72.1,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 72.1,
+      "reservations": 3,
+      "last_active": "2026-05-19",
+      "top_types": {
+        "a100": 72.1
+      },
+      "envs": {
+        "prod": 72.1
+      }
+    },
+    {
+      "user": "malfet",
+      "meta_user": "nshulga",
+      "meta_user_alts": [],
+      "gpu_hours": 69.5,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 69.5,
+      "reservations": 9,
+      "last_active": "2026-06-19",
+      "top_types": {
+        "b200": 64.3,
+        "b200-mig-1g": 5.2
+      },
+      "envs": {
+        "prod": 69.5
+      }
+    },
+    {
+      "user": "huydhn",
+      "meta_user": "huydo",
+      "meta_user_alts": [],
+      "gpu_hours": 62.3,
+      "cpu_node_hours": 3.0,
+      "wall_hours": 65.4,
+      "reservations": 9,
+      "last_active": "2026-08-06",
+      "top_types": {
+        "h100": 50.2,
+        "a10g": 8.5,
+        "h100-mig-1g": 3.7
+      },
+      "envs": {
+        "prod": 65.4
+      }
+    },
+    {
+      "user": "shunting314",
+      "meta_user": "shunting",
+      "meta_user_alts": [],
+      "gpu_hours": 48.1,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 24.0,
+      "reservations": 1,
+      "last_active": "2026-05-20",
+      "top_types": {
+        "b200": 48.1
+      },
+      "envs": {
+        "prod": 24.0
+      }
+    },
+    {
+      "user": "janeyx99",
+      "meta_user": "janeyx",
+      "meta_user_alts": [],
+      "gpu_hours": 48.0,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 48.0,
+      "reservations": 1,
+      "last_active": "2026-07-01",
+      "top_types": {
+        "b200": 48.0
+      },
+      "envs": {
+        "prod": 48.0
+      }
+    },
+    {
+      "user": "ryanzhang22",
+      "meta_user": "ryanzhang",
+      "meta_user_alts": [],
+      "gpu_hours": 42.4,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 34.3,
+      "reservations": 5,
+      "last_active": "2026-08-11",
+      "top_types": {
+        "h100": 42.4
+      },
+      "envs": {
+        "prod": 34.3
+      }
+    },
+    {
+      "user": "yipjustin",
+      "meta_user": "yipjustin",
+      "meta_user_alts": [],
+      "gpu_hours": 24.0,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 24.0,
+      "reservations": 1,
+      "last_active": "2026-05-19",
+      "top_types": {
+        "b200": 24.0
+      },
+      "envs": {
+        "prod": 24.0
+      }
+    },
+    {
+      "user": "colesbury",
+      "meta_user": "sgross",
+      "meta_user_alts": [],
+      "gpu_hours": 23.3,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 23.3,
+      "reservations": 1,
+      "last_active": "2026-05-14",
+      "top_types": {
+        "h100": 23.3
+      },
+      "envs": {
+        "prod": 23.3
+      }
+    },
+    {
+      "user": "wwwjn",
+      "meta_user": "jianiw",
+      "meta_user_alts": [],
+      "gpu_hours": 16.2,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 8.1,
+      "reservations": 2,
+      "last_active": "2026-07-16",
+      "top_types": {
+        "t4": 16.2
+      },
+      "envs": {
+        "prod": 8.1
+      }
+    },
+    {
+      "user": "tushar00jain",
+      "meta_user": "tushar00jain",
+      "meta_user_alts": [],
+      "gpu_hours": 16.1,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 8.0,
+      "reservations": 1,
+      "last_active": "2026-06-03",
+      "top_types": {
+        "b200": 16.1
+      },
+      "envs": {
+        "prod": 8.0
+      }
+    },
+    {
+      "user": "frgossen",
+      "meta_user": "frgossen",
+      "meta_user_alts": [],
+      "gpu_hours": 16.1,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 16.1,
+      "reservations": 2,
+      "last_active": "2026-06-24",
+      "top_types": {
+        "t4": 16.1
+      },
+      "envs": {
+        "prod": 16.1
+      }
+    },
+    {
+      "user": "aorenste",
+      "meta_user": "aorenste",
+      "meta_user_alts": [],
+      "gpu_hours": 14.2,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 14.2,
+      "reservations": 48,
+      "last_active": "2026-07-29",
+      "top_types": {
+        "h100": 11.5,
+        "t4": 1.4,
+        "a10g": 1.1,
+        "a100": 0.2
+      },
+      "envs": {
+        "prod": 14.2
+      }
+    },
+    {
+      "user": "paulzhang12",
+      "meta_user": "paulzhan",
+      "meta_user_alts": [],
+      "gpu_hours": 4.0,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 4.0,
+      "reservations": 1,
+      "last_active": "2026-06-09",
+      "top_types": {
+        "h100": 4.0
+      },
+      "envs": {
+        "prod": 4.0
+      }
+    },
+    {
+      "user": "desertfire",
+      "meta_user": "binbao",
+      "meta_user_alts": [],
+      "gpu_hours": 2.9,
+      "cpu_node_hours": 0.0,
+      "wall_hours": 2.9,
+      "reservations": 5,
+      "last_active": "2026-08-06",
+      "top_types": {
+        "h100": 2.9
+      },
+      "envs": {
+        "prod": 2.9
+      }
+    },
+    {
+      "user": "alband",
+      "meta_user": "albandes",
+      "meta_user_alts": [],
+      "gpu_hours": 0.2,
+      "cpu_node_hours": 0.4,
+      "wall_hours": 0.6,
+      "reservations": 2,
+      "last_active": "2026-07-26",
+      "top_types": {
+        "l4": 0.2
+      },
+      "envs": {
+        "prod": 0.6
+      }
+    },
+    {
+      "user": "zhxchen17",
+      "meta_user": "zhxchen17",
+      "meta_user_alts": [],
+      "gpu_hours": 0.0,
+      "cpu_node_hours": 522.3,
+      "wall_hours": 522.3,
+      "reservations": 1,
+      "last_active": "2026-06-04",
+      "top_types": {},
+      "envs": {
+        "prod": 522.3
+      }
+    },
+    {
+      "user": "jathu",
+      "meta_user": "jathu",
+      "meta_user_alts": [],
+      "gpu_hours": 0.0,
+      "cpu_node_hours": 0.1,
+      "wall_hours": 0.1,
+      "reservations": 1,
+      "last_active": "2026-07-02",
+      "top_types": {},
+      "envs": {
+        "prod": 0.1
+      }
+    }
+  ]
+}
