@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B200 GPU Occupancy — last 30 days</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; background: var(--page); color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .viz-root {
+    --page:           #f9f9f7;
+    --surface-1:      #fcfcfb;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --muted:          #898781;
+    --grid:           #e1e0d9;
+    --axis:           #c3c2b7;
+    --series-1:       #256abf;
+    --series-fill:    rgba(42,120,214,0.14);
+    --border:         rgba(11,11,11,0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      --page:#0d0d0d; --surface-1:#1a1a19; --text-primary:#fff; --text-secondary:#c3c2b7;
+      --muted:#898781; --grid:#2c2c2a; --axis:#383835;
+      --series-1:#3987e5; --series-fill:rgba(57,135,229,0.20); --border:rgba(255,255,255,0.10);
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    --page:#0d0d0d; --surface-1:#1a1a19; --text-primary:#fff; --text-secondary:#c3c2b7;
+    --muted:#898781; --grid:#2c2c2a; --axis:#383835;
+    --series-1:#3987e5; --series-fill:rgba(57,135,229,0.20); --border:rgba(255,255,255,0.10);
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 28px 20px 48px; }
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px 22px 10px;
+  }
+  h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 14px; line-height: 1.45; }
+  .head { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
+  .stats { display:flex; gap:26px; margin: 4px 0 16px; flex-wrap:wrap; }
+  .stat .v { font-size: 24px; font-weight: 600; letter-spacing:-0.02em; }
+  .stat .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing:0.06em; }
+  svg { width: 100%; height: auto; display: block; }
+  .grid-line { stroke: var(--grid); stroke-width: 1; }
+  .axis-line { stroke: var(--axis); stroke-width: 1; }
+  .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .series-line { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .series-area { fill: var(--series-fill); stroke: none; }
+  .avg-line { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 4; }
+  .avg-label, .peak-label { fill: var(--text-secondary); font-size: 11px; font-weight: 500; }
+  .dot { fill: var(--series-1); stroke: var(--surface-1); stroke-width: 2; }
+  .dot-partial { fill: var(--surface-1); stroke: var(--series-1); stroke-width: 2; }
+  .crosshair { stroke: var(--axis); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0; }
+  .hover-dot { opacity: 0; }
+  .tip {
+    position: absolute; pointer-events: none; opacity: 0; transform: translate(-50%, -115%);
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 10px; font-size: 12px; color: var(--text-primary);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.16); white-space: nowrap; transition: opacity .08s;
+  }
+  .tip b { font-size: 13px; }
+  .tip .m { color: var(--text-secondary); }
+  .btn {
+    font: inherit; font-size: 12px; color: var(--text-secondary); background: transparent;
+    border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; cursor: pointer;
+  }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; }
+  table { border-collapse: collapse; margin-top: 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 3px 12px 3px 0; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--grid); }
+  .foot { color: var(--muted); font-size: 11px; margin-top: 12px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <div class="wrap">
+    <div class="card">
+      <div class="head">
+        <div>
+          <h1>B200 GPU occupancy — last 30 days</h1>
+          <p class="sub">Daily reserved GPU-hours &divide; (14&nbsp;GPUs &times; 24h) &middot; Jul&nbsp;4&nbsp;–&nbsp;Aug&nbsp;3,&nbsp;2026 &middot; source: <code>pytorch-gpu-dev-reservations</code></p>
+        </div>
+        <button class="btn" id="themeBtn">Toggle theme</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="v" id="sAvg">—</div><div class="l">30-day avg</div></div>
+        <div class="stat"><div class="v" id="sPeak">—</div><div class="l">peak day</div></div>
+        <div class="stat"><div class="v" id="sHrs">—</div><div class="l">total GPU-h</div></div>
+      </div>
+      <svg id="chart" viewBox="0 0 920 420" role="img" aria-label="Line chart of daily B200 GPU occupancy percentage over the last 30 days"></svg>
+      <details>
+        <summary>Show data table</summary>
+        <table id="tbl"><thead><tr><th>Date</th><th>Occupancy</th><th>GPU-hours</th></tr></thead><tbody></tbody></table>
+      </details>
+      <p class="foot">
+        Occupancy = GPUs <em>reserved</em> (not necessarily compute-busy). Denominator is current B200 capacity (14 allocatable GPUs); the fleet size varied over the month, so treat this as approximate. First and last points (hollow) are partial window-edge days and read low.
+      </p>
+    </div>
+  </div>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const RAW = [
+  ["07-04",37.4],["07-05",151.9],["07-06",158.5],["07-07",185.8],["07-08",216.5],
+  ["07-09",194.8],["07-10",110.5],["07-11",119.0],["07-12",69.4],["07-13",186.6],
+  ["07-14",291.0],["07-15",249.1],["07-16",278.3],["07-17",195.5],["07-18",149.5],
+  ["07-19",100.2],["07-20",158.2],["07-21",237.4],["07-22",277.0],["07-23",205.2],
+  ["07-24",130.1],["07-25",120.3],["07-26",120.2],["07-27",187.2],["07-28",241.9],
+  ["07-29",233.8],["07-30",212.2],["07-31",223.7],["08-01",169.9],["08-02",170.6],
+  ["08-03",69.7]
+];
+const CAP_PER_DAY = 14 * 24;            // 336 GPU-h available/day
+const data = RAW.map(([d,gh],i) => ({ d, gh, occ: gh/CAP_PER_DAY*100, partial: i===0 || i===RAW.length-1 }));
+
+// headline stats (window basis: 5451.3 GPU-h over 30d × 14 GPU)
+const totalGh = RAW.reduce((a,[,g])=>a+g,0);
+const avgOcc = totalGh / (CAP_PER_DAY*30) * 100;
+const peak = data.reduce((a,b)=> b.occ>a.occ?b:a);
+document.getElementById('sAvg').textContent  = avgOcc.toFixed(0)+'%';
+document.getElementById('sPeak').textContent = peak.occ.toFixed(0)+'% ('+peak.d+')';
+document.getElementById('sHrs').textContent  = Math.round(totalGh).toLocaleString();
+
+const NS='http://www.w3.org/2000/svg';
+const W=920,H=420, m={t:24,r:20,b:38,l:44};
+const iw=W-m.l-m.r, ih=H-m.t-m.b;
+const n=data.length;
+const x = i => m.l + (n===1?iw/2: i*iw/(n-1));
+const yMax = 100;
+const y = v => m.t + ih - (v/yMax)*ih;
+const svg = document.getElementById('chart');
+const el = (t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;};
+
+// gridlines + y ticks
+[0,25,50,75,100].forEach(v=>{
+  svg.appendChild(el('line',{class:'grid-line',x1:m.l,x2:m.l+iw,y1:y(v),y2:y(v)}));
+  const tx=el('text',{class:'tick',x:m.l-8,y:y(v)+4,'text-anchor':'end'}); tx.textContent=v+'%'; svg.appendChild(tx);
+});
+// x ticks (every 5 days + last)
+[0,5,10,15,20,25,30].forEach(i=>{
+  if(i>=n) return;
+  const tx=el('text',{class:'tick',x:x(i),y:m.t+ih+20,'text-anchor':'middle'}); tx.textContent=data[i].d; svg.appendChild(tx);
+});
+svg.appendChild(el('line',{class:'axis-line',x1:m.l,x2:m.l+iw,y1:m.t+ih,y2:m.t+ih}));
+
+// area + line
+let area=`M ${x(0)} ${y(0)}`, line='';
+data.forEach((p,i)=>{ area+=` L ${x(i)} ${y(p.occ)}`; line+=(i?' L':'M')+` ${x(i)} ${y(p.occ)}`; });
+area+=` L ${x(n-1)} ${y(0)} Z`;
+svg.appendChild(el('path',{class:'series-area',d:area}));
+svg.appendChild(el('path',{class:'series-line',d:line}));
+
+// average reference line
+svg.appendChild(el('line',{class:'avg-line',x1:m.l,x2:m.l+iw,y1:y(avgOcc),y2:y(avgOcc)}));
+const al=el('text',{class:'avg-label',x:m.l+iw,y:y(avgOcc)-6,'text-anchor':'end'}); al.textContent=`avg ${avgOcc.toFixed(0)}%`; svg.appendChild(al);
+
+// partial-day hollow markers + peak label
+data.forEach((p,i)=>{ if(p.partial) svg.appendChild(el('circle',{class:'dot-partial',cx:x(i),cy:y(p.occ),r:4})); });
+const pi=data.indexOf(peak);
+svg.appendChild(el('circle',{class:'dot',cx:x(pi),cy:y(peak.occ),r:3.5}));
+const pl=el('text',{class:'peak-label',x:x(pi),y:y(peak.occ)-9,'text-anchor':'middle'}); pl.textContent=peak.occ.toFixed(0)+'%'; svg.appendChild(pl);
+
+// hover layer
+const cross=el('line',{class:'crosshair',y1:m.t,y2:m.t+ih}); svg.appendChild(cross);
+const hdot=el('circle',{class:'hover-dot dot',r:4}); svg.appendChild(hdot);
+const tip=document.getElementById('tip');
+const overlay=el('rect',{x:m.l,y:m.t,width:iw,height:ih,fill:'transparent'}); svg.appendChild(overlay);
+const rect=()=>svg.getBoundingClientRect();
+overlay.addEventListener('mousemove',e=>{
+  const r=rect(), sx=(e.clientX-r.left)*(W/r.width);
+  let i=Math.round((sx-m.l)/(iw/(n-1))); i=Math.max(0,Math.min(n-1,i));
+  const p=data[i], px=x(i), py=y(p.occ);
+  cross.setAttribute('x1',px); cross.setAttribute('x2',px); cross.style.opacity=1;
+  hdot.setAttribute('cx',px); hdot.setAttribute('cy',py); hdot.style.opacity=1;
+  tip.innerHTML=`<b>${p.occ.toFixed(1)}%</b> occupied<br><span class="m">${p.d} · ${p.gh.toFixed(0)} GPU-h${p.partial?' · partial day':''}</span>`;
+  tip.style.left=(r.left+px*(r.width/W))+'px';
+  tip.style.top=(r.top+py*(r.height/H))+'px';
+  tip.style.opacity=1;
+});
+overlay.addEventListener('mouseleave',()=>{cross.style.opacity=0;hdot.style.opacity=0;tip.style.opacity=0;});
+
+// table
+const tb=document.querySelector('#tbl tbody');
+data.forEach(p=>{ const tr=document.createElement('tr');
+  tr.innerHTML=`<td>${p.d}${p.partial?' *':''}</td><td>${p.occ.toFixed(1)}%</td><td>${p.gh.toFixed(1)}</td>`; tb.appendChild(tr); });
+
+// theme toggle
+document.getElementById('themeBtn').addEventListener('click',()=>{
+  const r=document.documentElement, cur=r.getAttribute('data-theme');
+  const dark=cur? cur==='dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  r.setAttribute('data-theme', dark?'light':'dark');
+});
+</script>
+</body>
+</html>

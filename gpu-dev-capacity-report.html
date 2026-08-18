@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gpu-dev cluster — capacity, utilization & users (Jan–Aug 2026)</title>
+<style>
+  .viz-root{
+    color-scheme: light;
+    --surface-1:#fcfcfb; --page:#f9f9f7;
+    --text-primary:#0b0b0b; --text-secondary:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --baseline:#c3c2b7; --border:rgba(11,11,11,0.10);
+    --s-h100:#2a78d6; --s-b200:#eb6834; --s-h200:#1baf7a;
+    --s-a100:#eda100; --s-l4:#e87ba4; --s-other:#008300;
+    --s-gap:#e34948;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:where(:not([data-theme="light"])) .viz-root{
+      color-scheme: dark;
+      --surface-1:#1a1a19; --page:#0d0d0d;
+      --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781;
+      --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,0.10);
+      --s-h100:#3987e5; --s-b200:#d95926; --s-h200:#199e70;
+      --s-a100:#c98500; --s-l4:#d55181; --s-other:#008300;
+      --s-gap:#e66767;
+    }
+  }
+  :root[data-theme="dark"] .viz-root{
+    color-scheme: dark;
+    --surface-1:#1a1a19; --page:#0d0d0d;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,0.10);
+    --s-h100:#3987e5; --s-b200:#d95926; --s-h200:#199e70;
+    --s-a100:#c98500; --s-l4:#d55181; --s-other:#008300;
+    --s-gap:#e66767;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--page,#f9f9f7)}
+  .viz-root{
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    background:var(--page); color:var(--text-primary);
+    min-height:100vh; padding:40px 24px 72px;
+  }
+  .wrap{max-width:1080px;margin:0 auto}
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:8px}
+  h1{font-size:26px;line-height:1.25;margin:0 0 6px;letter-spacing:-0.01em}
+  .sub{color:var(--text-secondary);font-size:13.5px;line-height:1.5;max-width:70ch;margin:0}
+  .theme-btn{
+    flex:none;background:var(--surface-1);color:var(--text-secondary);
+    border:1px solid var(--border);border-radius:8px;padding:7px 12px;
+    font:inherit;font-size:12.5px;cursor:pointer;
+  }
+  .theme-btn:hover{color:var(--text-primary)}
+
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:28px 0 8px}
+  .tile{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .tile .lbl{font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+  .tile .val{font-size:31px;line-height:1;color:var(--text-primary)}
+  .tile .val small{font-size:15px;color:var(--text-secondary);margin-left:3px}
+  .tile .note{font-size:12px;color:var(--text-secondary);margin-top:7px;line-height:1.4}
+
+  .card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:20px 22px 18px;margin-top:20px}
+  .card h2{font-size:16px;margin:0 0 4px;letter-spacing:-0.005em}
+  .card .desc{font-size:12.5px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;max-width:80ch}
+  .chart-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+  .legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:0 0 12px}
+  .legend .item{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary)}
+  .swatch{width:10px;height:10px;border-radius:2px;flex:none}
+  .plot-wrap{position:relative}
+  svg{display:block;width:100%;height:auto;overflow:visible}
+  .grid-line{stroke:var(--grid);stroke-width:1}
+  .axis-line{stroke:var(--baseline);stroke-width:1}
+  .tick{fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+  .xlab{fill:var(--text-secondary);font-size:11.5px}
+  .xlab.partial{fill:var(--muted)}
+  .dlabel{fill:var(--text-secondary);font-size:11px;font-variant-numeric:tabular-nums}
+  .dlabel.strong{fill:var(--text-primary)}
+  .hit{fill:transparent;cursor:pointer}
+  .hit:focus{outline:none}
+  .hit:focus-visible + .focus-ring,.focus-ring.on{opacity:1}
+  .focus-ring{fill:none;stroke:var(--text-primary);stroke-width:1.5;opacity:0;pointer-events:none}
+  .crosshair{stroke:var(--baseline);stroke-width:1;opacity:0;pointer-events:none}
+  .tip{
+    position:absolute;pointer-events:none;opacity:0;transition:opacity .09s;
+    background:var(--surface-1);border:1px solid var(--border);border-radius:8px;
+    padding:9px 11px;font-size:12px;color:var(--text-primary);
+    box-shadow:0 4px 16px rgba(0,0,0,.13);min-width:150px;z-index:5;
+  }
+  .tip .t-h{font-size:11.5px;color:var(--text-secondary);margin-bottom:6px}
+  .tip .t-r{display:flex;align-items:center;gap:7px;justify-content:space-between;line-height:1.7}
+  .tip .t-r .k{display:flex;align-items:center;gap:6px;color:var(--text-secondary)}
+  .tip .t-r .v{font-variant-numeric:tabular-nums}
+  .tip .t-tot{border-top:1px solid var(--border);margin-top:6px;padding-top:6px}
+  .tbl-btn{
+    background:none;border:1px solid var(--border);border-radius:7px;color:var(--text-secondary);
+    font:inherit;font-size:11.5px;padding:5px 10px;cursor:pointer;flex:none
+  }
+  .tbl-btn:hover{color:var(--text-primary)}
+  table{border-collapse:collapse;width:100%;font-size:12px;margin-top:14px;font-variant-numeric:tabular-nums}
+  th,td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--text-secondary);font-weight:600;font-size:11px;letter-spacing:.03em;text-transform:uppercase}
+  caption{caption-side:top;text-align:left;font-size:11.5px;color:var(--muted);padding-bottom:6px}
+  [hidden]{display:none !important}
+  .method{margin-top:26px;font-size:12.5px;color:var(--text-secondary);line-height:1.65}
+  .method h2{font-size:14px;color:var(--text-primary);margin:0 0 8px}
+  .method li{margin-bottom:6px}
+  .method code{font-size:11.5px;background:var(--surface-1);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+  .ministats{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:2px 0 16px}
+  .ms{border-left:2px solid var(--border);padding:2px 0 2px 12px}
+  .ms .k{font-size:11px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+  .ms .v{font-size:19px;color:var(--text-primary);line-height:1.2}
+  .ms .n{font-size:11.5px;color:var(--text-secondary);margin-top:4px;line-height:1.45}
+  @media (max-width:820px){.tiles{grid-template-columns:repeat(2,1fr)}.ministats{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="viz-root">
+<div class="wrap">
+
+  <header>
+    <div>
+      <h1>gpu-dev cluster: capacity, utilization &amp; users</h1>
+      <p class="sub">Production cluster <code style="font-size:12px">us-east-2</code>, 1 Jan – 7 Aug 2026, monthly.
+      Source: <b>5,995</b> reservation records in DynamoDB <code style="font-size:12px">pytorch-gpu-dev-reservations</code>
+      plus live capacity from <code style="font-size:12px">pytorch-gpu-dev-gpu-availability</code>.</p>
+    </div>
+    <button class="theme-btn" id="themeBtn" type="button">Dark mode</button>
+  </header>
+
+  <!-- ============ STAT TILES ============ -->
+  <div class="tiles">
+    <div class="tile">
+      <div class="lbl">GPUs running now</div>
+      <div class="val" id="t-deliv">—</div>
+      <div class="note">across 14 nodes, 7 GPU types</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">GPUs validly configured</div>
+      <div class="val" id="t-funded">—</div>
+      <div class="note" id="t-funded-note">—</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">GPU-hours consumed</div>
+      <div class="val" id="t-hours">—</div>
+      <div class="note">3,612 reservations, Jan–Aug</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">Distinct users</div>
+      <div class="val" id="t-users">—</div>
+      <div class="note">17–38 active in any given month</div>
+    </div>
+  </div>
+
+  <!-- ============ CHART 1: capacity now ============ -->
+  <div class="card">
+    <div class="chart-head">
+      <div>
+        <h2>Capacity today, by GPU type</h2>
+        <p class="desc">Valid configured capacity versus what is actually running. <b>Dead config is excluded:</b>
+        8 of the 10 capacity reservations named in <code style="font-size:11.5px">main.tf</code> no longer exist in
+        EC2, and terraform keeps their ASGs alive so they advertise instance counts that can never be filled —
+        112 GPUs' worth. What remains is 2 live reservations (4 H100 + 2 B200 nodes) plus on-demand asks.
+        The remaining gap is real capacity AWS is not currently filling.</p>
+      </div>
+      <button class="tbl-btn" data-table="tbl-cap" type="button">Table</button>
+    </div>
+    <div class="legend" id="lg-cap"></div>
+    <div class="plot-wrap"><svg id="ch-cap" role="img" aria-label="Delivered versus funded GPUs by type"></svg><div class="tip" id="tip-cap"></div></div>
+    <div id="tbl-cap" hidden></div>
+  </div>
+
+  <!-- ============ CHART 2: gpu-hours by month ============ -->
+  <div class="card">
+    <div class="chart-head">
+      <div>
+        <h2>GPU-hours consumed per month, by GPU type</h2>
+        <p class="desc">Reserved GPU-time actually served (pod scheduled on a node). Demand has been broadly
+        flat at 12–16k GPU-hours/month since April, but it has migrated almost entirely onto h100 and b200 as the
+        older h200 and a100 pools disappeared.</p>
+      </div>
+      <button class="tbl-btn" data-table="tbl-hrs" type="button">Table</button>
+    </div>
+    <div class="legend" id="lg-hrs"></div>
+    <div class="plot-wrap"><svg id="ch-hrs" role="img" aria-label="Stacked GPU-hours per month by GPU type"></svg><div class="tip" id="tip-hrs"></div></div>
+    <div id="tbl-hrs" hidden></div>
+  </div>
+
+  <!-- ============ CHART 3: utilization ============ -->
+  <div class="card">
+    <div class="chart-head">
+      <div>
+        <h2>Utilization of the GPUs that exist</h2>
+        <p class="desc">Share of available GPU-time that was reserved, for the two pools that carry the load.
+        Both roughly doubled since January — not because demand grew, but because the fleet shrank underneath it.
+        Fleet-wide the number is far lower (25% in July) because the small pools sit almost entirely idle:
+        RTX PRO 6000, T4, L4, A10G and A100 together hold 36 GPUs and drew under 1% of July's GPU-hours.</p>
+      </div>
+      <button class="tbl-btn" data-table="tbl-util" type="button">Table</button>
+    </div>
+    <div class="legend" id="lg-util"></div>
+    <div class="plot-wrap"><svg id="ch-util" role="img" aria-label="Monthly utilization percentage for h100 and b200"></svg><div class="tip" id="tip-util"></div></div>
+    <div id="tbl-util" hidden></div>
+  </div>
+
+  <!-- ============ CHART 4: users ============ -->
+  <div class="card">
+    <div class="chart-head">
+      <div>
+        <h2>Active users per month</h2>
+        <p class="desc">Distinct GitHub users who had at least one reservation running that month.
+        Peak was 38 in March; the trend since is gently down while GPU-hours per user has risen.</p>
+      </div>
+      <button class="tbl-btn" data-table="tbl-usr" type="button">Table</button>
+    </div>
+    <div class="plot-wrap"><svg id="ch-usr" role="img" aria-label="Distinct active users per month"></svg><div class="tip" id="tip-usr"></div></div>
+    <div id="tbl-usr" hidden></div>
+  </div>
+
+
+  <!-- ============ CHART 5: cost ============ -->
+  <div class="card">
+    <div class="chart-head">
+      <div>
+        <h2>Estimated monthly cost</h2>
+        <p class="desc">On-demand nodes are billed actuals (Cost Explorer, attributed by the
+        <code style="font-size:11.5px">aws:autoscaling:groupName</code> tag; list rates reproduce them to the dollar).
+        H100/B200/H200 run in prepaid Capacity Blocks charged upfront in a single month, so they are
+        <b>amortized</b>: each month is priced from the node-hours gpu-dev actually ran that month. The
+        <b>quantity is measured, only the rate is uncertain</b> — bars use the blended rate the account really
+        paid. Hover a bar or open the table for the on-demand-list upper bound; it runs about 4&times; higher and is
+        plotted nowhere because it would flatten everything else.</p>
+      </div>
+      <button class="tbl-btn" data-table="tbl-cost" type="button">Table</button>
+    </div>
+    <div class="ministats">
+      <div class="ms"><div class="k">On-demand nodes (July)</div><div class="v" id="c-od">—</div>
+        <div class="n">billed actuals — A100, RTX PRO 6000, L4, T4, A10G, 20 CPU nodes, build node</div></div>
+      <div class="ms"><div class="k">Capacity blocks (July)</div><div class="v" id="c-blk">—</div>
+        <div class="n">4× H100 + 2× B200 node-hours, blended rate → on-demand list</div></div>
+      <div class="ms"><div class="k">All-in per GPU-hour served</div><div class="v" id="c-per">—</div>
+        <div class="n" id="c-per-note">—</div></div>
+    </div>
+    <div class="legend" id="lg-cost"></div>
+    <div class="plot-wrap"><svg id="ch-cost" role="img" aria-label="Monthly billed EC2 cost for gpu-dev auto-scaling groups"></svg><div class="tip" id="tip-cost"></div></div>
+    <div id="tbl-cost" hidden></div>
+  </div>
+
+  <!-- ============ METHOD ============ -->
+  <div class="method">
+    <h2>How these numbers are derived</h2>
+    <ul>
+      <li><b>GPU-hours</b> = <code>gpu_count × (end − launched_at)</code>, clipped to each month.
+        <code>end</code> = <code>reservation_ended</code> → <code>cancelled_at</code> → <code>expired_at</code> →
+        <code>failed_at</code> → <code>expires_at</code> → now (for active). Records with no
+        <code>launched_at</code> (1,059 — queued or failed before a pod was scheduled) are excluded; every record
+        that has <code>launched_at</code> also has a node assigned, so this counts real allocated GPU-time.</li>
+      <li><b>Utilization denominator</b> is <b>measured delivered capacity</b>: the node-hours each ASG actually
+        ran that month (Cost Explorer usage quantity, attributed by the <code>aws:autoscaling:groupName</code> tag)
+        × GPUs per node. Instance-hours are recorded even for capacity-block pools whose cost shows as $0, which is
+        what makes this measurable. It validates against live data — July measures 32 h100 and 16 b200 GPUs versus
+        30 and 14 delivered today. Where the observed high-water mark of concurrent allocation <i>exceeds</i> the
+        ASG-measured figure, the high-water mark is used instead, since that means pods ran on nodes outside the
+        ASGs: the one real case is h100 in March (99 GPUs concurrent vs 30 ASG-managed), the non-ASG “pet” H100
+        nodes from the 2026-03-09 incident.</li>
+      <li><b>Dead capacity reservations are excluded.</b> Each CR id in the prod
+        <code>capacity_reservations</code> block was checked against EC2: 8 of 10 no longer exist, so their ASGs
+        advertise 112 GPUs that can never be filled. Removing them takes configured capacity from 244 to
+        <b>132 valid GPUs</b>, of which 80 are running (61%). Entries with <code>id = null</code> are plain
+        on-demand — a legitimate ask with no reservation guarantee — and are counted as valid.</li>
+      <li><b>No historical configured-capacity series is shown.</b> The 8 dead reservations are gone from the EC2
+        API, so their expiry dates are unrecoverable and there is no way to tell which months they were still
+        valid in. Utilization is therefore reported only against measured delivered capacity, never against config.</li>
+      <li><b>MIG slices</b> are converted to fractional physical GPUs (1g = 1/7, 2g = 2/7, 3g = 3/7) so they are not
+        double-counted against their parent h100/b200 nodes.</li>
+      <li><b>CPU pools</b> (20 always-on c7i/c7g nodes) carry no GPUs and are excluded from GPU math. They served
+        762 node-hours in July — roughly one node's worth of the twenty.</li>
+      <li><b>August is partial</b> (1–7 Aug, 169.5 h). Its GPU-hours bar is therefore short by construction;
+        its utilization rate is directly comparable.</li>
+      <li><b>Cost.</b> On-demand pools are exact: Cost Explorer unblended spend, filtered to gpu-dev's own ASGs
+        via the <code>aws:autoscaling:groupName</code> cost-allocation tag, and us-east-2 list rates reproduce
+        those actuals to the dollar (no Savings Plans or Reserved Instances exist on this account). The H100 and
+        B200 nodes run in prepaid Capacity Blocks: AWS charges those upfront (both were purchased in April) and
+        does not tag them per-ASG, so their true price is not retrievable. The range given spans the account's
+        blended effective rate for those instance types over Jan–Jul ($14.64/h for p5.48xlarge, $21.84/h for
+        p6-b200.48xlarge) up to on-demand list ($55.04 and $113.93). For an exact figure, read the capacity-block
+        purchase amounts off the April invoice.</li>
+      <li>Caveat: reservation records are the unit of measurement, so a held-but-idle GPU counts as used.
+        This measures <i>reservation</i> utilization, not SM occupancy — for the latter, use the DCGM metrics
+        in Grafana.</li>
+    </ul>
+  </div>
+</div>
+</div>
+
+<script>
+const DATA = {"generated_at":"2026-08-08T02:13:29.789933Z","months":[{"m":"2026-01","partial":false,"hours":744.0,"gpuh":{"h100":58.2,"b200":7651.7,"h200":2985.8,"a100":371.0,"l4":306.6,"other":26.9},"hwm":{"h100":9.0,"b200":48.49,"h200":31.75,"a100":8.72,"l4":20.43,"other":28.1},"util":{"h100":0.9,"b200":21.2,"h200":12.6,"a100":5.7,"l4":2.0},"users":31,"resv":277,"cpu_nodeh":63.1,"total_gpuh":11400.2,"hwm_total":146.5,"util_total":10.5,"cost":{"od":65141,"h100":4891,"b200":98479,"h200":42758,"low":211269,"high":784173,"od_by":{"l4":17118,"a100":16336,"t4":14553,"cpu":8694,"a10g":8440}},"nodeh":{"cpu":7568.6,"a100":811.3,"a10g":1490.3,"b200":4509.1,"h100":334.1,"h200":2952.9,"l4":3800.8,"t4":3731.0}},{"m":"2026-02","partial":false,"hours":672.0,"gpuh":{"h100":1421.1,"b200":10208.0,"h200":3772.2,"a100":613.7,"l4":257.1,"other":145.8},"hwm":{"h100":29.0,"b200":79.51,"h200":48.16,"a100":8.78,"l4":20.33,"other":28.3},"util":{"h100":7.3,"b200":19.1,"h200":11.7,"a100":10.4,"l4":1.9},"users":30,"resv":303,"cpu_nodeh":46.8,"total_gpuh":16417.9,"hwm_total":214.0,"util_total":11.4,"cost":{"od":58778,"h100":24884,"b200":145868,"h200":58583,"low":288113,"high":1169364,"od_by":{"l4":15461,"a100":14702,"t4":13144,"cpu":7848,"a10g":7623}},"nodeh":{"cpu":6749.2,"a100":737.5,"a10g":1379.7,"b200":6679.0,"h100":1699.7,"h200":4045.8,"l4":3416.0,"t4":3368.9}},{"m":"2026-03","partial":false,"hours":744.0,"gpuh":{"h100":14064.6,"b200":11146.1,"h200":5989.5,"a100":751.2,"l4":1112.8,"other":534.7},"hwm":{"h100":99.0,"b200":86.16,"h200":58.32,"a100":9.43,"l4":20.61,"other":28.2},"util":{"h100":19.1,"b200":17.4,"h200":13.8,"a100":10.7,"l4":7.3},"users":38,"resv":487,"cpu_nodeh":530.2,"total_gpuh":33598.9,"hwm_total":301.7,"util_total":15.0,"cost":{"od":110315,"h100":40869,"b200":175004,"h200":78534,"low":404722,"high":1520202,"od_by":{"cpu":53867,"l4":17118,"a100":16337,"t4":14553,"a10g":8440}},"nodeh":{"cpu":42430.1,"a100":877.1,"a10g":1505.5,"b200":8013.0,"h100":2791.6,"h200":5423.6,"l4":3834.3,"t4":3739.9}},{"m":"2026-04","partial":false,"hours":720.0,"gpuh":{"h100":6626.1,"b200":5768.0,"h200":506.6,"a100":747.7,"l4":1993.1,"other":144.6},"hwm":{"h100":41.8,"b200":20.36,"h200":12.0,"a100":8.96,"l4":16.05,"other":26.7},"util":{"h100":22.0,"b200":39.3,"h200":5.9,"a100":11.6,"l4":17.2},"users":36,"resv":350,"cpu_nodeh":79.5,"total_gpuh":15786.1,"hwm_total":125.9,"util_total":17.4,"cost":{"od":85827,"h100":55072,"b200":40026,"h200":8962,"low":189887,"high":540850,"od_by":{"cpu":39789,"a100":15810,"l4":12033,"t4":10230,"a10g":6306,"rtxpro6000":1659}},"nodeh":{"cpu":31498.7,"a100":806.0,"a10g":1116.5,"b200":1832.7,"rtxpro6000":100.1,"h100":3761.7,"h200":618.9,"l4":2888.1,"t4":2615.5}},{"m":"2026-05","partial":false,"hours":744.0,"gpuh":{"h100":7989.4,"b200":3860.8,"h200":173.1,"a100":107.6,"l4":178.7,"other":59.3},"hwm":{"h100":34.68,"b200":16.0,"h200":8.0,"a100":8.1,"l4":8.35,"other":22.2},"util":{"h100":31.0,"b200":32.4,"h200":2.9,"a100":1.8,"l4":2.9},"users":32,"resv":903,"cpu_nodeh":678.2,"total_gpuh":12368.9,"hwm_total":97.4,"util_total":17.1,"cost":{"od":78555,"h100":47224,"b200":32481,"h200":2939,"low":161199,"high":438388,"od_by":{"rtxpro6000":24658,"cpu":20211,"a100":16336,"l4":6847,"t4":5821,"a10g":4220,"build":462}},"nodeh":{"build":54.5,"cpu":16524.3,"a100":753.5,"a10g":763.5,"b200":1487.2,"h100":3225.7,"h200":203.0,"l4":1553.0,"rtxpro6000":1487.9,"t4":1513.6}},{"m":"2026-06","partial":false,"hours":720.0,"gpuh":{"h100":8784.4,"b200":5067.2,"h200":0,"a100":0,"l4":120.2,"other":24.1},"hwm":{"h100":32.0,"b200":16.0,"h200":0,"a100":8.0,"l4":8.15,"other":20.2},"util":{"h100":38.1,"b200":44.0,"h200":null,"a100":0.0,"l4":2.0},"users":28,"resv":658,"cpu_nodeh":681.8,"total_gpuh":13995.9,"hwm_total":84.3,"util_total":23.1,"cost":{"od":82551,"h100":42163,"b200":31450,"h200":0,"low":156164,"high":405129,"od_by":{"rtxpro6000":23864,"cpu":19567,"a100":15810,"build":6967,"l4":6626,"t4":5633,"a10g":4084}},"nodeh":{"build":731.2,"cpu":35215.6,"a100":720.0,"a10g":727.2,"b200":1440.0,"h100":2880.0,"l4":1467.4,"rtxpro6000":1440.0,"t4":1460.8}},{"m":"2026-07","partial":false,"hours":744.0,"gpuh":{"h100":9971.2,"b200":5888.2,"h200":0,"a100":0.5,"l4":24.2,"other":24.7},"hwm":{"h100":32.0,"b200":16.0,"h200":0,"a100":8.0,"l4":8.01,"other":20.0},"util":{"h100":41.9,"b200":49.5,"h200":null,"a100":0.0,"l4":0.4},"users":26,"resv":577,"cpu_nodeh":762.0,"total_gpuh":15908.8,"hwm_total":84.0,"util_total":25.4,"cost":{"od":85302,"h100":43569,"b200":32498,"h200":0,"low":161369,"high":418633,"od_by":{"rtxpro6000":24659,"cpu":20219,"a100":16336,"build":7200,"l4":6847,"t4":5821,"a10g":4220}},"nodeh":{"build":745.0,"cpu":37296.6,"a100":744.0,"a10g":747.1,"b200":1488.0,"h100":2976.0,"l4":1489.4,"rtxpro6000":1488.0,"t4":1489.7}},{"m":"2026-08","partial":true,"hours":170.2,"gpuh":{"h100":1900.3,"b200":1332.2,"h200":0,"a100":0,"l4":0,"other":0},"hwm":{"h100":29.18,"b200":14.59,"h200":0,"a100":7.29,"l4":7.29,"other":18.2},"util":{"h100":38.3,"b200":53.6,"h200":null,"a100":0.0,"l4":0.0},"users":17,"resv":57,"cpu_nodeh":170.2,"total_gpuh":3232.5,"hwm_total":76.6,"util_total":24.8,"cost":{"od":17791,"h100":9091,"b200":6781,"h200":0,"low":33663,"high":87345,"od_by":{"rtxpro6000":5139,"cpu":4224,"a100":3405,"build":1502,"l4":1427,"t4":1213,"a10g":881}},"nodeh":{"build":155.5,"cpu":7837.6,"a100":155.1,"a10g":155.3,"b200":310.5,"h100":620.9,"l4":310.1,"rtxpro6000":310.1,"t4":310.1}}],"capacity_now":[{"pool":"h100","delivered":30.0,"valid":48.0,"dead":32.0,"nodes_running":4.0,"available":10.0},{"pool":"b200","delivered":14.0,"valid":32.0,"dead":24.0,"nodes_running":2.0,"available":4.0},{"pool":"h200","delivered":0.0,"valid":16.0,"dead":48.0,"nodes_running":0.0,"available":0.0},{"pool":"a100","delivered":8.0,"valid":8.0,"dead":8.0,"nodes_running":1.0,"available":8.0},{"pool":"l4","delivered":8.0,"valid":8.0,"dead":0.0,"nodes_running":2.0,"available":8.0},{"pool":"rtxpro6000","delivered":8.0,"valid":8.0,"dead":0.0,"nodes_running":2.0,"available":8.0},{"pool":"t4","delivered":8.0,"valid":8.0,"dead":0.0,"nodes_running":2.0,"available":8.0},{"pool":"a10g","delivered":4.0,"valid":4.0,"dead":0.0,"nodes_running":1.0,"available":4.0}],"cr_entries":[{"pool":"a100","key":"cr0","cr_id":"cr-01cc0f00f28b095af","nodes":1,"gpus":8,"kind":"dead-capacity-reservation","cr_state":"not-found","cr_end":null},{"pool":"a100","key":"cr1","cr_id":null,"nodes":1,"gpus":8,"kind":"on-demand","cr_state":null,"cr_end":null},{"pool":"a10g","key":"-","cr_id":null,"nodes":1,"gpus":4,"kind":"on-demand","cr_state":null,"cr_end":null},{"pool":"b200","key":"cr0","cr_id":"cr-0c366fb8339a10f69","nodes":0,"gpus":0,"kind":"dead-capacity-reservation","cr_state":"not-found","cr_end":null},{"pool":"b200","key":"cr1","cr_id":"cr-08e7fee0b8dc3de5e","nodes":3,"gpus":24,"kind":"dead-capacity-reservation","cr_state":"not-found","cr_end":null},{"pool":"b200","key":"cr2","cr_id":null,"nodes":2,"gpus":16,"kind":"on-demand","cr_state":null,"cr_end":null},{"pool":"b200","key":"cr3","cr_id":"cr-0f5f6bb30a8fe3c68","nodes":1,"gpus":8,"kind":"capacity-reservation","cr_state":"active","cr_end":"2026-09-01 11:30:00+00:00"},{"pool":"b200","key":"cr4","cr_id":"cr-0f5f6bb30a8fe3c68","nodes":1,"gpus":8,"kind":"capacity-reservation","cr_state":"active","cr_end":"2026-09-01 11:30:00+00:00"},{"pool":"h100","key":"cr0","cr_id":"cr-0a3f49b96fe03ca04","nodes":4,"gpus":32,"kind":"dead-capacity-reservation","cr_state":"not-found","cr_end":null},{"pool":"h100","key":"cr1","cr_id":null,"nodes":2,"gpus":16,"kind":"on-demand","cr_state":null,"cr_end":null},{"pool":"h100","key":"cr2","cr_id":"cr-044bc72b0a6b56062","nodes":3,"gpus":24,"kind":"capacity-reservation","cr_state":"active","cr_end":"2026-10-08 11:30:00+00:00"},{"pool":"h100","key":"cr3","cr_id":"cr-0211ea1e8d3a3c79e","nodes":0,"gpus":0,"kind":"dead-capacity-reservation","cr_state":"not-found","cr_end":null},{"pool":"h100","key":"cr4","cr_id":"cr-044bc72b0a6b56062","nodes":1,"gpus":8,"kind":"capacity-reservation","cr_state":"active","cr_end":"2026-10-08 11:30:00+00:00"},{"pool":"h200","key":"cr0","cr_id":"cr-0f6d0766f5d3339e6","nodes":2,"gpus":16,"kind":"dead-capacity-reservation","cr_state":"not-found","cr_end":null},{"pool":"h200","key":"cr1","cr_id":"cr-06c9c978dea756a26","nodes":3,"gpus":24,"kind":"dead-capacity-reservation","cr_state":"not-found","cr_end":null},{"pool":"h200","key":"cr2","cr_id":null,"nodes":2,"gpus":16,"kind":"on-demand","cr_state":null,"cr_end":null},{"pool":"h200","key":"cr3","cr_id":"cr-02949f61f1a761b54","nodes":1,"gpus":8,"kind":"dead-capacity-reservation","cr_state":"not-found","cr_end":null},{"pool":"l4","key":"-","cr_id":null,"nodes":2,"gpus":8,"kind":"on-demand","cr_state":null,"cr_end":null},{"pool":"rtxpro6000","key":"-","cr_id":null,"nodes":2,"gpus":8,"kind":"on-demand","cr_state":null,"cr_end":null},{"pool":"t4","key":"-","cr_id":null,"nodes":2,"gpus":8,"kind":"on-demand","cr_state":null,"cr_end":null}],"mig_now":{"b200-mig-1g":4.0,"b200-mig-2g":2.0,"b200-mig-3g":2.0,"h100-mig-1g":4.0,"h100-mig-2g":2.0,"h100-mig-3g":2.0},"cpu_now":{"cpu-arm":{"nodes":10.0},"cpu-x86":{"nodes":10.0}},"rates":{"list":{"p5.48xlarge":55.04,"p6-b200.48xlarge":113.9328,"p5en.48xlarge":63.296,"p4d.24xlarge":21.95764,"g7e.24xlarge":16.57216,"c7i.8xlarge":1.428,"c7g.8xlarge":1.1562,"m7i.48xlarge":9.6768,"g6.12xlarge":4.6016,"g4dn.12xlarge":3.912,"g5.12xlarge":5.672},"blended":{"p5.48xlarge":14.64,"p6-b200.48xlarge":21.84,"p5en.48xlarge":14.48},"pool_instance":{"h100":"p5.48xlarge","b200":"p6-b200.48xlarge","h200":"p5en.48xlarge","a100":"p4d.24xlarge","rtxpro6000":"g7e.24xlarge","l4":"g6.12xlarge","t4":"g4dn.12xlarge","a10g":"g5.12xlarge"}},"totals":{"gpu_hours":122709.2,"distinct_users":72,"reservations":3612,"delivered_now":80.0,"valid_now":132.0,"dead_now":112.0,"cost_low":1606386,"cost_high":5364084,"per_gpuh_low":13.09,"per_gpuh_high":43.71}};
+
+const POOLS = [
+  {k:'h100',  label:'H100',       css:'--s-h100'},
+  {k:'b200',  label:'B200',       css:'--s-b200'},
+  {k:'h200',  label:'H200',       css:'--s-h200'},
+  {k:'a100',  label:'A100',       css:'--s-a100'},
+  {k:'l4',    label:'L4',         css:'--s-l4'},
+  {k:'other', label:'Other GPUs', css:'--s-other'},
+];
+const POOL_LABEL = {h100:'H100',b200:'B200',h200:'H200',a100:'A100',l4:'L4',
+                    t4:'T4',a10g:'A10G',rtxpro6000:'RTX PRO 6000',other:'Other GPUs'};
+const SVGNS = 'http://www.w3.org/2000/svg';
+const cssv = n => getComputedStyle(document.querySelector('.viz-root')).getPropertyValue(n).trim();
+const el = (t,a={}) => { const e=document.createElementNS(SVGNS,t);
+  for(const k in a) e.setAttribute(k,a[k]); return e; };
+const fmt = n => Math.round(n).toLocaleString('en-US');
+const fmt1 = n => n.toLocaleString('en-US',{maximumFractionDigits:1});
+const MON = {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',7:'Jul',8:'Aug'};
+const mlabel = m => MON[+m.split('-')[1]];
+
+/* rounded-top rect path: 4px radius on the data end only */
+function barPath(x,y,w,h,r,side){
+  r = Math.min(r, w/2, Math.max(h,0));
+  if(h<=0.5) return '';
+  if(side==='top')   // vertical bar: round the top (data end), square on the baseline
+    return `M${x},${y+h}L${x},${y+r}Q${x},${y} ${x+r},${y}L${x+w-r},${y}Q${x+w},${y} ${x+w},${y+r}L${x+w},${y+h}Z`;
+  if(side==='right') // horizontal bar: round the right (data end), square on the baseline
+    return `M${x},${y}L${x+w-r},${y}Q${x+w},${y} ${x+w},${y+r}L${x+w},${y+h-r}Q${x+w},${y+h} ${x+w-r},${y+h}L${x},${y+h}Z`;
+  return `M${x},${y}L${x+w},${y}L${x+w},${y+h}L${x},${y+h}Z`;  // inner segment: square both ends
+}
+/* ticks 0..N*step where N*step >= max — the top tick must never sit below the data */
+function niceTicks(max,count=5){
+  if(!(max>0)) return [0,1];
+  const mag = Math.pow(10,Math.floor(Math.log10(max/count)));
+  let step = [1,2,2.5,5,10,20].map(m=>m*mag).find(s=>max/s<=count);
+  if(!step) step = Math.pow(10,Math.ceil(Math.log10(max)));
+  const n = Math.ceil(max/step - 1e-9);
+  return Array.from({length:n+1},(_,i)=>+(i*step).toPrecision(12));
+}
+function legend(node, items){
+  node.innerHTML = items.map(i=>
+    `<span class="item"><span class="swatch" style="background:${i.color}"></span>${i.label}</span>`).join('');
+}
+/* tooltip placement, clamped inside the plot wrapper */
+function showTip(tip, wrap, cx, cy, html){
+  tip.innerHTML = html; tip.style.opacity = 1;
+  const W = wrap.clientWidth, tw = tip.offsetWidth, th = tip.offsetHeight;
+  let left = cx + 14; if(left + tw > W - 4) left = cx - tw - 14;
+  if(left < 4) left = 4;
+  let top = cy - th/2; if(top < 2) top = 2;
+  const H = wrap.clientHeight; if(top + th > H - 2) top = Math.max(2, H - th - 2);
+  tip.style.left = left+'px'; tip.style.top = top+'px';
+}
+const hideTip = tip => tip.style.opacity = 0;
+const dot = c => `<span class="swatch" style="background:${c}"></span>`;
+
+/* ---------------- CHART 1: capacity now (horizontal stacked) ---------------- */
+function chartCapacity(){
+  const svg = document.getElementById('ch-cap'), tip = document.getElementById('tip-cap');
+  const wrap = svg.parentElement;
+  const rows = DATA.capacity_now;
+  const cDeliv = cssv('--s-h100'), cGap = cssv('--s-gap');
+  legend(document.getElementById('lg-cap'), [
+    {label:'Running now', color:cDeliv},
+    {label:'Validly configured, not delivered', color:cGap}]);
+
+  const W=1000, ML=104, MR=64, MT=8, rowH=34, gap=12;
+  const H = MT + rows.length*(rowH+gap) + 34;
+  const PW = W-ML-MR;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  svg.innerHTML='';
+  const ticks = niceTicks(Math.max(...rows.map(r=>r.valid)),4);
+  const maxT = ticks[ticks.length-1];
+  const x = v => ML + v/maxT*PW;
+
+  ticks.forEach(t=>{
+    svg.appendChild(el('line',{x1:x(t),x2:x(t),y1:MT,y2:MT+rows.length*(rowH+gap)-gap+6,class:'grid-line'}));
+    const tx=el('text',{x:x(t),y:H-14,class:'tick','text-anchor':'middle'}); tx.textContent=fmt(t);
+    svg.appendChild(tx);
+  });
+  const cap=el('text',{x:ML,y:H-1,class:'tick','text-anchor':'start'});
+  cap.textContent='GPUs'; svg.appendChild(cap);
+
+  rows.forEach((r,i)=>{
+    const y = MT + i*(rowH+gap);
+    const lab = el('text',{x:ML-12,y:y+rowH/2+4,class:'xlab','text-anchor':'end'});
+    lab.textContent = POOL_LABEL[r.pool]||r.pool; svg.appendChild(lab);
+
+    const wD = x(r.delivered)-ML, wF = x(r.valid)-ML;
+    const shortfall = r.valid - r.delivered;
+    // delivered segment (anchored to baseline, square inner end)
+    if(r.delivered>0){
+      const isFull = shortfall<=0;
+      svg.appendChild(el('path',{d:barPath(ML,y,wD,rowH,4,isFull?'right':'none'),fill:cDeliv}));
+    }
+    // shortfall segment, 2px surface gap between fills
+    if(shortfall>0){
+      const sx = ML + wD + (r.delivered>0?2:0);
+      svg.appendChild(el('path',{d:barPath(sx,y,Math.max(0,ML+wF-sx),rowH,4,'right'),fill:cGap}));
+    }
+    const vl = el('text',{x:x(r.valid)+9,y:y+rowH/2+4,class:'dlabel strong'});
+    vl.textContent = `${fmt(r.delivered)} / ${fmt(r.valid)}`;
+    svg.appendChild(vl);
+
+    const hit = el('rect',{x:ML,y:y-gap/2,width:PW,height:rowH+gap,class:'hit',tabindex:0,
+      role:'img','aria-label':`${POOL_LABEL[r.pool]||r.pool}: ${r.delivered} of ${r.valid} validly configured GPUs running`});
+    const ring = el('rect',{x:ML-1,y:y-1,width:wF+2,height:rowH+2,rx:5,class:'focus-ring'});
+    const html = `<div class="t-h">${POOL_LABEL[r.pool]||r.pool} — ${r.pool}</div>
+      <div class="t-r"><span class="k">${dot(cDeliv)}Running</span><span class="v">${fmt(r.delivered)} GPUs · ${fmt(r.nodes_running)} node(s)</span></div>
+      <div class="t-r"><span class="k">${dot(cGap)}Not delivered</span><span class="v">${fmt(Math.max(0,shortfall))} GPUs</span></div>
+      <div class="t-r t-tot"><span class="k">Validly configured</span><span class="v">${fmt(r.valid)} GPUs</span></div>
+      <div class="t-r"><span class="k">Free right now</span><span class="v">${fmt(r.available)} GPUs</span></div>
+      ${r.dead>0?`<div class="t-r"><span class="k">Excluded (dead CRs)</span><span class="v">${fmt(r.dead)} GPUs</span></div>`:''}`;
+    const show = ev=>{ const b=wrap.getBoundingClientRect();
+      showTip(tip,wrap, ev?ev.clientX-b.left:x(r.valid), y+rowH/2, html); };
+    hit.addEventListener('mousemove',show);
+    hit.addEventListener('mouseleave',()=>hideTip(tip));
+    hit.addEventListener('focus',()=>{ring.classList.add('on');
+      showTip(tip,wrap,x(r.funded),y+rowH/2,html);});
+    hit.addEventListener('blur',()=>{ring.classList.remove('on');hideTip(tip);});
+    svg.appendChild(hit); svg.appendChild(ring);
+  });
+
+  const ent = DATA.cr_entries, dead = ent.filter(e=>e.kind==='dead-capacity-reservation'&&e.gpus>0);
+  document.getElementById('tbl-cap').innerHTML = `<table>
+    <caption>Capacity by GPU type, ${DATA.generated_at.slice(0,10)} — dead capacity reservations excluded</caption>
+    <thead><tr><th>GPU type</th><th>Running GPUs</th><th>Validly configured</th><th>Nodes running</th>
+    <th>Free now</th><th>Excluded as dead</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${POOL_LABEL[r.pool]||r.pool}</td><td>${fmt(r.delivered)}</td><td>${fmt(r.valid)}</td>
+      <td>${fmt(r.nodes_running)}</td><td>${fmt(r.available)}</td><td>${r.dead?fmt(r.dead):'—'}</td></tr>`).join('')}
+    <tr><td><b>Total</b></td><td><b>${fmt(DATA.totals.delivered_now)}</b></td><td><b>${fmt(DATA.totals.valid_now)}</b></td>
+      <td colspan="2"></td><td><b>${fmt(DATA.totals.dead_now)}</b></td></tr></tbody></table>
+
+    <table><caption>Every capacity-reservation entry in the prod <code>capacity_reservations</code> block, checked against EC2</caption>
+    <thead><tr><th>Pool</th><th>Key</th><th>Reservation ID</th><th>Nodes</th><th>GPUs</th><th>Backing</th><th>Counted</th></tr></thead>
+    <tbody>${ent.filter(e=>e.key!=='-').map(e=>{
+      const okk = e.kind!=='dead-capacity-reservation';
+      return `<tr><td>${POOL_LABEL[e.pool]||e.pool}</td><td>${e.key}</td>
+        <td style="text-align:left">${e.cr_id||'<i>on-demand (no CR)</i>'}</td>
+        <td>${e.nodes}</td><td>${e.gpus}</td>
+        <td style="text-align:left">${e.cr_id?(okk?'CR '+e.cr_state+', ends '+String(e.cr_end).slice(0,10):'CR '+e.cr_state+' — gone from EC2'):'on-demand'}</td>
+        <td>${okk?'yes':'<b>excluded</b>'}</td></tr>`;}).join('')}
+    </tbody></table>
+    <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">
+      ${dead.length} entries naming reservations that no longer exist ⇒ ${fmt(DATA.totals.dead_now)} GPUs of
+      unfillable configured capacity, excluded throughout this report. Terraform intentionally keeps these ASGs
+      (removing a key destroys/recreates the ASG), so the stale counts persist in config.
+      Separately, one active reservation (<code>cr-0c3f05dffb85ed832</code>, 1× p5.48xlarge, us-east-2c) is
+      <b>not referenced</b> by any gpu-dev ASG — its instance belongs to another team, so it is not gpu-dev capacity.</p>
+
+    <table><caption>Also provisioned (not GPU-pool capacity)</caption>
+    <thead><tr><th>Resource</th><th>Detail</th></tr></thead><tbody>
+    <tr><td>MIG slices (carved out of 1 h100 + 1 b200 node)</td><td>${Object.entries(DATA.mig_now).map(([k,v])=>k+': '+fmt(v)).join(' · ')}</td></tr>
+    <tr><td>CPU-only pools</td><td>${Object.entries(DATA.cpu_now).map(([k,v])=>k+': '+fmt(v.nodes)+' nodes').join(' · ')}</td></tr>
+    </tbody></table>`;
+}
+
+/* ---------------- CHART 2: stacked GPU-hours ---------------- */
+function chartHours(){
+  const svg=document.getElementById('ch-hrs'), tip=document.getElementById('tip-hrs');
+  const wrap=svg.parentElement, M=DATA.months;
+  const colors={}; POOLS.forEach(p=>colors[p.k]=cssv(p.css));
+  legend(document.getElementById('lg-hrs'), POOLS.map(p=>({label:p.label,color:colors[p.k]})));
+
+  const W=1000,H=340,ML=54,MR=16,MT=26,MB=44;
+  const PW=W-ML-MR, PH=H-MT-MB;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`); svg.innerHTML='';
+  const totals=M.map(m=>POOLS.reduce((s,p)=>s+(m.gpuh[p.k]||0),0));
+  const ticks=niceTicks(Math.max(...totals),5), maxT=ticks[ticks.length-1];
+  const y=v=>MT+PH-(v/maxT)*PH;
+  const bw=Math.min(64, PW/M.length*0.6), step=PW/M.length;
+
+  ticks.forEach(t=>{
+    svg.appendChild(el('line',{x1:ML,x2:ML+PW,y1:y(t),y2:y(t),class:t===0?'axis-line':'grid-line'}));
+    const tx=el('text',{x:ML-10,y:y(t)+4,class:'tick','text-anchor':'end'});
+    tx.textContent = t>=1000? (t/1000)+'k' : fmt(t); svg.appendChild(tx);
+  });
+  const yl=el('text',{x:ML-10,y:MT-12,class:'tick','text-anchor':'end'});
+  yl.textContent='GPU-h'; svg.appendChild(yl);
+
+  M.forEach((m,i)=>{
+    const cx=ML+step*i+step/2, bx=cx-bw/2;
+    let acc=0;
+    const segs=POOLS.map(p=>({p,v:m.gpuh[p.k]||0})).filter(s=>s.v>0);
+    segs.forEach((s,si)=>{
+      const y0=y(acc), y1=y(acc+s.v);
+      let h=y0-y1;
+      const isTop = si===segs.length-1;
+      if(!isTop) h=Math.max(0,h-2);            // 2px surface gap between fills
+      const d=barPath(bx,y1,bw,h,4,isTop?'top':'none');
+      if(d) svg.appendChild(el('path',{d,fill:colors[s.p.k]}));
+      acc+=s.v;
+    });
+    // selective direct label: the stack total
+    const tl=el('text',{x:cx,y:y(acc)-8,class:'dlabel','text-anchor':'middle'});
+    tl.textContent=(acc/1000).toFixed(1)+'k'; svg.appendChild(tl);
+
+    const xl=el('text',{x:cx,y:H-24,class:'xlab'+(m.partial?' partial':''),'text-anchor':'middle'});
+    xl.textContent=mlabel(m.m); svg.appendChild(xl);
+    if(m.partial){ const p=el('text',{x:cx,y:H-10,class:'tick','text-anchor':'middle'});
+      p.textContent='1–7 only'; svg.appendChild(p); }
+
+    const html=`<div class="t-h">${mlabel(m.m)} 2026${m.partial?' (1–7 Aug, partial)':''}</div>`+
+      segs.slice().reverse().map(s=>`<div class="t-r"><span class="k">${dot(colors[s.p.k])}${s.p.label}</span><span class="v">${fmt(s.v)}</span></div>`).join('')+
+      `<div class="t-r t-tot"><span class="k">Total GPU-h</span><span class="v">${fmt(acc)}</span></div>
+       <div class="t-r"><span class="k">Active users</span><span class="v">${m.users}</span></div>
+       <div class="t-r"><span class="k">Reservations</span><span class="v">${fmt(m.resv)}</span></div>`;
+    const hit=el('rect',{x:ML+step*i,y:MT,width:step,height:PH,class:'hit',tabindex:0,
+      role:'img','aria-label':`${mlabel(m.m)}: ${fmt(acc)} GPU-hours`});
+    const ring=el('rect',{x:bx-1.5,y:y(acc)-1.5,width:bw+3,height:MT+PH-y(acc)+3,rx:5,class:'focus-ring'});
+    hit.addEventListener('mousemove',ev=>{const b=wrap.getBoundingClientRect();
+      showTip(tip,wrap,ev.clientX-b.left,ev.clientY-b.top,html);});
+    hit.addEventListener('mouseleave',()=>hideTip(tip));
+    hit.addEventListener('focus',()=>{ring.classList.add('on');showTip(tip,wrap,cx,MT+PH/2,html);});
+    hit.addEventListener('blur',()=>{ring.classList.remove('on');hideTip(tip);});
+    svg.appendChild(hit); svg.appendChild(ring);
+  });
+
+  document.getElementById('tbl-hrs').innerHTML=`<table>
+    <caption>GPU-hours consumed per month (physical GPU-hours; MIG slices folded into parent pool)</caption>
+    <thead><tr><th>Month</th>${POOLS.map(p=>`<th>${p.label}</th>`).join('')}<th>Total</th><th>CPU node-h</th></tr></thead>
+    <tbody>${M.map((m,i)=>`<tr><td>${mlabel(m.m)}${m.partial?' *':''}</td>
+      ${POOLS.map(p=>`<td>${fmt1(m.gpuh[p.k]||0)}</td>`).join('')}
+      <td><b>${fmt(totals[i])}</b></td><td>${fmt1(m.cpu_nodeh)}</td></tr>`).join('')}</tbody></table>
+    <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">* August covers 1–7 Aug only.</p>`;
+}
+
+/* ---------------- CHART 3: utilization lines ---------------- */
+function chartUtil(){
+  const svg=document.getElementById('ch-util'), tip=document.getElementById('tip-util');
+  const wrap=svg.parentElement, M=DATA.months;
+  const series=[{k:'h100',label:'H100',color:cssv('--s-h100')},
+                {k:'b200',label:'B200',color:cssv('--s-b200')}];
+  legend(document.getElementById('lg-util'), series.map(s=>({label:s.label,color:s.color})));
+
+  const W=1000,H=320,ML=54,MR=64,MT=26,MB=44;
+  const PW=W-ML-MR,PH=H-MT-MB;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`); svg.innerHTML='';
+  const ticks=[0,20,40,60,80,100];
+  const y=v=>MT+PH-(v/100)*PH, step=PW/M.length, cxOf=i=>ML+step*i+step/2;
+
+  ticks.forEach(t=>{
+    svg.appendChild(el('line',{x1:ML,x2:ML+PW,y1:y(t),y2:y(t),class:t===0?'axis-line':'grid-line'}));
+    const tx=el('text',{x:ML-10,y:y(t)+4,class:'tick','text-anchor':'end'});tx.textContent=t+'%';svg.appendChild(tx);
+  });
+  M.forEach((m,i)=>{
+    const xl=el('text',{x:cxOf(i),y:H-24,class:'xlab'+(m.partial?' partial':''),'text-anchor':'middle'});
+    xl.textContent=mlabel(m.m); svg.appendChild(xl);
+    if(m.partial){const p=el('text',{x:cxOf(i),y:H-10,class:'tick','text-anchor':'middle'});
+      p.textContent='1–7 only';svg.appendChild(p);}
+  });
+  const cross=el('line',{y1:MT,y2:MT+PH,class:'crosshair'}); svg.appendChild(cross);
+
+  series.forEach(s=>{
+    const pts=M.map((m,i)=>({i,cx:cxOf(i),v:m.util[s.k]})).filter(p=>p.v!==null&&p.v!==undefined);
+    svg.appendChild(el('path',{d:pts.map((p,j)=>(j?'L':'M')+p.cx+','+y(p.v)).join(''),
+      fill:'none',stroke:s.color,'stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'}));
+    pts.forEach(p=>{
+      svg.appendChild(el('circle',{cx:p.cx,cy:y(p.v),r:4.5,fill:s.color,
+        stroke:cssv('--surface-1'),'stroke-width':2}));   // 2px surface ring
+    });
+    const last=pts[pts.length-1];
+    const lb=el('text',{x:last.cx+12,y:y(last.v)+4,class:'dlabel strong'});
+    lb.textContent=`${s.label} ${fmt1(last.v)}%`; svg.appendChild(lb);
+  });
+
+  M.forEach((m,i)=>{
+    const html=`<div class="t-h">${mlabel(m.m)} 2026${m.partial?' (1–7 Aug, partial)':''}</div>`+
+      series.map(s=>`<div class="t-r"><span class="k">${dot(s.color)}${s.label}</span><span class="v">${
+        m.util[s.k]==null?'—':fmt1(m.util[s.k])+'% of '+fmt(m.hwm[s.k])+' GPUs'}</span></div>`).join('')+
+      `<div class="t-r t-tot"><span class="k">All GPUs</span><span class="v">${fmt1(m.util_total)}% of ${fmt(m.hwm_total)}</span></div>
+       <div class="t-r"><span class="k">GPU-hours used</span><span class="v">${fmt(m.total_gpuh)}</span></div>`;
+    const hit=el('rect',{x:ML+step*i,y:MT,width:step,height:PH,class:'hit',tabindex:0,
+      role:'img','aria-label':`${mlabel(m.m)}: h100 ${m.util.h100}%, b200 ${m.util.b200}%`});
+    const move=ev=>{cross.setAttribute('x1',cxOf(i));cross.setAttribute('x2',cxOf(i));
+      cross.style.opacity=1; const b=wrap.getBoundingClientRect();
+      showTip(tip,wrap,ev?ev.clientX-b.left:cxOf(i),ev?ev.clientY-b.top:MT+PH/2,html);};
+    hit.addEventListener('mousemove',move);
+    hit.addEventListener('mouseleave',()=>{cross.style.opacity=0;hideTip(tip);});
+    hit.addEventListener('focus',()=>move(null));
+    hit.addEventListener('blur',()=>{cross.style.opacity=0;hideTip(tip);});
+    svg.appendChild(hit);
+  });
+
+  document.getElementById('tbl-util').innerHTML=`<table>
+    <caption>Monthly utilization against measured delivered capacity (ASG node-hours × GPUs per node, floored at
+    the observed concurrency high-water mark).</caption>
+    <thead><tr><th>Month</th><th>H100 util</th><th>H100 GPUs</th><th>B200 util</th><th>B200 GPUs</th>
+    <th>All GPUs util</th><th>All GPUs</th><th>GPU-hours</th></tr></thead>
+    <tbody>${M.map(m=>`<tr><td>${mlabel(m.m)}${m.partial?' *':''}</td>
+      <td>${m.util.h100==null?'—':fmt1(m.util.h100)+'%'}</td><td>${fmt(m.hwm.h100)}</td>
+      <td>${m.util.b200==null?'—':fmt1(m.util.b200)+'%'}</td><td>${fmt(m.hwm.b200)}</td>
+      <td>${fmt1(m.util_total)}%</td><td>${fmt(m.hwm_total)}</td><td>${fmt(m.total_gpuh)}</td></tr>`).join('')}</tbody></table>
+    <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">* August covers 1–7 Aug only; rates remain comparable.</p>`;
+}
+
+/* ---------------- CHART 4: active users ---------------- */
+function chartUsers(){
+  const svg=document.getElementById('ch-usr'), tip=document.getElementById('tip-usr');
+  const wrap=svg.parentElement, M=DATA.months, c=cssv('--s-h100');
+  const W=1000,H=250,ML=54,MR=16,MT=26,MB=44;
+  const PW=W-ML-MR,PH=H-MT-MB;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`); svg.innerHTML='';
+  const ticks=niceTicks(Math.max(...M.map(m=>m.users)),4), maxT=ticks[ticks.length-1];
+  const y=v=>MT+PH-(v/maxT)*PH, step=PW/M.length, bw=Math.min(64,step*0.6);
+
+  ticks.forEach(t=>{
+    svg.appendChild(el('line',{x1:ML,x2:ML+PW,y1:y(t),y2:y(t),class:t===0?'axis-line':'grid-line'}));
+    const tx=el('text',{x:ML-10,y:y(t)+4,class:'tick','text-anchor':'end'});tx.textContent=fmt(t);svg.appendChild(tx);
+  });
+  const yl=el('text',{x:ML-10,y:MT-12,class:'tick','text-anchor':'end'});yl.textContent='users';svg.appendChild(yl);
+
+  M.forEach((m,i)=>{
+    const cx=ML+step*i+step/2, bx=cx-bw/2;
+    svg.appendChild(el('path',{d:barPath(bx,y(m.users),bw,MT+PH-y(m.users),4,'top'),fill:c}));
+    const vl=el('text',{x:cx,y:y(m.users)-8,class:'dlabel strong','text-anchor':'middle'});
+    vl.textContent=m.users; svg.appendChild(vl);
+    const xl=el('text',{x:cx,y:H-24,class:'xlab'+(m.partial?' partial':''),'text-anchor':'middle'});
+    xl.textContent=mlabel(m.m); svg.appendChild(xl);
+    if(m.partial){const p=el('text',{x:cx,y:H-10,class:'tick','text-anchor':'middle'});
+      p.textContent='1–7 only';svg.appendChild(p);}
+
+    const gpuPer = m.total_gpuh/m.users;
+    const html=`<div class="t-h">${mlabel(m.m)} 2026${m.partial?' (1–7 Aug, partial)':''}</div>
+      <div class="t-r"><span class="k">${dot(c)}Active users</span><span class="v">${m.users}</span></div>
+      <div class="t-r"><span class="k">Reservations</span><span class="v">${fmt(m.resv)}</span></div>
+      <div class="t-r t-tot"><span class="k">GPU-h per user</span><span class="v">${fmt(gpuPer)}</span></div>`;
+    const hit=el('rect',{x:ML+step*i,y:MT,width:step,height:PH,class:'hit',tabindex:0,
+      role:'img','aria-label':`${mlabel(m.m)}: ${m.users} active users`});
+    const ring=el('rect',{x:bx-1.5,y:y(m.users)-1.5,width:bw+3,height:MT+PH-y(m.users)+3,rx:5,class:'focus-ring'});
+    hit.addEventListener('mousemove',ev=>{const b=wrap.getBoundingClientRect();
+      showTip(tip,wrap,ev.clientX-b.left,ev.clientY-b.top,html);});
+    hit.addEventListener('mouseleave',()=>hideTip(tip));
+    hit.addEventListener('focus',()=>{ring.classList.add('on');showTip(tip,wrap,cx,MT+PH/2,html);});
+    hit.addEventListener('blur',()=>{ring.classList.remove('on');hideTip(tip);});
+    svg.appendChild(hit); svg.appendChild(ring);
+  });
+
+  document.getElementById('tbl-usr').innerHTML=`<table>
+    <caption>Distinct users with at least one running reservation per month (${DATA.totals.distinct_users} distinct users across the whole window)</caption>
+    <thead><tr><th>Month</th><th>Active users</th><th>Reservations</th><th>GPU-hours</th><th>GPU-h / user</th></tr></thead>
+    <tbody>${M.map(m=>`<tr><td>${mlabel(m.m)}${m.partial?' *':''}</td><td>${m.users}</td><td>${fmt(m.resv)}</td>
+      <td>${fmt(m.total_gpuh)}</td><td>${fmt(m.total_gpuh/m.users)}</td></tr>`).join('')}</tbody></table>
+    <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">* August covers 1–7 Aug only.</p>`;
+}
+
+function tiles(){
+  document.getElementById('t-deliv').innerHTML = fmt(DATA.totals.delivered_now)+'<small>GPUs</small>';
+  document.getElementById('t-funded').innerHTML = fmt(DATA.totals.valid_now)+'<small>GPUs</small>';
+  const pct = DATA.totals.delivered_now/DATA.totals.valid_now*100;
+  document.getElementById('t-funded-note').textContent =
+    `${Math.round(pct)}% running · ${fmt(DATA.totals.dead_now)} more GPUs of dead config excluded`;
+  document.getElementById('t-hours').innerHTML = fmt1(DATA.totals.gpu_hours/1000)+'<small>k</small>';
+  document.getElementById('t-users').textContent = DATA.totals.distinct_users;
+}
+
+
+/* ---------------- CHART 5: monthly cost, blocks amortized over their active months -------- */
+function chartCost(){
+  const svg=document.getElementById('ch-cost'), tip=document.getElementById('tip-cost');
+  const wrap=svg.parentElement, M=DATA.months;
+  const SER=[{k:'h100',label:'H100 capacity block',css:'--s-h100'},
+             {k:'b200',label:'B200 capacity block',css:'--s-b200'},
+             {k:'h200',label:'H200 capacity block',css:'--s-h200'},
+             {k:'od',  label:'On-demand nodes (billed)',css:'--s-a100'}];
+  const col={}; SER.forEach(x=>col[x.k]=cssv(x.css));
+  const lg=document.getElementById('lg-cost');
+  lg.innerHTML = SER.map(x=>`<span class="item"><span class="swatch" style="background:${col[x.k]}"></span>${x.label}</span>`).join('');
+
+  const W=1000,H=340,ML=62,MR=16,MT=30,MB=44;
+  const PW=W-ML-MR,PH=H-MT-MB;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`); svg.innerHTML='';
+  const ticks=niceTicks(Math.max(...M.map(m=>m.cost.low)),5), maxT=ticks[ticks.length-1];
+  const y=v=>MT+PH-(v/maxT)*PH, step=PW/M.length, bw=Math.min(58,step*0.55);
+
+  ticks.forEach(t=>{
+    svg.appendChild(el('line',{x1:ML,x2:ML+PW,y1:y(t),y2:y(t),class:t===0?'axis-line':'grid-line'}));
+    const tx=el('text',{x:ML-10,y:y(t)+4,class:'tick','text-anchor':'end'});
+    tx.textContent = t===0?'$0':'$'+(t/1000)+'k'; svg.appendChild(tx);
+  });
+
+  M.forEach((m,i)=>{
+    const cx=ML+step*i+step/2, bx=cx-bw/2;
+    const segs=SER.map(x=>({x,v:m.cost[x.k]||0})).filter(sg=>sg.v>0);
+    let acc=0;
+    segs.forEach((sg,si)=>{
+      const y0=y(acc), y1=y(acc+sg.v);
+      let h=y0-y1; const isTop=si===segs.length-1;
+      if(!isTop) h=Math.max(0,h-2);            // 2px surface gap between fills
+      const dd=barPath(bx,y1,bw,h,4,isTop?'top':'none');
+      if(dd) svg.appendChild(el('path',{d:dd,fill:col[sg.x.k]}));
+      acc+=sg.v;
+    });
+    const bl=el('text',{x:cx,y:y(acc)-8,class:'dlabel strong','text-anchor':'middle'});
+    bl.textContent='$'+Math.round(acc/1000)+'k'; svg.appendChild(bl);
+
+    const xl=el('text',{x:cx,y:H-24,class:'xlab'+(m.partial?' partial':''),'text-anchor':'middle'});
+    xl.textContent=mlabel(m.m); svg.appendChild(xl);
+    if(m.partial){const pp=el('text',{x:cx,y:H-10,class:'tick','text-anchor':'middle'});
+      pp.textContent='1-7 only';svg.appendChild(pp);}
+
+    const html=`<div class="t-h">${mlabel(m.m)} 2026${m.partial?' (1-7 Aug, partial)':''}</div>`+
+      segs.slice().reverse().map(sg=>`<div class="t-r"><span class="k">${dot(col[sg.x.k])}${sg.x.label}</span><span class="v">$${fmt(sg.v)}</span></div>`).join('')+
+      `<div class="t-r t-tot"><span class="k">Estimated total</span><span class="v">$${fmt(acc)}</span></div>
+       <div class="t-r"><span class="k">At on-demand list</span><span class="v">$${fmt(m.cost.high)}</span></div>
+       <div class="t-r"><span class="k">GPU-hours served</span><span class="v">${fmt(m.total_gpuh)}</span></div>
+       <div class="t-r"><span class="k">$ per GPU-hour</span><span class="v">$${(acc/m.total_gpuh).toFixed(2)} – $${(m.cost.high/m.total_gpuh).toFixed(2)}</span></div>`;
+    const hit=el('rect',{x:ML+step*i,y:MT,width:step,height:PH,class:'hit',tabindex:0,
+      role:'img','aria-label':`${mlabel(m.m)}: $${fmt(acc)} estimated, $${fmt(m.cost.high)} at list price`});
+    const ring=el('rect',{x:bx-1.5,y:y(acc)-1.5,width:bw+3,height:MT+PH-y(acc)+3,rx:5,class:'focus-ring'});
+    hit.addEventListener('mousemove',ev=>{const b=wrap.getBoundingClientRect();
+      showTip(tip,wrap,ev.clientX-b.left,ev.clientY-b.top,html);});
+    hit.addEventListener('mouseleave',()=>hideTip(tip));
+    hit.addEventListener('focus',()=>{ring.classList.add('on');showTip(tip,wrap,cx,MT+PH/2,html);});
+    hit.addEventListener('blur',()=>{ring.classList.remove('on');hideTip(tip);});
+    svg.appendChild(hit); svg.appendChild(ring);
+  });
+
+  const T=DATA.totals, jul=M.find(x=>x.m==='2026-07');
+  document.getElementById('c-od').textContent='$'+fmt1(jul.cost.od/1000)+'k / mo';
+  document.getElementById('c-blk').textContent='$'+fmt(((jul.cost.h100+jul.cost.b200)/1000))+'k – $'+fmt((jul.cost.high-jul.cost.od)/1000)+'k / mo';
+  document.getElementById('c-per').textContent='$'+(jul.cost.low/jul.total_gpuh).toFixed(2)+' – $'+(jul.cost.high/jul.total_gpuh).toFixed(2);
+  document.getElementById('c-per-note').textContent =
+    'July: $'+fmt(jul.cost.low/1000)+'k–$'+fmt(jul.cost.high/1000)+'k over '+fmt(jul.total_gpuh)+' GPU-hours served';
+
+  const R=DATA.rates;
+  document.getElementById('tbl-cost').innerHTML=`<table>
+    <caption>Monthly cost. On-demand pools are billed actuals from Cost Explorer. Capacity-block pools are
+    that month's measured gpu-dev node-hours priced at the blended effective rate (low) and at on-demand list (high),
+    which spreads each block across exactly the months it was active.</caption>
+    <thead><tr><th>Month</th><th>On-demand (actual)</th><th>H100 block</th><th>B200 block</th><th>H200 block</th>
+    <th>Estimated total</th><th>At list price</th><th>GPU-h served</th><th>$ / GPU-h</th></tr></thead>
+    <tbody>${M.map(m=>`<tr><td>${mlabel(m.m)}${m.partial?' *':''}</td>
+      <td>$${fmt(m.cost.od)}</td><td>$${fmt(m.cost.h100)}</td><td>$${fmt(m.cost.b200)}</td><td>$${fmt(m.cost.h200)}</td>
+      <td><b>$${fmt(m.cost.low)}</b></td><td>$${fmt(m.cost.high)}</td><td>${fmt(m.total_gpuh)}</td>
+      <td>$${(m.cost.low/m.total_gpuh).toFixed(2)}–$${(m.cost.high/m.total_gpuh).toFixed(2)}</td></tr>`).join('')}
+      <tr><td><b>Jan–Aug</b></td><td colspan="4"></td><td><b>$${fmt(T.cost_low)}</b></td><td>$${fmt(T.cost_high)}</td>
+      <td>${fmt(T.gpu_hours)}</td><td>$${T.per_gpuh_low}–$${T.per_gpuh_high}</td></tr>
+    </tbody></table>
+
+    <table><caption>Rates used ($/node-hour, us-east-2 Linux)</caption>
+    <thead><tr><th>Pool</th><th>Instance type</th><th>On-demand list</th><th>Blended effective</th><th>Billing</th></tr></thead>
+    <tbody>${Object.entries(R.pool_instance).map(([pool,it])=>`<tr>
+      <td>${POOL_LABEL[pool]||pool}</td><td style="text-align:left">${it}</td>
+      <td>$${R.list[it].toFixed(2)}</td><td>${R.blended[it]?'$'+R.blended[it].toFixed(2):'— (billed at list)'}</td>
+      <td style="text-align:left">${R.blended[it]?'prepaid capacity block':'on-demand'}</td></tr>`).join('')}
+    </tbody></table>
+    <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">* August covers 1–7 Aug only.
+    Blended rates are what the account actually paid per instance-hour for those types over Jan–Jul
+    (prepaid block charges ÷ total instance-hours). p5en has no derivable rate — its blocks were bought
+    before this window — so it takes the mean discount observed on p5 and p6-b200.
+    Excludes storage and network: account-wide EFS was $71k and “EC2 – Other” (EBS, NAT, …) $387k in July,
+    both shared with the much larger CI fleet, so no clean gpu-dev share exists.</p>`;
+}
+
+function renderAll(){ tiles(); chartCapacity(); chartHours(); chartUtil(); chartUsers(); chartCost(); }
+renderAll();
+
+/* theme toggle — re-render so SVG picks up the mode's own steps */
+const btn=document.getElementById('themeBtn');
+function syncBtn(){
+  const dark=document.documentElement.getAttribute('data-theme')==='dark';
+  btn.textContent = dark ? 'Light mode' : 'Dark mode';
+}
+if(window.matchMedia('(prefers-color-scheme: dark)').matches)
+  document.documentElement.setAttribute('data-theme','dark');
+syncBtn();
+btn.addEventListener('click',()=>{
+  const dark=document.documentElement.getAttribute('data-theme')==='dark';
+  document.documentElement.setAttribute('data-theme',dark?'light':'dark');
+  syncBtn(); renderAll();
+});
+
+/* table toggles */
+document.querySelectorAll('.tbl-btn').forEach(b=>{
+  b.addEventListener('click',()=>{
+    const t=document.getElementById(b.dataset.table);
+    t.hidden=!t.hidden; b.textContent=t.hidden?'Table':'Hide table';
+  });
+});
+window.addEventListener('resize',()=>{});
+</script>
+</body>
+</html>

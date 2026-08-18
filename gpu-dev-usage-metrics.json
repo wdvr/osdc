@@ -1,0 +1,590 @@
+{
+  "summary": {
+    "generated_at": "2026-08-03T17:48:06.750696Z",
+    "window_start": "2026-07-04T17:48:06.750696",
+    "window_days": 30,
+    "active_users_created": 22,
+    "active_users_launched": 23,
+    "total_gpu_hours": 14993.0,
+    "reservations_created_in_window": 613,
+    "status_breakdown": {
+      "cancelled": 360,
+      "expired": 237,
+      "failed": 9,
+      "active": 7
+    },
+    "h100_b200_occupancy_pct": 47.2
+  },
+  "per_type": [
+    {
+      "gpu_type": "h100",
+      "gpu_hours": 9507.4,
+      "reservations": 376,
+      "capacity_gpus": 30,
+      "occupancy_pct": 44.0
+    },
+    {
+      "gpu_type": "b200",
+      "gpu_hours": 5451.3,
+      "reservations": 147,
+      "capacity_gpus": 14,
+      "occupancy_pct": 54.1
+    },
+    {
+      "gpu_type": "t4",
+      "gpu_hours": 16.2,
+      "reservations": 2,
+      "capacity_gpus": 8,
+      "occupancy_pct": 0.3
+    },
+    {
+      "gpu_type": "b200-mig-1g",
+      "gpu_hours": 9.0,
+      "reservations": 1,
+      "capacity_gpus": 4,
+      "occupancy_pct": 0.3
+    },
+    {
+      "gpu_type": "a10g",
+      "gpu_hours": 8.5,
+      "reservations": 2,
+      "capacity_gpus": 4,
+      "occupancy_pct": 0.3
+    },
+    {
+      "gpu_type": "a100",
+      "gpu_hours": 0.5,
+      "reservations": 1,
+      "capacity_gpus": 8,
+      "occupancy_pct": 0.0
+    },
+    {
+      "gpu_type": "l4",
+      "gpu_hours": 0.2,
+      "reservations": 1,
+      "capacity_gpus": 8,
+      "occupancy_pct": 0.0
+    },
+    {
+      "gpu_type": "unknown",
+      "gpu_hours": 0.0,
+      "reservations": 1,
+      "capacity_gpus": null,
+      "occupancy_pct": null
+    }
+  ],
+  "daily": [
+    {
+      "date": "2026-07-04",
+      "gpu_hours": 83.0,
+      "active_users": 7,
+      "gpu_hours_by_type": {
+        "h100": 45.6,
+        "b200": 37.4,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-05",
+      "gpu_hours": 292.8,
+      "active_users": 7,
+      "gpu_hours_by_type": {
+        "h100": 140.9,
+        "b200": 151.9,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-06",
+      "gpu_hours": 323.1,
+      "active_users": 14,
+      "gpu_hours_by_type": {
+        "h100": 164.7,
+        "b200": 158.5,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-07",
+      "gpu_hours": 391.0,
+      "active_users": 14,
+      "gpu_hours_by_type": {
+        "h100": 205.1,
+        "b200": 185.8,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-08",
+      "gpu_hours": 491.3,
+      "active_users": 14,
+      "gpu_hours_by_type": {
+        "h100": 274.8,
+        "b200": 216.5,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-09",
+      "gpu_hours": 758.3,
+      "active_users": 15,
+      "gpu_hours_by_type": {
+        "h100": 555.5,
+        "b200": 194.8,
+        "a10g": 8.0,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-10",
+      "gpu_hours": 630.6,
+      "active_users": 12,
+      "gpu_hours_by_type": {
+        "h100": 520.1,
+        "b200": 110.5,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-11",
+      "gpu_hours": 529.5,
+      "active_users": 10,
+      "gpu_hours_by_type": {
+        "b200": 119.0,
+        "h100": 410.1,
+        "unknown": 0.0,
+        "a10g": 0.4
+      }
+    },
+    {
+      "date": "2026-07-12",
+      "gpu_hours": 366.1,
+      "active_users": 7,
+      "gpu_hours_by_type": {
+        "b200": 69.4,
+        "h100": 296.7,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-13",
+      "gpu_hours": 418.0,
+      "active_users": 14,
+      "gpu_hours_by_type": {
+        "h100": 231.4,
+        "b200": 186.6,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-14",
+      "gpu_hours": 768.9,
+      "active_users": 15,
+      "gpu_hours_by_type": {
+        "h100": 477.8,
+        "b200": 291.0,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-15",
+      "gpu_hours": 669.7,
+      "active_users": 15,
+      "gpu_hours_by_type": {
+        "h100": 412.7,
+        "b200": 249.1,
+        "unknown": 0.0,
+        "t4": 7.9
+      }
+    },
+    {
+      "date": "2026-07-16",
+      "gpu_hours": 739.4,
+      "active_users": 15,
+      "gpu_hours_by_type": {
+        "h100": 443.8,
+        "b200": 278.3,
+        "t4": 8.2,
+        "b200-mig-1g": 9.0,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-17",
+      "gpu_hours": 640.8,
+      "active_users": 11,
+      "gpu_hours_by_type": {
+        "h100": 444.9,
+        "b200": 195.5,
+        "unknown": 0.0,
+        "a100": 0.5
+      }
+    },
+    {
+      "date": "2026-07-18",
+      "gpu_hours": 511.8,
+      "active_users": 11,
+      "gpu_hours_by_type": {
+        "h100": 362.2,
+        "b200": 149.5,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-19",
+      "gpu_hours": 393.4,
+      "active_users": 7,
+      "gpu_hours_by_type": {
+        "h100": 293.2,
+        "b200": 100.2,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-20",
+      "gpu_hours": 513.5,
+      "active_users": 13,
+      "gpu_hours_by_type": {
+        "b200": 158.2,
+        "h100": 355.3,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-21",
+      "gpu_hours": 642.8,
+      "active_users": 15,
+      "gpu_hours_by_type": {
+        "b200": 237.4,
+        "h100": 405.4,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-22",
+      "gpu_hours": 685.0,
+      "active_users": 15,
+      "gpu_hours_by_type": {
+        "b200": 277.0,
+        "h100": 408.0,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-23",
+      "gpu_hours": 565.5,
+      "active_users": 15,
+      "gpu_hours_by_type": {
+        "b200": 205.2,
+        "h100": 360.3,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-24",
+      "gpu_hours": 449.7,
+      "active_users": 13,
+      "gpu_hours_by_type": {
+        "b200": 130.1,
+        "h100": 319.6,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-25",
+      "gpu_hours": 428.6,
+      "active_users": 12,
+      "gpu_hours_by_type": {
+        "h100": 308.3,
+        "b200": 120.3,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-26",
+      "gpu_hours": 205.7,
+      "active_users": 9,
+      "gpu_hours_by_type": {
+        "b200": 120.2,
+        "l4": 0.2,
+        "h100": 85.3,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-27",
+      "gpu_hours": 344.5,
+      "active_users": 12,
+      "gpu_hours_by_type": {
+        "b200": 187.2,
+        "h100": 157.3,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-28",
+      "gpu_hours": 609.3,
+      "active_users": 14,
+      "gpu_hours_by_type": {
+        "h100": 367.3,
+        "b200": 241.9,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-29",
+      "gpu_hours": 680.8,
+      "active_users": 14,
+      "gpu_hours_by_type": {
+        "b200": 233.8,
+        "h100": 447.0,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-30",
+      "gpu_hours": 649.8,
+      "active_users": 13,
+      "gpu_hours_by_type": {
+        "h100": 437.6,
+        "b200": 212.2,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-07-31",
+      "gpu_hours": 563.2,
+      "active_users": 13,
+      "gpu_hours_by_type": {
+        "b200": 223.7,
+        "h100": 339.4,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-08-01",
+      "gpu_hours": 341.9,
+      "active_users": 9,
+      "gpu_hours_by_type": {
+        "h100": 172.0,
+        "b200": 169.9,
+        "unknown": 0.0
+      }
+    },
+    {
+      "date": "2026-08-02",
+      "gpu_hours": 205.4,
+      "active_users": 6,
+      "gpu_hours_by_type": {
+        "b200": 170.6,
+        "unknown": 0.0,
+        "h100": 34.9
+      }
+    },
+    {
+      "date": "2026-08-03",
+      "gpu_hours": 99.6,
+      "active_users": 8,
+      "gpu_hours_by_type": {
+        "b200": 69.7,
+        "unknown": 0.0,
+        "h100": 30.0
+      }
+    }
+  ],
+  "leaderboard": [
+    {
+      "github_user": "tarinduj",
+      "gpu_hours": 3795.4,
+      "reservations": 15,
+      "gpu_types": [
+        "b200",
+        "h100"
+      ]
+    },
+    {
+      "github_user": "bobrenjc93",
+      "gpu_hours": 1985.8,
+      "reservations": 240,
+      "gpu_types": [
+        "h100"
+      ]
+    },
+    {
+      "github_user": "calebmkim",
+      "gpu_hours": 1480.5,
+      "reservations": 35,
+      "gpu_types": [
+        "b200",
+        "h100"
+      ]
+    },
+    {
+      "github_user": "eellison",
+      "gpu_hours": 1259.0,
+      "reservations": 10,
+      "gpu_types": [
+        "b200"
+      ]
+    },
+    {
+      "github_user": "d4l3k",
+      "gpu_hours": 1176.4,
+      "reservations": 21,
+      "gpu_types": [
+        "a100",
+        "h100"
+      ]
+    },
+    {
+      "github_user": "yushangdi",
+      "gpu_hours": 991.1,
+      "reservations": 23,
+      "gpu_types": [
+        "b200",
+        "h100"
+      ]
+    },
+    {
+      "github_user": "AmesingFlank",
+      "gpu_hours": 979.6,
+      "reservations": 14,
+      "gpu_types": [
+        "b200"
+      ]
+    },
+    {
+      "github_user": "vkuzo",
+      "gpu_hours": 713.6,
+      "reservations": 24,
+      "gpu_types": [
+        "b200",
+        "h100"
+      ]
+    },
+    {
+      "github_user": "iamzainhuda",
+      "gpu_hours": 630.3,
+      "reservations": 4,
+      "gpu_types": [
+        "h100"
+      ]
+    },
+    {
+      "github_user": "felipemello1",
+      "gpu_hours": 576.6,
+      "reservations": 7,
+      "gpu_types": [
+        "h100"
+      ]
+    },
+    {
+      "github_user": "drisspg",
+      "gpu_hours": 479.5,
+      "reservations": 41,
+      "gpu_types": [
+        "b200",
+        "h100"
+      ]
+    },
+    {
+      "github_user": "ezyang",
+      "gpu_hours": 305.3,
+      "reservations": 29,
+      "gpu_types": [
+        "h100"
+      ]
+    },
+    {
+      "github_user": "slayton58",
+      "gpu_hours": 223.5,
+      "reservations": 20,
+      "gpu_types": [
+        "b200",
+        "b200-mig-1g"
+      ]
+    },
+    {
+      "github_user": "karthickai",
+      "gpu_hours": 220.8,
+      "reservations": 26,
+      "gpu_types": [
+        "b200"
+      ]
+    },
+    {
+      "github_user": "atalman",
+      "gpu_hours": 68.3,
+      "reservations": 7,
+      "gpu_types": [
+        "b200",
+        "h100"
+      ]
+    },
+    {
+      "github_user": "aditvenk",
+      "gpu_hours": 48.1,
+      "reservations": 1,
+      "gpu_types": [
+        "b200"
+      ]
+    },
+    {
+      "github_user": "xuzhao9",
+      "gpu_hours": 23.6,
+      "reservations": 3,
+      "gpu_types": [
+        "b200",
+        "h100"
+      ]
+    },
+    {
+      "github_user": "wwwjn",
+      "gpu_hours": 16.2,
+      "reservations": 2,
+      "gpu_types": [
+        "t4"
+      ]
+    },
+    {
+      "github_user": "huydhn",
+      "gpu_hours": 8.5,
+      "reservations": 2,
+      "gpu_types": [
+        "a10g"
+      ]
+    },
+    {
+      "github_user": "aorenste",
+      "gpu_hours": 8.0,
+      "reservations": 1,
+      "gpu_types": [
+        "h100"
+      ]
+    },
+    {
+      "github_user": "desertfire",
+      "gpu_hours": 2.8,
+      "reservations": 4,
+      "gpu_types": [
+        "h100"
+      ]
+    },
+    {
+      "github_user": "albanD",
+      "gpu_hours": 0.2,
+      "reservations": 1,
+      "gpu_types": [
+        "l4"
+      ]
+    },
+    {
+      "github_user": "wdvr",
+      "gpu_hours": 0.0,
+      "reservations": 1,
+      "gpu_types": [
+        "unknown"
+      ]
+    }
+  ]
+}

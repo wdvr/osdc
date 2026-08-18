@@ -1,0 +1,1557 @@
+{
+  "generated_at": "2026-08-08T02:13:29.789933Z",
+  "region": "us-east-2",
+  "window": {
+    "start": "2026-01-01T00:00:00",
+    "end": "2026-08-08T02:13:29.789933"
+  },
+  "record_count": 5995,
+  "intervals_used": 4916,
+  "skipped": {
+    "never_launched": 1059,
+    "zero_length": 20
+  },
+  "current_capacity": {
+    "a100": {
+      "delivered_gpus": 8.0,
+      "running_instances": 1.0,
+      "desired_instances": 2.0,
+      "gpus_per_instance": 8.0,
+      "available_now": 8.0
+    },
+    "a10g": {
+      "delivered_gpus": 4.0,
+      "running_instances": 1.0,
+      "desired_instances": 1.0,
+      "gpus_per_instance": 4.0,
+      "available_now": 4.0
+    },
+    "b200": {
+      "delivered_gpus": 14.0,
+      "running_instances": 2.0,
+      "desired_instances": 7.0,
+      "gpus_per_instance": 8.0,
+      "available_now": 4.0
+    },
+    "b200-mig-1g": {
+      "delivered_gpus": 4.0,
+      "running_instances": 1.0,
+      "desired_instances": 7.0,
+      "gpus_per_instance": 4.0,
+      "available_now": 4.0
+    },
+    "b200-mig-2g": {
+      "delivered_gpus": 2.0,
+      "running_instances": 1.0,
+      "desired_instances": 7.0,
+      "gpus_per_instance": 2.0,
+      "available_now": 2.0
+    },
+    "b200-mig-3g": {
+      "delivered_gpus": 2.0,
+      "running_instances": 1.0,
+      "desired_instances": 7.0,
+      "gpus_per_instance": 2.0,
+      "available_now": 2.0
+    },
+    "b300": {
+      "delivered_gpus": 0.0,
+      "running_instances": 0.0,
+      "desired_instances": 0.0,
+      "gpus_per_instance": 8.0,
+      "available_now": 0.0
+    },
+    "cpu-arm": {
+      "delivered_gpus": 30.0,
+      "running_instances": 10.0,
+      "desired_instances": 10.0,
+      "gpus_per_instance": 0.0,
+      "available_now": 30.0
+    },
+    "cpu-spot": {
+      "delivered_gpus": 0.0,
+      "running_instances": 0.0,
+      "desired_instances": 0.0,
+      "gpus_per_instance": 8.0,
+      "available_now": 0.0
+    },
+    "cpu-x86": {
+      "delivered_gpus": 30.0,
+      "running_instances": 10.0,
+      "desired_instances": 10.0,
+      "gpus_per_instance": 0.0,
+      "available_now": 30.0
+    },
+    "h100": {
+      "delivered_gpus": 30.0,
+      "running_instances": 4.0,
+      "desired_instances": 10.0,
+      "gpus_per_instance": 8.0,
+      "available_now": 10.0
+    },
+    "h100-mig-1g": {
+      "delivered_gpus": 4.0,
+      "running_instances": 1.0,
+      "desired_instances": 10.0,
+      "gpus_per_instance": 16.0,
+      "available_now": 4.0
+    },
+    "h100-mig-2g": {
+      "delivered_gpus": 2.0,
+      "running_instances": 1.0,
+      "desired_instances": 10.0,
+      "gpus_per_instance": 8.0,
+      "available_now": 2.0
+    },
+    "h100-mig-3g": {
+      "delivered_gpus": 2.0,
+      "running_instances": 1.0,
+      "desired_instances": 10.0,
+      "gpus_per_instance": 8.0,
+      "available_now": 2.0
+    },
+    "h200": {
+      "delivered_gpus": 0.0,
+      "running_instances": 0.0,
+      "desired_instances": 8.0,
+      "gpus_per_instance": 8.0,
+      "available_now": 0.0
+    },
+    "l4": {
+      "delivered_gpus": 8.0,
+      "running_instances": 2.0,
+      "desired_instances": 2.0,
+      "gpus_per_instance": 4.0,
+      "available_now": 8.0
+    },
+    "rtxpro6000": {
+      "delivered_gpus": 8.0,
+      "running_instances": 2.0,
+      "desired_instances": 2.0,
+      "gpus_per_instance": 4.0,
+      "available_now": 8.0
+    },
+    "t4": {
+      "delivered_gpus": 8.0,
+      "running_instances": 2.0,
+      "desired_instances": 2.0,
+      "gpus_per_instance": 4.0,
+      "available_now": 8.0
+    }
+  },
+  "validated_capacity": {
+    "valid_gpus": {
+      "a100": 8.0,
+      "h100": 48.0,
+      "h200": 16.0,
+      "b200": 32.0,
+      "t4": 8.0,
+      "l4": 8.0,
+      "a10g": 4.0,
+      "rtxpro6000": 8.0
+    },
+    "dead_gpus": {
+      "a100": 8.0,
+      "h100": 32.0,
+      "h200": 48.0,
+      "b200": 24.0
+    },
+    "entries": [
+      {
+        "pool": "a100",
+        "key": "cr0",
+        "cr_id": "cr-01cc0f00f28b095af",
+        "nodes": 1,
+        "gpus": 8,
+        "kind": "dead-capacity-reservation",
+        "cr_state": "not-found",
+        "cr_end": null
+      },
+      {
+        "pool": "a100",
+        "key": "cr1",
+        "cr_id": null,
+        "nodes": 1,
+        "gpus": 8,
+        "kind": "on-demand",
+        "cr_state": null,
+        "cr_end": null
+      },
+      {
+        "pool": "h100",
+        "key": "cr0",
+        "cr_id": "cr-0a3f49b96fe03ca04",
+        "nodes": 4,
+        "gpus": 32,
+        "kind": "dead-capacity-reservation",
+        "cr_state": "not-found",
+        "cr_end": null
+      },
+      {
+        "pool": "h100",
+        "key": "cr1",
+        "cr_id": null,
+        "nodes": 2,
+        "gpus": 16,
+        "kind": "on-demand",
+        "cr_state": null,
+        "cr_end": null
+      },
+      {
+        "pool": "h100",
+        "key": "cr2",
+        "cr_id": "cr-044bc72b0a6b56062",
+        "nodes": 3,
+        "gpus": 24,
+        "kind": "capacity-reservation",
+        "cr_state": "active",
+        "cr_end": "2026-10-08 11:30:00+00:00"
+      },
+      {
+        "pool": "h100",
+        "key": "cr3",
+        "cr_id": "cr-0211ea1e8d3a3c79e",
+        "nodes": 0,
+        "gpus": 0,
+        "kind": "dead-capacity-reservation",
+        "cr_state": "not-found",
+        "cr_end": null
+      },
+      {
+        "pool": "h100",
+        "key": "cr4",
+        "cr_id": "cr-044bc72b0a6b56062",
+        "nodes": 1,
+        "gpus": 8,
+        "kind": "capacity-reservation",
+        "cr_state": "active",
+        "cr_end": "2026-10-08 11:30:00+00:00"
+      },
+      {
+        "pool": "h200",
+        "key": "cr0",
+        "cr_id": "cr-0f6d0766f5d3339e6",
+        "nodes": 2,
+        "gpus": 16,
+        "kind": "dead-capacity-reservation",
+        "cr_state": "not-found",
+        "cr_end": null
+      },
+      {
+        "pool": "h200",
+        "key": "cr1",
+        "cr_id": "cr-06c9c978dea756a26",
+        "nodes": 3,
+        "gpus": 24,
+        "kind": "dead-capacity-reservation",
+        "cr_state": "not-found",
+        "cr_end": null
+      },
+      {
+        "pool": "h200",
+        "key": "cr2",
+        "cr_id": null,
+        "nodes": 2,
+        "gpus": 16,
+        "kind": "on-demand",
+        "cr_state": null,
+        "cr_end": null
+      },
+      {
+        "pool": "h200",
+        "key": "cr3",
+        "cr_id": "cr-02949f61f1a761b54",
+        "nodes": 1,
+        "gpus": 8,
+        "kind": "dead-capacity-reservation",
+        "cr_state": "not-found",
+        "cr_end": null
+      },
+      {
+        "pool": "b200",
+        "key": "cr0",
+        "cr_id": "cr-0c366fb8339a10f69",
+        "nodes": 0,
+        "gpus": 0,
+        "kind": "dead-capacity-reservation",
+        "cr_state": "not-found",
+        "cr_end": null
+      },
+      {
+        "pool": "b200",
+        "key": "cr1",
+        "cr_id": "cr-08e7fee0b8dc3de5e",
+        "nodes": 3,
+        "gpus": 24,
+        "kind": "dead-capacity-reservation",
+        "cr_state": "not-found",
+        "cr_end": null
+      },
+      {
+        "pool": "b200",
+        "key": "cr2",
+        "cr_id": null,
+        "nodes": 2,
+        "gpus": 16,
+        "kind": "on-demand",
+        "cr_state": null,
+        "cr_end": null
+      },
+      {
+        "pool": "b200",
+        "key": "cr3",
+        "cr_id": "cr-0f5f6bb30a8fe3c68",
+        "nodes": 1,
+        "gpus": 8,
+        "kind": "capacity-reservation",
+        "cr_state": "active",
+        "cr_end": "2026-09-01 11:30:00+00:00"
+      },
+      {
+        "pool": "b200",
+        "key": "cr4",
+        "cr_id": "cr-0f5f6bb30a8fe3c68",
+        "nodes": 1,
+        "gpus": 8,
+        "kind": "capacity-reservation",
+        "cr_state": "active",
+        "cr_end": "2026-09-01 11:30:00+00:00"
+      },
+      {
+        "pool": "t4",
+        "key": "-",
+        "cr_id": null,
+        "nodes": 2,
+        "gpus": 8,
+        "kind": "on-demand",
+        "cr_state": null,
+        "cr_end": null
+      },
+      {
+        "pool": "l4",
+        "key": "-",
+        "cr_id": null,
+        "nodes": 2,
+        "gpus": 8,
+        "kind": "on-demand",
+        "cr_state": null,
+        "cr_end": null
+      },
+      {
+        "pool": "a10g",
+        "key": "-",
+        "cr_id": null,
+        "nodes": 1,
+        "gpus": 4,
+        "kind": "on-demand",
+        "cr_state": null,
+        "cr_end": null
+      },
+      {
+        "pool": "rtxpro6000",
+        "key": "-",
+        "cr_id": null,
+        "nodes": 2,
+        "gpus": 8,
+        "kind": "on-demand",
+        "cr_state": null,
+        "cr_end": null
+      }
+    ],
+    "cr_state": {
+      "cr-01cc0f00f28b095af": {
+        "state": "not-found",
+        "total": 0,
+        "end": null,
+        "type": null
+      },
+      "cr-02949f61f1a761b54": {
+        "state": "not-found",
+        "total": 0,
+        "end": null,
+        "type": null
+      },
+      "cr-0f5f6bb30a8fe3c68": {
+        "state": "active",
+        "total": 2,
+        "end": "2026-09-01 11:30:00+00:00",
+        "type": "p6-b200.48xlarge"
+      },
+      "cr-0a3f49b96fe03ca04": {
+        "state": "not-found",
+        "total": 0,
+        "end": null,
+        "type": null
+      },
+      "cr-0c366fb8339a10f69": {
+        "state": "not-found",
+        "total": 0,
+        "end": null,
+        "type": null
+      },
+      "cr-08e7fee0b8dc3de5e": {
+        "state": "not-found",
+        "total": 0,
+        "end": null,
+        "type": null
+      },
+      "cr-0f6d0766f5d3339e6": {
+        "state": "not-found",
+        "total": 0,
+        "end": null,
+        "type": null
+      },
+      "cr-0211ea1e8d3a3c79e": {
+        "state": "not-found",
+        "total": 0,
+        "end": null,
+        "type": null
+      },
+      "cr-044bc72b0a6b56062": {
+        "state": "active",
+        "total": 4,
+        "end": "2026-10-08 11:30:00+00:00",
+        "type": "p5.48xlarge"
+      },
+      "cr-06c9c978dea756a26": {
+        "state": "not-found",
+        "total": 0,
+        "end": null,
+        "type": null
+      }
+    }
+  },
+  "rates": {
+    "list": {
+      "p5.48xlarge": 55.04,
+      "p6-b200.48xlarge": 113.9328,
+      "p5en.48xlarge": 63.296,
+      "p4d.24xlarge": 21.95764,
+      "g7e.24xlarge": 16.57216,
+      "c7i.8xlarge": 1.428,
+      "c7g.8xlarge": 1.1562,
+      "m7i.48xlarge": 9.6768,
+      "g6.12xlarge": 4.6016,
+      "g4dn.12xlarge": 3.912,
+      "g5.12xlarge": 5.672
+    },
+    "blended": {
+      "p5.48xlarge": 14.64,
+      "p6-b200.48xlarge": 21.84,
+      "p5en.48xlarge": 14.48
+    },
+    "pool_instance": {
+      "h100": "p5.48xlarge",
+      "b200": "p6-b200.48xlarge",
+      "h200": "p5en.48xlarge",
+      "a100": "p4d.24xlarge",
+      "rtxpro6000": "g7e.24xlarge",
+      "l4": "g6.12xlarge",
+      "t4": "g4dn.12xlarge",
+      "a10g": "g5.12xlarge"
+    }
+  },
+  "funded_capacity_history": {
+    "2025-12-02": {
+      "a100": 2,
+      "h100": 2,
+      "h200": 7,
+      "b200": 7,
+      "a10g": 2,
+      "cpu-arm": 4,
+      "cpu-x86": 4
+    },
+    "2025-12-27": {
+      "a100": 2,
+      "h100": 2,
+      "h200": 7,
+      "b200": 7,
+      "a10g": 2,
+      "cpu-arm": 4,
+      "cpu-x86": 4
+    },
+    "2026-01-29": {
+      "a100": 2,
+      "h100": 6,
+      "h200": 7,
+      "b200": 7,
+      "a10g": 2,
+      "cpu-arm": 4,
+      "cpu-x86": 4
+    },
+    "2026-02-17": {
+      "a100": 2,
+      "h100": 6,
+      "h200": 7,
+      "b200": 5,
+      "a10g": 2,
+      "cpu-arm": 4,
+      "cpu-x86": 4
+    },
+    "2026-02-20": {
+      "a100": 2,
+      "h100": 6,
+      "h200": 7,
+      "b200": 6,
+      "a10g": 2,
+      "cpu-arm": 4,
+      "cpu-x86": 4
+    },
+    "2026-03-03": {
+      "a100": 2,
+      "h100": 6,
+      "h200": 7,
+      "b200": 6,
+      "a10g": 2,
+      "cpu-arm": 30,
+      "cpu-x86": 30
+    },
+    "2026-03-05": {
+      "a100": 2,
+      "h100": 6,
+      "h200": 7,
+      "b200": 6,
+      "a10g": 2,
+      "cpu-arm": 30,
+      "cpu-x86": 30
+    },
+    "2026-03-12": {
+      "a100": 2,
+      "h100": 4,
+      "h200": 3,
+      "b200": 6,
+      "a10g": 2,
+      "cpu-arm": 30,
+      "cpu-x86": 30
+    },
+    "2026-03-30": {
+      "a100": 2,
+      "h100": 6,
+      "h200": 7,
+      "b200": 5,
+      "a10g": 2,
+      "cpu-arm": 30,
+      "cpu-x86": 30
+    },
+    "2026-04-16": {
+      "a100": 2,
+      "h100": 10,
+      "h200": 7,
+      "b200": 7,
+      "a10g": 2,
+      "cpu-arm": 30,
+      "cpu-x86": 30
+    },
+    "2026-04-19": {
+      "a100": 2,
+      "h100": 10,
+      "h200": 7,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    },
+    "2026-04-28": {
+      "a100": 2,
+      "h100": 10,
+      "h200": 7,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "g7e": 2,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    },
+    "2026-04-30": {
+      "a100": 2,
+      "h100": 10,
+      "h200": 8,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "rtxpro6000": 2,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    },
+    "2026-05-03": {
+      "a100": 2,
+      "h100": 11,
+      "h200": 8,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "rtxpro6000": 2,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    },
+    "2026-05-11": {
+      "a100": 2,
+      "h100": 11,
+      "h200": 8,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "rtxpro6000": 2,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    },
+    "2026-05-13": {
+      "a100": 2,
+      "h100": 11,
+      "h200": 8,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "rtxpro6000": 2,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    },
+    "2026-05-14": {
+      "a100": 2,
+      "h100": 11,
+      "h200": 8,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "rtxpro6000": 2,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    },
+    "2026-05-21": {
+      "a100": 2,
+      "h100": 11,
+      "h200": 8,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "rtxpro6000": 2,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    },
+    "2026-05-25": {
+      "a100": 2,
+      "h100": 10,
+      "h200": 8,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "rtxpro6000": 2,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    },
+    "2026-06-16": {
+      "a100": 2,
+      "h100": 10,
+      "h200": 8,
+      "b200": 7,
+      "t4": 2,
+      "l4": 2,
+      "a10g": 1,
+      "rtxpro6000": 2,
+      "cpu-arm": 10,
+      "cpu-x86": 10
+    }
+  },
+  "monthly": [
+    {
+      "month": "2026-01",
+      "partial": true,
+      "hours_in_window": 744.0,
+      "gpu_hours_by_sku": {
+        "b200": 7651.7,
+        "h200": 2985.8,
+        "a100": 371.0,
+        "l4": 306.6,
+        "h100": 58.2,
+        "t4": 22.6,
+        "a10g": 4.3
+      },
+      "physical_gpu_hours_by_pool": {
+        "b200": 7651.7,
+        "h200": 2985.8,
+        "a100": 371.0,
+        "l4": 306.6,
+        "h100": 58.2,
+        "t4": 22.6,
+        "a10g": 4.3
+      },
+      "peak_concurrent_gpus_by_pool": {
+        "b200": 31.0,
+        "h200": 18.0,
+        "l4": 13.0,
+        "h100": 9.0,
+        "a100": 7.0,
+        "t4": 3.0,
+        "a10g": 1.0
+      },
+      "mean_concurrent_gpus": 15.32,
+      "peak_concurrent_gpus_total": 82.0,
+      "funded_gpus_by_pool": {
+        "a100": 16,
+        "h100": 16,
+        "h200": 56,
+        "b200": 56,
+        "a10g": 8
+      },
+      "funded_gpus_total": 152,
+      "funded_config_as_of": "2025-12-27",
+      "delivered_gpus_by_pool": {
+        "b200": 48.49,
+        "h200": 31.75,
+        "l4": 20.43,
+        "t4": 20.06,
+        "h100": 9.0,
+        "a100": 8.72,
+        "a10g": 8.01
+      },
+      "delivered_gpus_total": 146.5,
+      "measured_gpus_by_pool": {
+        "b200": 48.49,
+        "h200": 31.75,
+        "l4": 20.43,
+        "t4": 20.06,
+        "a100": 8.72,
+        "a10g": 8.01,
+        "h100": 3.59
+      },
+      "node_hours_by_pool": {
+        "cpu": 7568.6,
+        "a100": 811.3,
+        "a10g": 1490.3,
+        "b200": 4509.1,
+        "h100": 334.1,
+        "h200": 2952.9,
+        "l4": 3800.8,
+        "t4": 3731.0
+      },
+      "cost_ondemand_by_pool": {
+        "l4": 17118,
+        "a100": 16336,
+        "t4": 14553,
+        "cpu": 8694,
+        "a10g": 8440
+      },
+      "cost_ondemand_total": 65141,
+      "cost_block_low_by_pool": {
+        "b200": 98479,
+        "h200": 42758,
+        "h100": 4891
+      },
+      "cost_block_high_by_pool": {
+        "b200": 513738,
+        "h200": 186907,
+        "h100": 18387
+      },
+      "cost_total_low": 211269,
+      "cost_total_high": 784173,
+      "gpu_hours_used": 11400.2,
+      "utilization_vs_delivered_pct": 10.5,
+      "utilization_by_pool_pct": {
+        "l4": 2.0,
+        "h200": 12.6,
+        "a10g": 0.1,
+        "b200": 21.2,
+        "a100": 5.7,
+        "h100": 0.9,
+        "t4": 0.2
+      },
+      "utilization_vs_funded_pct": 10.1,
+      "cpu_node_hours": 63.1,
+      "active_users": 31,
+      "active_users_gpu": 29,
+      "reservations_launched": 277
+    },
+    {
+      "month": "2026-02",
+      "partial": true,
+      "hours_in_window": 672.0,
+      "gpu_hours_by_sku": {
+        "b200": 10208.0,
+        "h200": 3772.2,
+        "h100": 1421.1,
+        "a100": 613.7,
+        "l4": 257.1,
+        "t4": 134.7,
+        "a10g": 11.1
+      },
+      "physical_gpu_hours_by_pool": {
+        "b200": 10208.0,
+        "h200": 3772.2,
+        "h100": 1421.1,
+        "a100": 613.7,
+        "l4": 257.1,
+        "t4": 134.7,
+        "a10g": 11.1
+      },
+      "peak_concurrent_gpus_by_pool": {
+        "b200": 31.0,
+        "h100": 29.0,
+        "h200": 22.0,
+        "l4": 17.0,
+        "a100": 6.0,
+        "a10g": 3.0,
+        "t4": 3.0
+      },
+      "mean_concurrent_gpus": 24.43,
+      "peak_concurrent_gpus_total": 111.0,
+      "funded_gpus_by_pool": {
+        "a100": 16,
+        "h100": 48,
+        "h200": 56,
+        "b200": 56,
+        "a10g": 8
+      },
+      "funded_gpus_total": 184,
+      "funded_config_as_of": "2026-01-29",
+      "delivered_gpus_by_pool": {
+        "b200": 79.51,
+        "h200": 48.16,
+        "h100": 29.0,
+        "l4": 20.33,
+        "t4": 20.05,
+        "a100": 8.78,
+        "a10g": 8.21
+      },
+      "delivered_gpus_total": 214.0,
+      "measured_gpus_by_pool": {
+        "b200": 79.51,
+        "h200": 48.16,
+        "l4": 20.33,
+        "h100": 20.23,
+        "t4": 20.05,
+        "a100": 8.78,
+        "a10g": 8.21
+      },
+      "node_hours_by_pool": {
+        "cpu": 6749.2,
+        "a100": 737.5,
+        "a10g": 1379.7,
+        "b200": 6679.0,
+        "h100": 1699.7,
+        "h200": 4045.8,
+        "l4": 3416.0,
+        "t4": 3368.9
+      },
+      "cost_ondemand_by_pool": {
+        "l4": 15461,
+        "a100": 14702,
+        "t4": 13144,
+        "cpu": 7848,
+        "a10g": 7623
+      },
+      "cost_ondemand_total": 58778,
+      "cost_block_low_by_pool": {
+        "b200": 145868,
+        "h200": 58583,
+        "h100": 24884
+      },
+      "cost_block_high_by_pool": {
+        "b200": 760952,
+        "h200": 256083,
+        "h100": 93551
+      },
+      "cost_total_low": 288113,
+      "cost_total_high": 1169364,
+      "gpu_hours_used": 16417.9,
+      "utilization_vs_delivered_pct": 11.4,
+      "utilization_by_pool_pct": {
+        "l4": 1.9,
+        "h200": 11.7,
+        "a10g": 0.2,
+        "b200": 19.1,
+        "a100": 10.4,
+        "h100": 7.3,
+        "t4": 1.0
+      },
+      "utilization_vs_funded_pct": 13.3,
+      "cpu_node_hours": 46.8,
+      "active_users": 30,
+      "active_users_gpu": 30,
+      "reservations_launched": 303
+    },
+    {
+      "month": "2026-03",
+      "partial": true,
+      "hours_in_window": 744.0,
+      "gpu_hours_by_sku": {
+        "h100": 14064.6,
+        "b200": 11146.1,
+        "h200": 5989.5,
+        "l4": 1112.8,
+        "a100": 751.2,
+        "a10g": 396.4,
+        "t4": 138.3
+      },
+      "physical_gpu_hours_by_pool": {
+        "h100": 14064.6,
+        "b200": 11146.1,
+        "h200": 5989.5,
+        "l4": 1112.8,
+        "a100": 751.2,
+        "a10g": 396.4,
+        "t4": 138.3
+      },
+      "peak_concurrent_gpus_by_pool": {
+        "h100": 99.0,
+        "b200": 38.0,
+        "h200": 24.0,
+        "l4": 7.0,
+        "a10g": 5.0,
+        "a100": 4.0,
+        "t4": 2.0
+      },
+      "mean_concurrent_gpus": 45.16,
+      "peak_concurrent_gpus_total": 179.0,
+      "funded_gpus_by_pool": {
+        "a100": 16,
+        "h100": 32,
+        "h200": 24,
+        "b200": 48,
+        "a10g": 8
+      },
+      "funded_gpus_total": 128,
+      "funded_config_as_of": "2026-03-12",
+      "delivered_gpus_by_pool": {
+        "h100": 99.0,
+        "b200": 86.16,
+        "h200": 58.32,
+        "l4": 20.61,
+        "t4": 20.11,
+        "a100": 9.43,
+        "a10g": 8.09
+      },
+      "delivered_gpus_total": 301.7,
+      "measured_gpus_by_pool": {
+        "b200": 86.16,
+        "h200": 58.32,
+        "h100": 30.02,
+        "l4": 20.61,
+        "t4": 20.11,
+        "a100": 9.43,
+        "a10g": 8.09
+      },
+      "node_hours_by_pool": {
+        "cpu": 42430.1,
+        "a100": 877.1,
+        "a10g": 1505.5,
+        "b200": 8013.0,
+        "h100": 2791.6,
+        "h200": 5423.6,
+        "l4": 3834.3,
+        "t4": 3739.9
+      },
+      "cost_ondemand_by_pool": {
+        "cpu": 53867,
+        "l4": 17118,
+        "a100": 16337,
+        "t4": 14553,
+        "a10g": 8440
+      },
+      "cost_ondemand_total": 110315,
+      "cost_block_low_by_pool": {
+        "b200": 175004,
+        "h200": 78534,
+        "h100": 40869
+      },
+      "cost_block_high_by_pool": {
+        "b200": 912944,
+        "h200": 343292,
+        "h100": 153651
+      },
+      "cost_total_low": 404722,
+      "cost_total_high": 1520202,
+      "gpu_hours_used": 33598.9,
+      "utilization_vs_delivered_pct": 15.0,
+      "utilization_by_pool_pct": {
+        "l4": 7.3,
+        "h200": 13.8,
+        "a10g": 6.6,
+        "b200": 17.4,
+        "a100": 10.7,
+        "h100": 19.1,
+        "t4": 0.9
+      },
+      "utilization_vs_funded_pct": 35.3,
+      "cpu_node_hours": 530.2,
+      "active_users": 38,
+      "active_users_gpu": 37,
+      "reservations_launched": 487
+    },
+    {
+      "month": "2026-04",
+      "partial": true,
+      "hours_in_window": 720.0,
+      "gpu_hours_by_sku": {
+        "h100": 6626.1,
+        "b200": 5768.0,
+        "l4": 1993.1,
+        "a100": 747.7,
+        "h200": 506.6,
+        "rtxpro6000": 87.6,
+        "a10g": 57.0
+      },
+      "physical_gpu_hours_by_pool": {
+        "h100": 6626.1,
+        "b200": 5768.0,
+        "l4": 1993.1,
+        "a100": 747.7,
+        "h200": 506.6,
+        "rtxpro6000": 87.6,
+        "a10g": 57.0
+      },
+      "peak_concurrent_gpus_by_pool": {
+        "h100": 25.0,
+        "b200": 17.0,
+        "h200": 12.0,
+        "l4": 10.0,
+        "a100": 8.0,
+        "rtxpro6000": 6.0,
+        "a10g": 5.0
+      },
+      "mean_concurrent_gpus": 21.93,
+      "peak_concurrent_gpus_total": 83.0,
+      "funded_gpus_by_pool": {
+        "a100": 16,
+        "h100": 80,
+        "h200": 56,
+        "b200": 56,
+        "a10g": 8
+      },
+      "funded_gpus_total": 216,
+      "funded_config_as_of": "2026-04-16",
+      "delivered_gpus_by_pool": {
+        "h100": 41.8,
+        "b200": 20.36,
+        "l4": 16.05,
+        "t4": 14.53,
+        "h200": 12.0,
+        "a100": 8.96,
+        "a10g": 6.2,
+        "rtxpro6000": 6.0
+      },
+      "delivered_gpus_total": 125.9,
+      "measured_gpus_by_pool": {
+        "h100": 41.8,
+        "b200": 20.36,
+        "l4": 16.05,
+        "t4": 14.53,
+        "a100": 8.96,
+        "h200": 6.88,
+        "a10g": 6.2,
+        "rtxpro6000": 0.56
+      },
+      "node_hours_by_pool": {
+        "cpu": 31498.7,
+        "a100": 806.0,
+        "a10g": 1116.5,
+        "b200": 1832.7,
+        "rtxpro6000": 100.1,
+        "h100": 3761.7,
+        "h200": 618.9,
+        "l4": 2888.1,
+        "t4": 2615.5
+      },
+      "cost_ondemand_by_pool": {
+        "cpu": 39789,
+        "a100": 15810,
+        "l4": 12033,
+        "t4": 10230,
+        "a10g": 6306,
+        "rtxpro6000": 1659
+      },
+      "cost_ondemand_total": 85827,
+      "cost_block_low_by_pool": {
+        "h100": 55072,
+        "b200": 40026,
+        "h200": 8962
+      },
+      "cost_block_high_by_pool": {
+        "b200": 208803,
+        "h100": 207045,
+        "h200": 39175
+      },
+      "cost_total_low": 189887,
+      "cost_total_high": 540850,
+      "gpu_hours_used": 15786.1,
+      "utilization_vs_delivered_pct": 17.4,
+      "utilization_by_pool_pct": {
+        "rtxpro6000": 2.0,
+        "l4": 17.2,
+        "t4": 0.0,
+        "h200": 5.9,
+        "b200": 39.3,
+        "a100": 11.6,
+        "h100": 22.0,
+        "a10g": 1.3
+      },
+      "utilization_vs_funded_pct": 10.2,
+      "cpu_node_hours": 79.5,
+      "active_users": 36,
+      "active_users_gpu": 35,
+      "reservations_launched": 350
+    },
+    {
+      "month": "2026-05",
+      "partial": true,
+      "hours_in_window": 744.0,
+      "gpu_hours_by_sku": {
+        "h100": 7985.4,
+        "b200": 3846.0,
+        "l4": 178.7,
+        "h200": 173.1,
+        "a100": 107.6,
+        "b200-mig-1g": 101.4,
+        "t4": 36.7,
+        "h100-mig-1g": 28.0,
+        "rtxpro6000": 20.9,
+        "a10g": 1.2,
+        "b200-mig-2g": 1.0,
+        "unknown": 0.5
+      },
+      "physical_gpu_hours_by_pool": {
+        "h100": 7989.4,
+        "b200": 3860.8,
+        "l4": 178.7,
+        "h200": 173.1,
+        "a100": 107.6,
+        "t4": 36.7,
+        "rtxpro6000": 20.9,
+        "a10g": 1.2,
+        "unknown": 0.5
+      },
+      "peak_concurrent_gpus_by_pool": {
+        "h100": 32.0,
+        "b200": 16.0,
+        "h200": 8.0,
+        "t4": 5.0,
+        "a100": 3.0,
+        "l4": 2.0,
+        "a10g": 2.0,
+        "rtxpro6000": 2.0,
+        "unknown": 2.0
+      },
+      "mean_concurrent_gpus": 16.62,
+      "peak_concurrent_gpus_total": 72.0,
+      "funded_gpus_by_pool": {
+        "a100": 16,
+        "h100": 88,
+        "h200": 64,
+        "b200": 56,
+        "t4": 8,
+        "l4": 8,
+        "a10g": 4,
+        "rtxpro6000": 8
+      },
+      "funded_gpus_total": 252,
+      "funded_config_as_of": "2026-05-14",
+      "delivered_gpus_by_pool": {
+        "h100": 34.68,
+        "b200": 16.0,
+        "l4": 8.35,
+        "t4": 8.14,
+        "a100": 8.1,
+        "rtxpro6000": 8.0,
+        "h200": 8.0,
+        "a10g": 4.1,
+        "unknown": 2.0
+      },
+      "delivered_gpus_total": 97.4,
+      "measured_gpus_by_pool": {
+        "h100": 34.68,
+        "b200": 15.99,
+        "l4": 8.35,
+        "t4": 8.14,
+        "a100": 8.1,
+        "rtxpro6000": 8.0,
+        "a10g": 4.1,
+        "h200": 2.18
+      },
+      "node_hours_by_pool": {
+        "build": 54.5,
+        "cpu": 16524.3,
+        "a100": 753.5,
+        "a10g": 763.5,
+        "b200": 1487.2,
+        "h100": 3225.7,
+        "h200": 203.0,
+        "l4": 1553.0,
+        "rtxpro6000": 1487.9,
+        "t4": 1513.6
+      },
+      "cost_ondemand_by_pool": {
+        "rtxpro6000": 24658,
+        "cpu": 20211,
+        "a100": 16336,
+        "l4": 6847,
+        "t4": 5821,
+        "a10g": 4220,
+        "build": 462
+      },
+      "cost_ondemand_total": 78555,
+      "cost_block_low_by_pool": {
+        "h100": 47224,
+        "b200": 32481,
+        "h200": 2939
+      },
+      "cost_block_high_by_pool": {
+        "h100": 177543,
+        "b200": 169441,
+        "h200": 12849
+      },
+      "cost_total_low": 161199,
+      "cost_total_high": 438388,
+      "gpu_hours_used": 12368.9,
+      "utilization_vs_delivered_pct": 17.1,
+      "utilization_by_pool_pct": {
+        "l4": 2.9,
+        "rtxpro6000": 0.4,
+        "t4": 0.6,
+        "h200": 2.9,
+        "b200": 32.4,
+        "a100": 1.8,
+        "h100": 31.0,
+        "a10g": 0.0,
+        "unknown": 0.0
+      },
+      "utilization_vs_funded_pct": 6.6,
+      "cpu_node_hours": 678.2,
+      "active_users": 32,
+      "active_users_gpu": 31,
+      "reservations_launched": 903
+    },
+    {
+      "month": "2026-06",
+      "partial": true,
+      "hours_in_window": 720.0,
+      "gpu_hours_by_sku": {
+        "h100": 8784.3,
+        "b200": 5062.6,
+        "l4": 120.2,
+        "b200-mig-1g": 32.4,
+        "t4": 16.1,
+        "a10g": 8.0,
+        "h100-mig-1g": 1.0
+      },
+      "physical_gpu_hours_by_pool": {
+        "h100": 8784.4,
+        "b200": 5067.2,
+        "l4": 120.2,
+        "t4": 16.1,
+        "a10g": 8.0
+      },
+      "peak_concurrent_gpus_by_pool": {
+        "h100": 28.0,
+        "b200": 14.0,
+        "l4": 2.0,
+        "a10g": 1.0,
+        "t4": 1.0
+      },
+      "mean_concurrent_gpus": 19.44,
+      "peak_concurrent_gpus_total": 46.0,
+      "funded_gpus_by_pool": {
+        "a100": 16,
+        "h100": 80,
+        "h200": 64,
+        "b200": 56,
+        "t4": 8,
+        "l4": 8,
+        "a10g": 4,
+        "rtxpro6000": 8
+      },
+      "funded_gpus_total": 244,
+      "funded_config_as_of": "2026-06-16",
+      "delivered_gpus_by_pool": {
+        "h100": 32.0,
+        "b200": 16.0,
+        "l4": 8.15,
+        "t4": 8.12,
+        "rtxpro6000": 8.0,
+        "a100": 8.0,
+        "a10g": 4.04
+      },
+      "delivered_gpus_total": 84.3,
+      "measured_gpus_by_pool": {
+        "h100": 32.0,
+        "b200": 16.0,
+        "l4": 8.15,
+        "t4": 8.12,
+        "a100": 8.0,
+        "rtxpro6000": 8.0,
+        "a10g": 4.04
+      },
+      "node_hours_by_pool": {
+        "build": 731.2,
+        "cpu": 35215.6,
+        "a100": 720.0,
+        "a10g": 727.2,
+        "b200": 1440.0,
+        "h100": 2880.0,
+        "l4": 1467.4,
+        "rtxpro6000": 1440.0,
+        "t4": 1460.8
+      },
+      "cost_ondemand_by_pool": {
+        "rtxpro6000": 23864,
+        "cpu": 19567,
+        "a100": 15810,
+        "build": 6967,
+        "l4": 6626,
+        "t4": 5633,
+        "a10g": 4084
+      },
+      "cost_ondemand_total": 82551,
+      "cost_block_low_by_pool": {
+        "h100": 42163,
+        "b200": 31450
+      },
+      "cost_block_high_by_pool": {
+        "b200": 164063,
+        "h100": 158515
+      },
+      "cost_total_low": 156164,
+      "cost_total_high": 405129,
+      "gpu_hours_used": 13995.9,
+      "utilization_vs_delivered_pct": 23.1,
+      "utilization_by_pool_pct": {
+        "l4": 2.0,
+        "rtxpro6000": 0.0,
+        "a10g": 0.3,
+        "b200": 44.0,
+        "a100": 0.0,
+        "h100": 38.1,
+        "t4": 0.3
+      },
+      "utilization_vs_funded_pct": 8.0,
+      "cpu_node_hours": 681.8,
+      "active_users": 28,
+      "active_users_gpu": 24,
+      "reservations_launched": 658
+    },
+    {
+      "month": "2026-07",
+      "partial": true,
+      "hours_in_window": 744.0,
+      "gpu_hours_by_sku": {
+        "h100": 9970.6,
+        "b200": 5886.9,
+        "l4": 24.2,
+        "t4": 16.2,
+        "b200-mig-1g": 9.0,
+        "a10g": 8.5,
+        "h100-mig-1g": 3.7,
+        "a100": 0.5
+      },
+      "physical_gpu_hours_by_pool": {
+        "h100": 9971.2,
+        "b200": 5888.2,
+        "l4": 24.2,
+        "t4": 16.2,
+        "a10g": 8.5,
+        "a100": 0.5
+      },
+      "peak_concurrent_gpus_by_pool": {
+        "h100": 28.0,
+        "b200": 14.0,
+        "a100": 8.0,
+        "t4": 2.0,
+        "l4": 1.0,
+        "a10g": 1.0
+      },
+      "mean_concurrent_gpus": 21.38,
+      "peak_concurrent_gpus_total": 54.0,
+      "funded_gpus_by_pool": {
+        "a100": 16,
+        "h100": 80,
+        "h200": 64,
+        "b200": 56,
+        "t4": 8,
+        "l4": 8,
+        "a10g": 4,
+        "rtxpro6000": 8
+      },
+      "funded_gpus_total": 244,
+      "funded_config_as_of": "2026-06-16",
+      "delivered_gpus_by_pool": {
+        "h100": 32.0,
+        "b200": 16.0,
+        "l4": 8.01,
+        "t4": 8.01,
+        "rtxpro6000": 8.0,
+        "a100": 8.0,
+        "a10g": 4.02
+      },
+      "delivered_gpus_total": 84.0,
+      "measured_gpus_by_pool": {
+        "h100": 32.0,
+        "b200": 16.0,
+        "l4": 8.01,
+        "t4": 8.01,
+        "a100": 8.0,
+        "rtxpro6000": 8.0,
+        "a10g": 4.02
+      },
+      "node_hours_by_pool": {
+        "build": 745.0,
+        "cpu": 37296.6,
+        "a100": 744.0,
+        "a10g": 747.1,
+        "b200": 1488.0,
+        "h100": 2976.0,
+        "l4": 1489.4,
+        "rtxpro6000": 1488.0,
+        "t4": 1489.7
+      },
+      "cost_ondemand_by_pool": {
+        "rtxpro6000": 24659,
+        "cpu": 20219,
+        "a100": 16336,
+        "build": 7200,
+        "l4": 6847,
+        "t4": 5821,
+        "a10g": 4220
+      },
+      "cost_ondemand_total": 85302,
+      "cost_block_low_by_pool": {
+        "h100": 43569,
+        "b200": 32498
+      },
+      "cost_block_high_by_pool": {
+        "b200": 169532,
+        "h100": 163799
+      },
+      "cost_total_low": 161369,
+      "cost_total_high": 418633,
+      "gpu_hours_used": 15908.8,
+      "utilization_vs_delivered_pct": 25.4,
+      "utilization_by_pool_pct": {
+        "l4": 0.4,
+        "rtxpro6000": 0.0,
+        "a10g": 0.3,
+        "b200": 49.5,
+        "a100": 0.0,
+        "h100": 41.9,
+        "t4": 0.3
+      },
+      "utilization_vs_funded_pct": 8.8,
+      "cpu_node_hours": 762.0,
+      "active_users": 26,
+      "active_users_gpu": 24,
+      "reservations_launched": 577
+    },
+    {
+      "month": "2026-08",
+      "partial": true,
+      "hours_in_window": 170.2,
+      "gpu_hours_by_sku": {
+        "h100": 1900.3,
+        "b200": 1332.2
+      },
+      "physical_gpu_hours_by_pool": {
+        "h100": 1900.3,
+        "b200": 1332.2
+      },
+      "peak_concurrent_gpus_by_pool": {
+        "h100": 22.0,
+        "b200": 11.0
+      },
+      "mean_concurrent_gpus": 18.99,
+      "peak_concurrent_gpus_total": 33.0,
+      "funded_gpus_by_pool": {
+        "a100": 16,
+        "h100": 80,
+        "h200": 64,
+        "b200": 56,
+        "t4": 8,
+        "l4": 8,
+        "a10g": 4,
+        "rtxpro6000": 8
+      },
+      "funded_gpus_total": 244,
+      "funded_config_as_of": "2026-06-16",
+      "delivered_gpus_by_pool": {
+        "h100": 29.18,
+        "b200": 14.59,
+        "l4": 7.29,
+        "rtxpro6000": 7.29,
+        "a100": 7.29,
+        "t4": 7.29,
+        "a10g": 3.65
+      },
+      "delivered_gpus_total": 76.6,
+      "measured_gpus_by_pool": {
+        "h100": 29.18,
+        "b200": 14.59,
+        "a100": 7.29,
+        "l4": 7.29,
+        "rtxpro6000": 7.29,
+        "t4": 7.29,
+        "a10g": 3.65
+      },
+      "node_hours_by_pool": {
+        "build": 155.5,
+        "cpu": 7837.6,
+        "a100": 155.1,
+        "a10g": 155.3,
+        "b200": 310.5,
+        "h100": 620.9,
+        "l4": 310.1,
+        "rtxpro6000": 310.1,
+        "t4": 310.1
+      },
+      "cost_ondemand_by_pool": {
+        "rtxpro6000": 5139,
+        "cpu": 4224,
+        "a100": 3405,
+        "build": 1502,
+        "l4": 1427,
+        "t4": 1213,
+        "a10g": 881
+      },
+      "cost_ondemand_total": 17791,
+      "cost_block_low_by_pool": {
+        "h100": 9091,
+        "b200": 6781
+      },
+      "cost_block_high_by_pool": {
+        "b200": 35377,
+        "h100": 34177
+      },
+      "cost_total_low": 33663,
+      "cost_total_high": 87345,
+      "gpu_hours_used": 3232.5,
+      "utilization_vs_delivered_pct": 24.8,
+      "utilization_by_pool_pct": {
+        "l4": 0.0,
+        "rtxpro6000": 0.0,
+        "a10g": 0.0,
+        "b200": 53.6,
+        "a100": 0.0,
+        "h100": 38.3,
+        "t4": 0.0
+      },
+      "utilization_vs_funded_pct": 7.8,
+      "cpu_node_hours": 170.2,
+      "active_users": 17,
+      "active_users_gpu": 16,
+      "reservations_launched": 57
+    }
+  ],
+  "distinct_users_window": 72,
+  "notes": [
+    "GPU-hours = gpu_count x (end - launched_at), clipped to month; end = reservation_ended | cancelled_at | expired_at | failed_at | expires_at | now(active).",
+    "MIG SKUs are converted to fractional physical GPUs (1g=1/7, 2g=2/7, 3g=3/7) for pool/utilization math; gpu_hours_by_sku keeps raw slice counts.",
+    "delivered capacity per month = high-water mark of concurrently allocated GPUs in that month. The placement gate never overcommits a node, so HWM <= real delivered capacity: a provable lower bound, which makes utilization_vs_delivered an UPPER bound. Validated against the live availability table (Jul-2026 HWM h100=28 vs 30 delivered today, b200=14 vs 14).",
+    "utilization_vs_funded uses terraform-configured instance counts (the funded target). It reads low because expired/unavailable capacity reservations mean the fleet never physically reached the configured size (e.g. h200: 64 GPUs configured, 0 delivered).",
+    "CPU pools (cpu-x86/cpu-arm) carry 0 GPUs and are reported as node-hours."
+  ]
+}
